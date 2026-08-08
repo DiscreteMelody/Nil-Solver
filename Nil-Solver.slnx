@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="Nil-Solver.vcxproj" Id="cebb5a0e-5636-4d08-864c-f38a67176fc1" />
+</Solution>
