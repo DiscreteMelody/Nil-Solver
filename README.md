@@ -127,7 +127,56 @@ The calling convention is `__cdecl` on every platform, and the export surface is
 exactly the header (visibility is hidden by default), so there is nothing to
 name-mangle around.
 
-## Checking against nil_oracle.py
+## Testing
+
+There are three layers, cheapest first. `ctest` runs all of them.
+
+```
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
+ctest --test-dir build --output-on-failure
+```
+
+| test | what it covers | needs |
+| --- | --- | --- |
+| `nil_tests` | the four rules in isolation, small hand-verifiable searches, PBN parsing, position validation, the PV replay verifier, the C ABI | nothing |
+| `corpus` | ~560 positions whose answers came from `nil_oracle.py` | nothing |
+| `corpus_quick` | the 4-card subset of the same, for the inner loop | nothing |
+| `crosscheck` | live differential test against the oracle on freshly generated positions | Python + `nil_oracle.py` |
+
+Run one at a time with `ctest -R corpus_quick`, or invoke the binaries directly:
+
+```
+build/bin/nil_tests                                        # verbose
+build/bin/nil_bench --corpus tests/corpus/positions.txt    # verify + time
+python3 tools/crosscheck.py --exe build/bin/nil_cli --cases 200 --cards 4
+```
+
+### The corpus
+
+`tests/corpus/positions.txt` is a flat text file of positions with the trick
+count the oracle gave for each. Replaying it needs no Python and no oracle, so
+it runs on every build and in CI in a couple of seconds — which is the whole
+point, because the oracle itself takes several seconds per 6-card deal.
+
+It is generated once and committed:
+
+```
+python3 tools/make_corpus.py --out tests/corpus/positions.txt
+python3 tools/make_corpus.py --out tests/corpus/positions.txt --spec 4:400,5:120,6:40
+```
+
+Regenerate it deliberately, not casually. The value of a committed expected
+answer is that it came from the oracle at a moment when someone was watching; a
+corpus that gets silently regenerated whenever it fails is just an echo of the
+current code.
+
+Each record also stores the principal variation, but `nil_bench` only checks it
+under `--check-pv`. Once we add move ordering, the search will legitimately pick
+a different one of several equal-valued cards, and that is not a regression.
+While the search is still exhaustive, `--check-pv` is worth leaving on.
+
+### The live cross-check
 
 Drop `nil_oracle.py` in the repository root and run:
 
@@ -135,6 +184,7 @@ Drop `nil_oracle.py` in the repository root and run:
 python3 tools/crosscheck.py --exe build/bin/nil_cli --cases 200 --cards 4
 python3 tools/crosscheck.py --exe build/bin/nil_cli --cases 60  --cards 5 --trick-prob 0.5
 python3 tools/crosscheck.py --exe build/bin/nil_cli --cases 20  --cards 6
+python3 tools/crosscheck.py --exe build/bin/nil_cli --cases 60  --cards 4 --no-memo --oracle-no-memo
 ```
 
 The harness generates random positions — random leader, random nil seat, random
@@ -145,8 +195,40 @@ on every value while disagreeing about a rule that happens not to bite in the
 sampled positions; they cannot agree on the PV by accident, because both sides
 break ties identically (canonically lowest card, strict improvement only).
 
-`ctest` runs a small cross-check automatically when Python is available, and
-skips rather than fails if the oracle is not present.
+`ctest` runs a small cross-check automatically, and skips rather than fails if
+the oracle is not present. Point it somewhere else with
+`--oracle /path/to/nil_oracle.py`.
+
+Anything the cross-check finds should become a corpus entry, or a named case in
+`tests/test_nil_solver.cpp` if you can reduce it to something a human can check
+by hand.
+
+## Benchmarking
+
+```
+build/bin/nil_bench --corpus tests/corpus/positions.txt --repeat 3
+build/bin/nil_bench --corpus tests/corpus/positions.txt --csv before.csv
+#   ... change the search ...
+build/bin/nil_bench --corpus tests/corpus/positions.txt --baseline before.csv
+build/bin/nil_bench --random --cards 7 --count 10 --seed 1     # timing only
+```
+
+`nil_bench` verifies as it times. A benchmark that does not check its answers
+eventually reports a very fast wrong solver.
+
+**Track nodes, not seconds.** Node counts are deterministic and machine
+independent: the same corpus on the same commit gives identical numbers on your
+laptop, on a CI runner, and on a loaded machine. Wall time does not. When we add
+alpha-beta or move ordering, nodes per position is the number that measures the
+search improvement rather than the machine it ran on. Time is reported too, and
+is the check on the other failure mode — nodes fell but each node got more
+expensive.
+
+`--random` deals from a splitmix64 seeded by `--seed`, so it reproduces exactly
+across compilers and platforms (unlike `std::mt19937` plus a distribution, whose
+output is implementation defined). There are no expected answers in that mode,
+so it is for timing only — useful for asking how a change scales at 7 cards,
+where the oracle can no longer follow.
 
 ### One thing to know about seat parity
 

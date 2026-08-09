@@ -1,0 +1,62 @@
+name: build-and-test
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      # nil_tests   rule units and small hand-verifiable searches
+      # corpus      ~560 positions whose answers came from nil_oracle.py
+      # crosscheck  live differential test; skips itself if the oracle is absent
+      - name: Test
+        run: ctest --test-dir build --build-config Release --output-on-failure
+
+      # Node counts are deterministic, so this number is comparable across runs
+      # and is the thing to watch when the search changes.
+      - name: Benchmark
+        run: |
+          cmake --install build --prefix build/staged
+          ./build/bin/nil_bench --corpus tests/corpus/positions.txt --repeat 3 --csv bench.csv
+        shell: bash
+        if: runner.os == 'Linux'
+
+      - name: Upload benchmark
+        uses: actions/upload-artifact@v4
+        if: runner.os == 'Linux'
+        with:
+          name: bench-${{ github.sha }}
+          path: bench.csv
+
+      - name: Upload library
+        uses: actions/upload-artifact@v4
+        with:
+          name: nil_solver-${{ matrix.os }}
+          path: |
+            build/bin/nil_solver.dll
+            build/bin/libnil_solver.so*
+            build/lib/nil_solver.lib
+            include/nil_solver/nil_solver.h
+          if-no-files-found: ignore

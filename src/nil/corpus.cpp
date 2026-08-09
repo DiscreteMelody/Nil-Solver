@@ -1,0 +1,111 @@
+#include "nil/corpus.hpp"
+
+#include <cctype>
+#include <fstream>
+#include <sstream>
+
+namespace nil {
+namespace {
+
+std::string trim(const std::string& s) {
+    std::size_t b = 0;
+    std::size_t e = s.size();
+    while (b < e && std::isspace(static_cast<unsigned char>(s[b]))) ++b;
+    while (e > b && std::isspace(static_cast<unsigned char>(s[e - 1]))) --e;
+    return s.substr(b, e - b);
+}
+
+std::vector<std::string> split(const std::string& s, char sep) {
+    std::vector<std::string> out;
+    std::string field;
+    for (char ch : s) {
+        if (ch == sep) {
+            out.push_back(trim(field));
+            field.clear();
+        } else {
+            field += ch;
+        }
+    }
+    out.push_back(trim(field));
+    return out;
+}
+
+}  // namespace
+
+bool load_corpus(const std::string& path, std::vector<CorpusEntry>& out, std::string& err) {
+    std::ifstream in(path.c_str());
+    if (!in) {
+        err = "cannot open corpus file '" + path + "'";
+        return false;
+    }
+
+    out.clear();
+    std::string line;
+    int line_no = 0;
+    while (std::getline(in, line)) {
+        ++line_no;
+        const std::string trimmed = trim(line);
+        if (trimmed.empty() || trimmed[0] == '#') continue;
+
+        const std::vector<std::string> f = split(trimmed, '|');
+        std::ostringstream where;
+        where << path << ":" << line_no << ": ";
+        if (f.size() < 8) {
+            err = where.str() + "expected at least 8 '|' separated fields, got " +
+                  std::to_string(f.size());
+            return false;
+        }
+
+        CorpusEntry entry;
+        entry.name = f[0];
+        entry.pbn = f[1];
+        if (!parse_pbn(entry.pbn, entry.position.hands, err)) {
+            err = where.str() + err;
+            return false;
+        }
+        entry.position.leader = parse_seat(f[2]);
+        entry.nil_seat = parse_seat(f[3]);
+        if (entry.position.leader < 0 || entry.nil_seat < 0) {
+            err = where.str() + "bad leader or nil seat";
+            return false;
+        }
+        entry.position.spades_broken = (f[4] == "1");
+        entry.break_on_forced_spade_lead = (f[5] == "1");
+        entry.trick_text = f[6];
+        if (!entry.trick_text.empty()) {
+            int count = 0;
+            if (!parse_cards(entry.trick_text, entry.position.trick, 3, count, err)) {
+                err = where.str() + err;
+                return false;
+            }
+            entry.position.trick_len = count;
+        }
+        entry.expected_tricks = (f[7] == "?") ? -1 : std::atoi(f[7].c_str());
+        if (f.size() > 8) entry.expected_pv = f[8];
+
+        if (!validate(entry.position, err)) {
+            err = where.str() + err;
+            return false;
+        }
+        out.push_back(entry);
+    }
+
+    if (out.empty()) {
+        err = "corpus file '" + path + "' has no records";
+        return false;
+    }
+    return true;
+}
+
+std::string corpus_repro(const CorpusEntry& entry, const std::string& exe) {
+    std::ostringstream os;
+    os << exe << " --pbn '" << entry.pbn << "'"
+       << " --leader " << SEAT_CHARS[entry.position.leader] << " --nil "
+       << SEAT_CHARS[entry.nil_seat];
+    if (entry.position.spades_broken) os << " --spades-broken";
+    if (entry.break_on_forced_spade_lead) os << " --break-on-forced-lead";
+    if (!entry.trick_text.empty()) os << " --trick '" << entry.trick_text << "'";
+    return os.str();
+}
+
+}  // namespace nil
