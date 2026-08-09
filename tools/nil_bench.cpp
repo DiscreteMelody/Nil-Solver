@@ -429,6 +429,7 @@ int main(int argc, char** argv) {
     }
 
     // ---- assemble the work list ------------------------------------------
+    std::map<std::string, int> provenance_counts;
     struct Item {
         std::string name;
         nil::Position position;
@@ -449,6 +450,10 @@ int main(int argc, char** argv) {
         if (!nil::load_corpus(corpus_path, entries, err)) {
             std::cerr << "error: " << err << "\n";
             return 2;
+        }
+        for (const nil::CorpusEntry& e : entries) {
+            if (cards_only && e.position.cards_per_hand() != cards_only) continue;
+            ++provenance_counts[e.provenance];
         }
         for (const nil::CorpusEntry& e : entries) {
             if (cards_only && e.position.cards_per_hand() != cards_only) continue;
@@ -645,6 +650,17 @@ int main(int argc, char** argv) {
     }
     if (!corpus_path.empty()) {
         std::cout << "all " << rows.size() << " expected values matched\n";
+        // Say where those expectations came from: a row this solver generated
+        // agreeing with this solver is a regression check, not a proof.
+        const auto oracle = provenance_counts.find("oracle");
+        const auto solver = provenance_counts.find("solver");
+        const auto unver = provenance_counts.find("unverified");
+        std::cout << "  " << (oracle == provenance_counts.end() ? 0 : oracle->second)
+                  << " independently verified by nil_oracle.py, "
+                  << (solver == provenance_counts.end() ? 0 : solver->second)
+                  << " pinned from this solver, "
+                  << (unver == provenance_counts.end() ? 0 : unver->second)
+                  << " timed only\n";
     }
     return 0;
 }

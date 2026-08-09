@@ -12,6 +12,9 @@ endif()
 option(NIL_SOLVER_BUILD_CLI "Build the nil_cli command line tool" ON)
 option(NIL_SOLVER_BUILD_TESTS "Build the self-tests" ON)
 option(NIL_SOLVER_BUILD_BENCH "Build the nil_bench benchmark tool" ON)
+# The large corpus is minutes to hours per position; it is not part of a normal
+# test run.  Turn this on deliberately, when you want it.
+option(NIL_SOLVER_LARGE_TESTS "Also test the 7+ card corpus (slow)" OFF)
 
 # Hide everything that is not explicitly exported, so the DLL/so surface is
 # exactly the C ABI in include/nil_solver/nil_solver.h.
@@ -106,7 +109,29 @@ if(NIL_SOLVER_BUILD_TESTS)
     set_tests_properties(corpus PROPERTIES TIMEOUT 900)
   endif()
 
+  set(NIL_LARGE_CORPUS "${CMAKE_CURRENT_SOURCE_DIR}/tests/corpus/large.txt")
+  if(NIL_SOLVER_LARGE_TESTS AND NIL_SOLVER_BUILD_BENCH AND EXISTS "${NIL_LARGE_CORPUS}")
+    # 7 cards only: at 8 and above the rows are benchmark fodder, and several
+    # have no recorded answer to check against anyway.
+    add_test(NAME corpus_large
+             COMMAND nil_bench --corpus "${NIL_LARGE_CORPUS}" --cards-only 7 --slowest 0)
+    set_tests_properties(corpus_large PROPERTIES TIMEOUT 3600)
+  endif()
+
   find_package(Python3 COMPONENTS Interpreter QUIET)
+  if(Python3_FOUND AND NIL_SOLVER_BUILD_CLI)
+    # Invariance checks need no reference answer, so they are the only
+    # verification that works at hand sizes the oracle cannot reach.  The fast
+    # subset runs every time; point the script at the large corpus by hand.
+    add_test(NAME invariants
+      COMMAND ${Python3_EXECUTABLE}
+              "${CMAKE_CURRENT_SOURCE_DIR}/tools/invariants.py"
+              --exe $<TARGET_FILE:nil_cli>
+              --corpus "${NIL_CORPUS}" --cards 4 --limit 40 --quiet
+    )
+    set_tests_properties(invariants PROPERTIES TIMEOUT 600)
+  endif()
+
   if(Python3_FOUND AND NIL_SOLVER_BUILD_CLI)
     # Differential test against nil_oracle.py.  Skipped (not failed) by the
     # script itself if the oracle is not present.

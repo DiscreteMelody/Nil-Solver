@@ -93,6 +93,7 @@ bool load_corpus(const std::string& path, std::vector<CorpusEntry>& out, std::st
         entry.expected_tricks = (f[9] == "?") ? -1 : std::atoi(f[9].c_str());
         entry.expected_side_tricks = (f[10] == "?") ? -1 : std::atoi(f[10].c_str());
         if (f.size() > 11) entry.expected_pv = f[11];
+        if (f.size() > 12 && !f[12].empty()) entry.provenance = f[12];
 
         if (!validate(entry.position, err)) {
             err = where.str() + err;

@@ -9,7 +9,7 @@
 // lines starting with '#' are ignored.
 //
 //   name | pbn | leader | nil | broken | forced | trick | secondary | nilset |
-//   nil_tricks | side_tricks | pv
+//   nil_tricks | side_tricks | pv | provenance
 //
 //   name        identifier for the record, e.g. "c5-0042"
 //   pbn         PBN deal string
@@ -23,6 +23,12 @@
 //   nil_tricks  expected trick count for the nil bidder; "?" if unknown
 //   side_tricks expected trick count for the nil bidder's pair; "?" if unknown
 //   pv          expected principal variation; may be empty
+//   provenance  optional; where the expected answers came from.  "oracle" (the
+//               default when the column is absent) means nil_oracle.py computed
+//               them independently.  "solver" means they were recorded from
+//               this solver -- a regression baseline, not a proof.  "unverified"
+//               means no answer is recorded at all and the row exists only to
+//               be timed.
 //
 // The `tricks` field is the contract.  `pv` is informational and is only
 // checked when explicitly asked for: any future move ordering will legitimately
@@ -50,6 +56,7 @@ struct CorpusEntry {
     int expected_tricks = -1;        // -1 when the file says "?"
     int expected_side_tricks = -1;   // -1 when the file says "?"
     std::string expected_pv;         // empty when not recorded
+    std::string provenance = "oracle";
 };
 
 bool load_corpus(const std::string& path, std::vector<CorpusEntry>& out, std::string& err);

@@ -45,9 +45,12 @@ src/api.cpp                       C ABI implementation (marshalling only)
 tools/nil_cli.cpp                 command line front end
 tools/crosscheck.py               differential test against nil_oracle.py
 tests/test_nil_solver.cpp         self-tests, mirroring the oracle's selftest()
-tests/corpus/positions.txt        positions with answers from the oracle
+tests/corpus/positions.txt        4-6 card positions, answers from the oracle
+tests/corpus/large.txt            7+ card positions, see the provenance column
 tools/nil_bench.cpp               corpus verifier and benchmark
 tools/make_corpus.py              regenerates the corpus
+tools/make_large_corpus.py        builds the 7+ card corpus
+tools/invariants.py               transform-based checks, any hand size
 tools/bench_history.py            reads back bench-history.csv
 tools/corpus_view.py              browse and spot-check the corpus
 scripts/build-and-test.cmd|.sh    one-shot build + test
@@ -242,7 +245,9 @@ ctest --test-dir build --output-on-failure
 | `nil_tests` | the four rules in isolation, small hand-verifiable searches, PBN parsing, position validation, the PV replay verifier, the C ABI | nothing |
 | `corpus` | ~560 positions whose answers came from `nil_oracle.py` | nothing |
 | `corpus_quick` | the 4-card subset of the same, for the inner loop | nothing |
+| `invariants` | transformed copies of each position that must give the same answer | Python |
 | `crosscheck` | live differential test against the oracle on freshly generated positions | Python + `nil_oracle.py` |
+| `corpus_large` | the 7-card rows of `tests/corpus/large.txt`; **off by default** | nothing |
 
 Run one at a time with `ctest -R corpus_quick`, or invoke the binaries directly:
 
@@ -323,6 +328,94 @@ that produced them. It also stores the principal variation, but `nil_bench` only
 checks that under `--check-pv`. Once we add move ordering, the search will legitimately pick
 a different one of several equal-valued cards, and that is not a regression.
 While the search is still exhaustive, `--check-pv` is worth leaving on.
+
+### Large hands, and what can actually be verified up there
+
+Cost grows roughly twentyfold per extra card, and the oracle is Python with a
+dictionary for a transposition table. On one core it is fine to about six cards
+and then falls over — on a typical 7-card deal it runs out of *memory* before it
+runs out of patience.
+
+But cost also varies by two orders of magnitude *within* a hand size. Random
+7-card deals measured here ranged from one million nodes to seventy-eight. The
+cheap ones are the skewed distributions, where following suit is forced most of
+the way down and the tree never fans out. They are ordinary Spades endings, just
+not average ones — and they are the ones both implementations can still solve.
+
+`tests/corpus/large.txt` exploits that. Rows carry a `provenance` column:
+
+| provenance | what it is worth |
+| --- | --- |
+| `oracle` | `nil_oracle.py` solved it independently. Real verification. |
+| `solver` | pinned from this solver. Catches a future change; if the answer is wrong today it is confidently wrong forever. |
+| `unverified` | no answer recorded. The row exists to be timed. |
+
+`nil_bench` prints the breakdown after a corpus run, so a green result cannot be
+mistaken for proof. The 4–6 card corpus is entirely `oracle`, and rows there
+default to it when the column is absent.
+
+Regenerate or extend with `tools/make_large_corpus.py`, which screens candidate
+deals under a wall-clock cap, oracle-verifies the cheap ones, pins the middling
+ones and records the rest as timing-only:
+
+```
+python3 tools/make_large_corpus.py --cards 7 --verify 4 --out tests/corpus/large.txt
+python3 tools/make_large_corpus.py --cards 8 --suits 3 --pin 2 --append --out tests/corpus/large.txt
+python3 tools/make_large_corpus.py --cards 9 --suits 3 --timed 3 --append --out tests/corpus/large.txt
+```
+
+`--suits 3` deals from three suits instead of four, so hands are longer and
+voids rarer, which means following is forced more often and the tree fans out
+less. At 8 and 9 cards that is the difference between a position anything can
+solve and one nothing can. Spades are always in play, so the trump and breaking
+rules stay exercised.
+
+Nine- and thirteen-card rows can only be timing-only until there is pruning. No
+implementation here can produce an expected answer for them today; they are
+benchmark fodder for the road to 13.
+
+### Invariance checks
+
+These are the only verification that works at any hand size, because they need
+no reference answer. Take a position, transform it into a different position
+that must have the same answer for reasons that come from the rules rather than
+from either implementation, and compare.
+
+```
+python3 tools/invariants.py --corpus tests/corpus/positions.txt --cards 4 --limit 40
+python3 tools/invariants.py --corpus tests/corpus/large.txt --cards 7 --timeout 60
+python3 tools/invariants.py --random 20 --cards 5
+```
+
+* **Seat rotation** — move every hand k seats and move the leader and the nil
+  bidder with them. Nothing has changed but the names, so every count must be
+  identical and the principal variation must be the same cards played by
+  correspondingly renamed seats.
+* **Suit permutation** — permute hearts, diamonds and clubs. Spades are the only
+  suit the rules single out (they trump, and they have the breaking rule), so
+  the other three are interchangeable and every count must be identical. The PV
+  may legitimately differ, because relabelling changes which card is
+  canonically lowest.
+* **Rank compression** — relabel the ranks in play down to a contiguous block,
+  order preserved. Only relative order can matter, so counts must be identical
+  and the PV must correspond card for card.
+
+This is what makes a `solver`-provenance row worth something: a pinned answer
+checked by asking the same solver again catches a regression and nothing else,
+but a pinned answer that also survives three transforms has been checked against
+the rules themselves.
+
+The checks have teeth — swapping spades with hearts instead of permuting the
+other three produces violations immediately, which is the sanity check that they
+are not vacuous.
+
+**One thing they turned up.** With `--nil-already-set` the primary objective is
+off, so only the *side* total is optimised. How those tricks divide between the
+nil bidder and its partner is not part of the objective at all, and falls out of
+the tie-break — so `nil_tricks` may legitimately move under a suit permutation,
+while `nil_side_tricks` and `opponent_tricks` hold firm. If you are reading
+results with that flag set, `nil_tricks` is not an answer to a question anyone
+asked, and it may change when move ordering lands.
 
 ### The live cross-check
 

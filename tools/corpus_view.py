@@ -42,8 +42,15 @@ DEFAULT_CORPUS = os.path.join("tests", "corpus", "positions.txt")
 
 FIELDS = (
     "name", "pbn", "leader", "nil", "broken", "forced", "trick",
-    "secondary", "nilset", "nil_tricks", "side_tricks", "pv",
+    "secondary", "nilset", "nil_tricks", "side_tricks", "pv", "provenance",
 )
+
+# How much a recorded answer is worth.  See tools/make_large_corpus.py.
+PROVENANCE = {
+    "oracle": "nil_oracle.py computed this independently",
+    "solver": "pinned from this solver -- a regression baseline, not a proof",
+    "unverified": "no answer recorded; this row exists only to be timed",
+}
 
 
 def load(path: str) -> List[Dict[str, str]]:
@@ -63,6 +70,9 @@ def load(path: str) -> List[Dict[str, str]]:
             record = dict(zip(FIELDS, parts))
             if len(parts) < 12:
                 record["pv"] = ""
+            record.setdefault("provenance", "oracle")
+            if not record["provenance"]:
+                record["provenance"] = "oracle"
             record["cards"] = str(card_count(parts[1]))
             records.append(record)
     return records
@@ -152,12 +162,17 @@ def show(record: Dict[str, str], exe: Optional[str], oracle_path: Optional[str])
         print("On the trick   %s   (already played, in order from the leader)" % record["trick"])
     print("Objective      %s" % describe(record))
     print()
-    print("Recorded by the oracle:")
-    print("  %s takes %s trick(s); its side takes %s"
-          % (record["nil"], record["nil_tricks"], record["side_tricks"]))
-    if record["nilset"] != "1":
-        print("  so the nil %s"
-              % ("FAILS" if int(record["nil_tricks"]) > 0 else "MAKES"))
+    provenance = record["provenance"]
+    if provenance == "unverified":
+        print("Recorded answer: none (%s)" % PROVENANCE[provenance])
+    else:
+        print("Recorded answer  [%s: %s]"
+              % (provenance, PROVENANCE.get(provenance, "unknown provenance")))
+        print("  %s takes %s trick(s); its side takes %s"
+              % (record["nil"], record["nil_tricks"], record["side_tricks"]))
+        if record["nilset"] != "1":
+            print("  so the nil %s"
+                  % ("FAILS" if int(record["nil_tricks"]) > 0 else "MAKES"))
 
     if record["pv"]:
         print()
@@ -194,7 +209,10 @@ def print_pv(record: Dict[str, str]) -> None:
 
 def check_against(record: Dict[str, str], exe: str) -> int:
     """Re-run the C++ solver and compare with the recorded answer."""
-    args = repro(record, exe) + ["--compact"]
+    if record["provenance"] == "unverified":
+        print("\n  nothing recorded to check against")
+        return 0
+    args = repro(record, exe) + ["--compact", "--force"]
     proc = subprocess.run(args, capture_output=True, text=True)
     if proc.returncode != 0:
         print("\n  nil_cli FAILED: %s" % proc.stderr.strip())
@@ -281,10 +299,17 @@ def summarise(records: List[Dict[str, str]]) -> None:
     for record in records:
         by_cards.setdefault(record["cards"], []).append(record)
 
+    provenance = {}
+    for record in records:
+        provenance[record["provenance"]] = provenance.get(record["provenance"], 0) + 1
+    print("  provenance: " + ", ".join("%d %s" % (v, k) for k, v in sorted(provenance.items())))
+    for key in sorted(provenance):
+        print("    %-11s %s" % (key, PROVENANCE.get(key, "")))
+    print()
     print("  cards  count   nil makes  nil fails   already set   take   shed   mid-trick")
     for cards in sorted(by_cards):
         group = by_cards[cards]
-        live = [r for r in group if r["nilset"] != "1"]
+        live = [r for r in group if r["nilset"] != "1" and r["nil_tricks"] != "?"]
         makes = sum(1 for r in live if int(r["nil_tricks"]) == 0)
         fails = len(live) - makes
         print("  %5s  %5d   %9d  %9d   %11d   %4d   %4d   %9d"
@@ -298,12 +323,12 @@ def summarise(records: List[Dict[str, str]]) -> None:
 
 
 def one_line(record: Dict[str, str]) -> str:
-    verdict = ("  -  " if record["nilset"] == "1"
+    verdict = ("  -  " if record["nilset"] == "1" or record["nil_tricks"] == "?"
                else ("MAKES" if int(record["nil_tricks"]) == 0 else "FAILS"))
-    return "%-9s %sc  lead %s  nil %s  %-3s %s  %s  nil=%s side=%s  %s" % (
+    return "%-10s %2sc  lead %s  nil %s  %-3s %s  %s  nil=%-2s side=%-2s %-10s %s" % (
         record["name"], record["cards"], record["leader"], record["nil"],
         record["secondary"], "set " if record["nilset"] == "1" else "live",
-        verdict, record["nil_tricks"], record["side_tricks"],
+        verdict, record["nil_tricks"], record["side_tricks"], record["provenance"],
         ("resumed mid-trick" if record["trick"] else ""),
     )
 
@@ -330,6 +355,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.add_argument("--nilset", choices=("yes", "no"), default=None)
     p.add_argument("--outcome", choices=("makes", "fails"), default=None)
     p.add_argument("--midtrick", choices=("yes", "no"), default=None)
+    p.add_argument("--provenance", choices=("oracle", "solver", "unverified"), default=None)
     p.add_argument("--limit", type=int, default=40, help="cap for --list [40]")
     args = p.parse_args(argv)
 
@@ -347,9 +373,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         records = [r for r in records if r["nilset"] == want]
     if args.midtrick:
         records = [r for r in records if bool(r["trick"]) == (args.midtrick == "yes")]
+    if args.provenance:
+        records = [r for r in records if r["provenance"] == args.provenance]
     if args.outcome:
         records = [r for r in records
-                   if r["nilset"] != "1"
+                   if r["nilset"] != "1" and r["nil_tricks"] != "?"
                    and (int(r["nil_tricks"]) == 0) == (args.outcome == "makes")]
     if not records:
         print("no records match those filters")

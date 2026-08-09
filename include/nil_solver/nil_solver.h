@@ -31,6 +31,13 @@
  * Pass NIL_FLAG_NIL_ALREADY_SET once the nil has actually been broken in the
  * real game.  The primary objective is dropped, both sides stop protecting and
  * attacking it, and only the secondary objective is optimised.
+ *
+ * One consequence worth knowing before you rely on the numbers: with that flag
+ * set, only nil_side_tricks and opponent_tricks are optimised.  How the side's
+ * tricks divide between the nil bidder and its partner is not part of the
+ * objective any more, so nil_tricks is whatever the tie-break happened to
+ * produce.  It is deterministic, but it is not an answer to a question anyone
+ * asked, and it may move when move ordering is added later.
  */
 #ifndef NIL_SOLVER_H
 #define NIL_SOLVER_H
@@ -99,7 +106,8 @@ typedef struct nil_result {
      * NIL_FLAG_NIL_ALREADY_SET was passed, since that is a fact you supplied
      * rather than one the search discovered. */
     int32_t nil_fails;
-    /* Tricks the nil bidder takes from this position onward. */
+    /* Tricks the nil bidder takes from this position onward.  Meaningful only
+     * when NIL_FLAG_NIL_ALREADY_SET was NOT passed; see the note above. */
     int32_t nil_tricks;
     /* Tricks the nil bidder and its covering partner take between them.
      * nil_tricks is included in this. */
