@@ -71,6 +71,8 @@ std::int32_t solve_impl(const char* pbn, std::int32_t leader, const char* curren
     nil::SearchOptions opts;
     opts.break_on_forced_spade_lead = (flags & NIL_FLAG_BREAK_ON_FORCED_SPADE_LEAD) != 0;
     opts.use_memo = (flags & NIL_FLAG_NO_MEMO) == 0;
+    opts.minimise_own_tricks = (flags & NIL_FLAG_MINIMISE_OWN_TRICKS) != 0;
+    opts.nil_already_set = (flags & NIL_FLAG_NIL_ALREADY_SET) != 0;
 
     nil::Solution sol;
     if (!nil::solve(pos, nil_seat, opts, sol, err)) {
@@ -79,7 +81,9 @@ std::int32_t solve_impl(const char* pbn, std::int32_t leader, const char* curren
     }
 
     out->nil_fails = sol.nil_fails ? 1 : 0;
-    out->tricks = sol.tricks;
+    out->nil_tricks = sol.nil_tricks;
+    out->nil_side_tricks = sol.nil_side_tricks;
+    out->opponent_tricks = sol.opponent_tricks;
     out->tricks_remaining = pos.tricks_remaining();
     out->nodes = sol.nodes;
     if (pv_out) *pv_out = nil::format_pv_compact(sol);

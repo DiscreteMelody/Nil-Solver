@@ -29,6 +29,11 @@ void usage(const char* argv0) {
         << "  --trick '<cards>'       cards already played to the current trick, in\n"
         << "                          play order from the leader, e.g. 'H4 HK'\n"
         << "  --spades-broken         start with spades already broken\n"
+        << "  --secondary max|min     tie-break: each pair takes as many tricks as\n"
+        << "                          it can (max, default) or as few (min)\n"
+        << "  --nil-already-set       the nil has already been broken; drop the\n"
+        << "                          primary objective and optimise only the\n"
+        << "                          secondary one\n"
         << "  --break-on-forced-lead  a forced spade lead breaks spades (see README)\n"
         << "  --no-memo               disable the full-state memo (same answer, slower)\n"
         << "  --compact               print only the machine-readable result\n"
@@ -73,6 +78,19 @@ int main(int argc, char** argv) {
             if (!need_value(argc, argv, i, "--trick", trick_text)) return 2;
         } else if (arg == "--spades-broken") {
             spades_broken = true;
+        } else if (arg == "--secondary") {
+            std::string mode;
+            if (!need_value(argc, argv, i, "--secondary", mode)) return 2;
+            if (mode == "min") {
+                opts.minimise_own_tricks = true;
+            } else if (mode == "max") {
+                opts.minimise_own_tricks = false;
+            } else {
+                std::cerr << "error: --secondary takes 'max' or 'min'\n";
+                return 2;
+            }
+        } else if (arg == "--nil-already-set") {
+            opts.nil_already_set = true;
         } else if (arg == "--break-on-forced-lead") {
             opts.break_on_forced_spade_lead = true;
         } else if (arg == "--no-memo") {
@@ -139,12 +157,14 @@ int main(int argc, char** argv) {
     }
 
     if (compact) {
-        std::cout << "tricks=" << sol.tricks << "\n"
+        std::cout << "tricks=" << sol.nil_tricks << "\n"
+                  << "side_tricks=" << sol.nil_side_tricks << "\n"
+                  << "opponent_tricks=" << sol.opponent_tricks << "\n"
                   << "nil_fails=" << (sol.nil_fails ? 1 : 0) << "\n"
                   << "nodes=" << sol.nodes << "\n"
                   << "pv=" << nil::format_pv_compact(sol) << "\n";
     } else {
-        std::cout << nil::format_solution(pos, sol) << "\n";
+        std::cout << nil::format_solution(pos, sol, opts) << "\n";
     }
     return 0;
 }

@@ -72,14 +72,17 @@ struct Entry {
 
 struct Ctx {
     int nil_seat = 0;
+    int primary_weight = 0;    // K, or 0 when the nil is already set
+    int secondary_sign = -1;   // -1 the nil side wants tricks, +1 it wants to shed them
     bool break_forced = false;
     bool use_memo = true;
     std::uint64_t nodes = 0;
     std::unordered_map<Key, Entry, KeyHash> memo;
 };
 
-// Returns the nil bidder's trick count from `st` onwards, and the canonically
-// chosen best move for the seat to play.
+// Returns the packed objective value from `st` onwards (see objective_weights),
+// and the canonically chosen best move for the seat to play.  The nil side
+// minimises the value; the opponents maximise it.
 //
 // No alpha-beta, no move ordering, no rank-equivalence collapsing, no quick
 // tricks.  Candidate moves are enumerated in canonical order and replace the
@@ -125,7 +128,10 @@ int search(Ctx& ctx, const State& st, CardId& best_move) {
             const int winner = trick_winner(st.leader, played, 4);
             next.leader = winner;
             next.trick_len = 0;
-            value = (winner == ctx.nil_seat ? 1 : 0) + search(ctx, next, ignored);
+            int gained = 0;
+            if (winner == ctx.nil_seat) gained += ctx.primary_weight;
+            if (((winner ^ ctx.nil_seat) & 1) == 0) gained += ctx.secondary_sign;
+            value = gained + search(ctx, next, ignored);
         } else {
             next.trick[st.trick_len] = card;
             next.trick_len = st.trick_len + 1;
@@ -170,6 +176,13 @@ std::string with_commas(std::uint64_t n) {
 
 }  // namespace
 
+ObjectiveWeights objective_weights(int tricks_remaining, const SearchOptions& opts) {
+    ObjectiveWeights w;
+    w.primary = opts.nil_already_set ? 0 : (tricks_remaining + 1);
+    w.secondary_sign = opts.minimise_own_tricks ? 1 : -1;
+    return w;
+}
+
 bool solve(const Position& pos, int nil_seat, const SearchOptions& opts, Solution& out,
            std::string& err) {
     if (nil_seat < 0 || nil_seat > 3) {
@@ -178,8 +191,12 @@ bool solve(const Position& pos, int nil_seat, const SearchOptions& opts, Solutio
     }
     if (!validate(pos, err)) return false;
 
+    const ObjectiveWeights weights = objective_weights(pos.tricks_remaining(), opts);
+
     Ctx ctx;
     ctx.nil_seat = nil_seat;
+    ctx.primary_weight = weights.primary;
+    ctx.secondary_sign = weights.secondary_sign;
     ctx.break_forced = opts.break_on_forced_spade_lead;
     ctx.use_memo = opts.use_memo;
 
@@ -219,29 +236,38 @@ bool solve(const Position& pos, int nil_seat, const SearchOptions& opts, Solutio
         }
     }
 
-    out.tricks = value;
-    out.nil_fails = value > 0;
-    out.nil_seat = nil_seat;
-    out.nodes = search_nodes;
-
-    // A solver that lies is worse than no solver.
-    int replayed = 0;
-    if (!replay_pv(pos, out.pv, nil_seat, opts.break_on_forced_spade_lead, replayed, err)) {
+    // A solver that lies is worse than no solver.  Replaying recovers the trick
+    // counts independently; re-packing them must land back on the search value.
+    Tally tally;
+    if (!replay_pv(pos, out.pv, nil_seat, opts.break_on_forced_spade_lead, tally, err)) {
         err = "internal inconsistency: " + err;
         return false;
     }
+    const int replayed =
+        weights.primary * tally.nil_tricks + weights.secondary_sign * tally.nil_side_tricks;
     if (replayed != value) {
         std::ostringstream os;
         os << "internal inconsistency: search says " << value << ", replaying the PV gives "
-           << replayed;
+           << replayed << " (nil=" << tally.nil_tricks << ", side=" << tally.nil_side_tricks
+           << ")";
         err = os.str();
         return false;
     }
+
+    out.nil_tricks = tally.nil_tricks;
+    out.nil_side_tricks = tally.nil_side_tricks;
+    out.opponent_tricks = tally.opponent_tricks;
+    // When the caller has told us the nil is already broken, that is a fact
+    // about the game, not something for the search to rediscover.
+    out.nil_fails = opts.nil_already_set || tally.nil_tricks > 0;
+    out.value = value;
+    out.nil_seat = nil_seat;
+    out.nodes = search_nodes;
     return true;
 }
 
 bool replay_pv(const Position& pos, const std::vector<Play>& pv, int nil_seat,
-               bool break_on_forced_spade_lead, int& tricks_out, std::string& err) {
+               bool break_on_forced_spade_lead, Tally& tally_out, std::string& err) {
     Hand hands[4];
     for (int s = 0; s < 4; ++s) hands[s] = pos.hands[s];
     int leader = pos.leader;
@@ -249,7 +275,7 @@ bool replay_pv(const Position& pos, const std::vector<Play>& pv, int nil_seat,
     CardId trick[4];
     int trick_len = pos.trick_len;
     for (int i = 0; i < pos.trick_len; ++i) trick[i] = pos.trick[i];
-    tricks_out = 0;
+    tally_out = Tally{};
 
     for (std::size_t ply = 0; ply < pv.size(); ++ply) {
         const int seat = pv[ply].seat;
@@ -287,7 +313,12 @@ bool replay_pv(const Position& pos, const std::vector<Play>& pv, int nil_seat,
         trick[trick_len++] = card;
         if (trick_len == 4) {
             const int winner = trick_winner(leader, trick, 4);
-            if (winner == nil_seat) ++tricks_out;
+            if (winner == nil_seat) ++tally_out.nil_tricks;
+            if (((winner ^ nil_seat) & 1) == 0) {
+                ++tally_out.nil_side_tricks;
+            } else {
+                ++tally_out.opponent_tricks;
+            }
             leader = winner;
             trick_len = 0;
         }
@@ -333,7 +364,7 @@ std::string format_pv(const Position& pos, const Solution& sol) {
         CardId cards[4];
         for (std::size_t j = 0; j < n; ++j) cards[j] = plays[i + j].card;
         const int winner = (n == 4) ? trick_winner(leader, cards, 4) : -1;
-        if (winner == sol.nil_seat) ++running;
+        if (winner == sol.nil_seat) ++running;  // primary counter only
 
         if (!first_line) os << '\n';
         first_line = false;
@@ -353,14 +384,23 @@ std::string format_pv(const Position& pos, const Solution& sol) {
     return os.str();
 }
 
-std::string format_solution(const Position& pos, const Solution& sol) {
+std::string format_solution(const Position& pos, const Solution& sol,
+                            const SearchOptions& opts) {
     const bool nil_is_ns = (sol.nil_seat & 1) == 0;
+    const char* side = nil_is_ns ? "NS" : "EW";
+    const char* other = nil_is_ns ? "EW" : "NS";
     std::ostringstream os;
     os << "PBN            " << deal_to_pbn(pos.hands) << '\n'
        << format_hands(pos) << '\n'
        << "Leader         " << SEAT_CHARS[pos.leader] << '\n'
        << "Nil bidder     " << SEAT_CHARS[sol.nil_seat] << "  ("
        << (nil_is_ns ? "N/S minimise, E/W maximise" : "E/W minimise, N/S maximise") << ")\n"
+       << "Objective      "
+       << (opts.nil_already_set ? "nil already set, so secondary only; "
+                                : "nil tricks first, then ")
+       << (opts.minimise_own_tricks ? "each pair sheds what it can"
+                                    : "each pair takes what it can")
+       << '\n'
        << "Spades broken  " << (pos.spades_broken ? "yes" : "no") << '\n';
     if (pos.trick_len) {
         os << "On the trick   ";
@@ -370,12 +410,19 @@ std::string format_solution(const Position& pos, const Solution& sol) {
         }
         os << "  (marked * below)\n";
     }
-    os << "Tricks for " << SEAT_CHARS[sol.nil_seat] << "   " << sol.tricks << " of "
+    os << "Tricks for " << SEAT_CHARS[sol.nil_seat] << "   " << sol.nil_tricks << " of "
        << pos.tricks_remaining() << '\n'
-       << "Nil            " << (sol.nil_fails ? "FAILS  (can be forced to take a trick)"
-                                              : "MAKES  (cannot be forced to take a trick)")
-       << '\n'
-       << "Nodes          " << with_commas(sol.nodes) << '\n'
+       << "Side tricks    " << side << '=' << sol.nil_side_tricks << "  " << other << '='
+       << sol.opponent_tricks << '\n';
+    if (opts.nil_already_set) {
+        os << "Nil            ALREADY SET (told, not computed)\n";
+    } else {
+        os << "Nil            "
+           << (sol.nil_fails ? "FAILS  (can be forced to take a trick)"
+                             : "MAKES  (cannot be forced to take a trick)")
+           << '\n';
+    }
+    os << "Nodes          " << with_commas(sol.nodes) << '\n'
        << "Principal variation:\n"
        << format_pv(pos, sol) << '\n'
        << "Compact PV:\n"

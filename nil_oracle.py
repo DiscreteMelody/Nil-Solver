@@ -6,15 +6,29 @@ Spades card play, written to validate a separate (fast) solver.
 WHAT IT COMPUTES
 ----------------
 Given a four-hand layout, a leader, a spades-broken flag, and a *designated*
-player, return the exact number of tricks the designated player takes when
+player, play out the hand under a LEXICOGRAPHIC objective:
 
-    North and South both play to MINIMIZE the designated player's trick count
-    East  and West  both play to MAXIMIZE the designated player's trick count
+    PRIMARY    the designated player's trick count.
+               North and South MINIMIZE it, East and West MAXIMIZE it.
 
-This is NOT ordinary trick maximization.  A side will happily throw away a
-trick of its own if doing so forces a trick onto the designated player.  The
-two coalitions have exactly opposed objectives over a single scalar, so plain
-minimax is well defined and no notion of "own tricks" appears anywhere below.
+    SECONDARY  each pair's own trick count, used only to break ties in the
+               primary.  The direction is a parameter:
+                   secondary="max"   each pair takes as many as it can
+                   secondary="min"   each pair takes as few as it can
+
+The primary is NOT ordinary trick maximization.  A side will happily throw away
+a trick of its own if doing so forces a trick onto the designated player; the
+secondary only chooses among lines that are already equally good for the
+primary.
+
+Both components are strictly opposed -- the two pairs' trick counts sum to a
+constant, so N/S taking more is identical to E/W taking fewer -- which is why a
+single flag can set a coherent direction for both sides at once, and why plain
+minimax over the packed pair is still well defined.
+
+nil_already_set=True drops the primary objective entirely.  Use it once the nil
+has actually been broken in the real game: there is nothing left to protect or
+to attack, and only the secondary objective matters.
 
 The sides are fixed by seat parity, not by the designated player's seat.  If
 the designated player is North, then North itself plays to minimize its own
@@ -362,8 +376,44 @@ def deal_to_pbn(hands: Sequence[Sequence[Card]], first_seat: int = 0) -> str:
 class _Ctx:
     designated: int
     break_on_forced_spade_lead: bool
+    primary_weight: int          # K, or 0 when the nil is already set
+    secondary_sign: int          # -1 if N/S want tricks, +1 if they want to shed them
     memo: Optional[Dict] = None
     nodes: int = 0
+
+
+def objective_weights(
+    tricks_remaining: int,
+    secondary: str = "max",
+    nil_already_set: bool = False,
+) -> Tuple[int, int]:
+    """Return (primary_weight, secondary_sign) for a lexicographic objective.
+
+    The search returns ONE integer that N/S minimize and E/W maximize:
+
+        value = primary_weight * (tricks the designated player takes)
+              + secondary_sign * (tricks N/S take, both partners together)
+
+    primary_weight is K = tricks_remaining + 1, which is strictly larger than
+    any possible secondary term, so the primary objective always dominates and
+    the pair is compared lexicographically.  Setting it to 0 drops the primary
+    objective entirely, which is what nil_already_set means.
+
+    secondary_sign encodes the direction.  N/S minimize the value, so:
+
+        secondary="max"  ->  -1, and minimizing -ns_tricks maximizes them
+        secondary="min"  ->  +1, and minimizing +ns_tricks minimizes them
+
+    Either way E/W get the mirror image for free, because ns_tricks and
+    ew_tricks sum to a constant.  Both components stay strictly opposed, so
+    plain minimax remains well defined -- this is a lexicographic refinement of
+    the old objective, not a different kind of game.
+    """
+    if secondary not in ("max", "min"):
+        raise ValueError("secondary must be 'max' or 'min'")
+    primary_weight = 0 if nil_already_set else tricks_remaining + 1
+    secondary_sign = -1 if secondary == "max" else 1
+    return primary_weight, secondary_sign
 
 
 def _search(
@@ -373,10 +423,11 @@ def _search(
     spades_broken: bool,
     ctx: _Ctx,
 ) -> Tuple[int, Tuple[Play, ...]]:
-    """Return (tricks the designated player takes from here on, PV from here).
+    """Return (objective value from here on, PV from here).
 
     The seat to play is (leader + len(trick)) % 4.  Seats N and S minimize the
-    returned count; seats E and W maximize it.
+    returned value; seats E and W maximize it.  See objective_weights for what
+    the value means.
     """
     ctx.nodes += 1
 
@@ -408,7 +459,11 @@ def _search(
 
         if len(played) == 4:
             winner = trick_winner(leader, played)
-            gained = 1 if winner == ctx.designated else 0
+            gained = 0
+            if winner == ctx.designated:
+                gained += ctx.primary_weight
+            if winner % 2 == ctx.designated % 2:   # the N/S pair, whichever it is
+                gained += ctx.secondary_sign
             sub_value, sub_pv = _search(next_hands, winner, (), next_broken, ctx)
             value = gained + sub_value
         else:
@@ -430,13 +485,26 @@ def _search(
     return result
 
 
+class Tally(NamedTuple):
+    """Who took how many tricks along a line."""
+
+    designated: int      # tricks the designated (nil) player takes
+    designated_side: int # tricks the designated player and its partner take
+    opponents: int       # tricks the other pair takes
+
+
 @dataclass
 class Solution:
-    tricks: int
+    tricks: int              # designated player's tricks; the primary objective
+    side_tricks: int         # designated player + partner
+    opponent_tricks: int
+    value: int               # the raw lexicographic scalar the search minimized
     pv: List[Play]
     nodes: int
     designated: int
     position: Position
+    secondary: str = "max"
+    nil_already_set: bool = False
 
 
 def solve(
@@ -444,8 +512,25 @@ def solve(
     designated: int,
     break_on_forced_spade_lead: bool = False,
     use_memo: bool = False,
+    secondary: str = "max",
+    nil_already_set: bool = False,
 ) -> Solution:
-    """Exhaustive minimax.  Returns the trick count and the principal variation.
+    """Exhaustive minimax over a lexicographic objective.
+
+    Primary (unless nil_already_set): the designated player's trick count.
+    N/S minimize it, E/W maximize it, exactly as before.
+
+    Secondary, used only to break ties in the primary:
+        secondary="max"  each pair takes as many tricks as it can
+        secondary="min"  each pair takes as few tricks as it can
+
+    "Each pair" is the honest phrasing: because the two pairs' trick counts sum
+    to a constant, N/S maximizing their own is identical to E/W minimizing N/S,
+    so one flag sets a coherent direction for both sides at once.
+
+    nil_already_set=True drops the primary objective.  Use it once the nil has
+    actually been broken in the real game: there is nothing left to protect or
+    to attack, and only the secondary objective matters.
 
     use_memo=False by default, matching the "no transposition table" brief.
     Setting it True caches _search results keyed on the FULL state (all four
@@ -459,9 +544,14 @@ def solve(
     if not 0 <= designated < 4:
         raise ValueError("designated out of range")
 
+    primary_weight, secondary_sign = objective_weights(
+        position.tricks_remaining, secondary, nil_already_set
+    )
     ctx = _Ctx(
         designated=designated,
         break_on_forced_spade_lead=break_on_forced_spade_lead,
+        primary_weight=primary_weight,
+        secondary_sign=secondary_sign,
         memo={} if use_memo else None,
     )
     value, pv = _search(
@@ -471,20 +561,30 @@ def solve(
         position.spades_broken,
         ctx,
     )
-    solution = Solution(
-        tricks=value,
+
+    # Self-check: an oracle that lies is worse than no oracle.  Replaying the PV
+    # recovers the trick counts independently, and re-encoding them must land
+    # back on the value the search reported.
+    tally = replay_pv(position, list(pv), designated, break_on_forced_spade_lead)
+    replayed = primary_weight * tally.designated + secondary_sign * tally.designated_side
+    if replayed != value:
+        raise AssertionError(
+            f"internal inconsistency: search says {value}, replaying the PV gives {replayed} "
+            f"(designated={tally.designated}, side={tally.designated_side})"
+        )
+
+    return Solution(
+        tricks=tally.designated,
+        side_tricks=tally.designated_side,
+        opponent_tricks=tally.opponents,
+        value=value,
         pv=list(pv),
         nodes=ctx.nodes,
         designated=designated,
         position=position,
+        secondary=secondary,
+        nil_already_set=nil_already_set,
     )
-    # Self-check: an oracle that lies is worse than no oracle.
-    replayed = replay_pv(position, solution.pv, designated, break_on_forced_spade_lead)
-    if replayed != value:
-        raise AssertionError(
-            f"internal inconsistency: search says {value}, replaying the PV gives {replayed}"
-        )
-    return solution
 
 
 def replay_pv(
@@ -492,19 +592,21 @@ def replay_pv(
     pv: Sequence[Play],
     designated: int,
     break_on_forced_spade_lead: bool = False,
-) -> int:
+) -> Tally:
     """Independently replay a PV, checking every play for legality.
 
-    Returns the designated player's trick count.  Raises on any illegal or
-    out-of-turn play, or if the PV does not exhaust every hand.  This is the
-    verifier for the search, and it is also useful for checking a PV produced
-    by the solver under test.
+    Returns a Tally of who took what.  Raises on any illegal or out-of-turn
+    play, or if the PV does not exhaust every hand.  This is the verifier for
+    the search, and it is also useful for checking a PV produced by the solver
+    under test.
     """
     hands = [list(h) for h in position.hands]
     leader = position.leader
     broken = position.spades_broken
     trick = list(position.current_trick)
-    tricks = 0
+    designated_tricks = 0
+    side_tricks = 0
+    opponent_tricks = 0
 
     for ply, (seat, card) in enumerate(pv):
         expected = (leader + len(trick)) % 4
@@ -529,7 +631,11 @@ def replay_pv(
         if len(trick) == 4:
             winner = trick_winner(leader, trick)
             if winner == designated:
-                tricks += 1
+                designated_tricks += 1
+            if winner % 2 == designated % 2:
+                side_tricks += 1
+            else:
+                opponent_tricks += 1
             leader = winner
             trick = []
 
@@ -537,7 +643,7 @@ def replay_pv(
         raise ValueError("PV ends mid-trick")
     if any(hands):
         raise ValueError("PV does not play out every card")
-    return tricks
+    return Tally(designated_tricks, side_tricks, opponent_tricks)
 
 
 # ---------------------------------------------------------------------------
@@ -665,21 +771,35 @@ def format_solution(solution: Solution, compact: bool = False) -> str:
     if compact:
         return (
             f"tricks={solution.tricks}\n"
+            f"side_tricks={solution.side_tricks}\n"
+            f"opponent_tricks={solution.opponent_tricks}\n"
             f"pv={format_pv_compact(solution)}\n"
         )
+    objective = (
+        "secondary only (nil already set)"
+        if solution.nil_already_set
+        else f"{SEAT_CHARS[solution.designated]}'s tricks, then"
+    )
+    direction = "each pair takes as many as it can" if solution.secondary == "max" else (
+        "each pair takes as few as it can"
+    )
     out = [
         f"PBN            {pos.to_pbn()}",
         format_hands(pos),
         f"Leader         {SEAT_CHARS[pos.leader]}",
         f"Designated     {SEAT_CHARS[solution.designated]}"
         f"  (N/S minimize, E/W maximize)",
+        f"Objective      {objective} {direction}",
         f"Spades broken  {'yes' if pos.spades_broken else 'no'}",
     ]
     if pos.current_trick:
         out.append(f"On the trick   {cards_str(pos.current_trick)}  (marked * below)")
+    ns = "NS" if solution.designated % 2 == 0 else "EW"
+    ew = "EW" if ns == "NS" else "NS"
     out += [
         f"Tricks for {SEAT_CHARS[solution.designated]}   {solution.tricks}"
         f" of {pos.tricks_remaining}",
+        f"Side tricks    {ns}={solution.side_tricks}  {ew}={solution.opponent_tricks}",
         f"Nodes          {solution.nodes:,}",
         "Principal variation:",
         format_pv(solution),
@@ -812,8 +932,8 @@ def selftest(verbose: bool = True) -> int:
     # E and W each hold exactly one card that beats HK.  They have two tricks
     # and can dump both high cards on the trick where N plays H2, leaving HK
     # to win the other one => >= 1.  Exact answer: 1.
-    # A solver that mistakenly has E/W maximize their OWN tricks would grab the
-    # king with the ace and report 0 here.
+    # A solver that let the SECONDARY objective outrank the primary would grab
+    # the king with the ace and report 0 here.
     squander = Position.build(
         parse_pbn("N:.K2.. .A3.. .54.. .Q6.."), leader=0, spades_broken=True
     )
@@ -841,6 +961,61 @@ def selftest(verbose: bool = True) -> int:
         ).pv[0][1],
         card_from_str("SA"),
     )
+
+    print("Lexicographic secondary objective")
+    check("weights: max", objective_weights(4, "max", False), (5, -1))
+    check("weights: min", objective_weights(4, "min", False), (5, 1))
+    check("weights: nil already set drops the primary",
+          objective_weights(4, "max", True), (0, -1))
+
+    # Two cards each, N is nil and safe either way, so the primary is a tie and
+    # the secondary decides.  S holds HA H3: cashing the ace wins tricks for
+    # N/S, ducking with the three sheds them.
+    #   N: H2 C2   E: H5 C5   S: HA H3   W: H6 C6      leader E
+    cover = Position.build(
+        parse_pbn("N:.2..2 .5..5 .A3.. .6..6"), leader=1, spades_broken=True
+    )
+    grab = solve(cover, 0, secondary="max")
+    shed = solve(cover, 0, secondary="min")
+    check("secondary does not disturb the primary (max)", grab.tricks, 0)
+    check("secondary does not disturb the primary (min)", shed.tricks, 0)
+    check("secondary max: N/S take what they can", grab.side_tricks, 1)
+    check("secondary min: N/S shed what they can", shed.side_tricks, 0)
+    check("the two directions really do differ", grab.pv != shed.pv, True)
+
+    # Protecting the nil is not free.  Here N/S can hold N to zero, but only by
+    # giving up a trick they could otherwise win: once the nil is already set
+    # and there is nothing left to protect, the same layout yields them all
+    # three tricks -- one of which N itself takes.
+    costly = Position.build(
+        parse_pbn("N:7..6.3 6.J.2. J3.7.. 9..3.9"), leader=0, spades_broken=True
+    )
+    protect = solve(costly, 0, secondary="max")
+    ignore = solve(costly, 0, secondary="max", nil_already_set=True)
+    check("nil is protected", protect.tricks, 0)
+    check("protecting it costs a trick", protect.side_tricks, 2)
+    check("nil already set: primary is off", ignore.tricks, 1)
+    check("nil already set: N/S now take everything", ignore.side_tricks, 3)
+
+    # Tallies must be consistent no matter which knobs are set.
+    for secondary in ("max", "min"):
+        for already in (False, True):
+            sol = solve(costly, 0, secondary=secondary, nil_already_set=already)
+            label = f"{secondary}/{'set' if already else 'live'}"
+            check(f"{label}: sides sum to the tricks played",
+                  sol.side_tricks + sol.opponent_tricks, costly.tricks_remaining)
+            check(f"{label}: designated is part of its own side",
+                  sol.tricks <= sol.side_tricks, True)
+
+    # THE lexicographic property: a tie-break can never change the primary.
+    # If this ever fails, the packing has overflowed and the secondary has
+    # started outranking the nil.
+    for seed in range(6):
+        f = random_fixture(seed=200 + seed, cards_per_hand=4)
+        high = solve(f.position, f.designated, use_memo=True, secondary="max")
+        low = solve(f.position, f.designated, use_memo=True, secondary="min")
+        check(f"seed {200+seed}: secondary never moves the primary",
+              high.tricks, low.tricks)
 
     print("Parsing and fixtures")
     full = "N:8.K5.KT2.KQT9762 AQT643.T.QJ864.8 J9.A943.73.AJ543 K752.QJ8762.A95."
@@ -898,6 +1073,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "  %(prog)s --random --seed 42 --cards 5 --leader N --designated S\n"
             "  %(prog)s --pbn 'N:A...2 K...3 Q...4 J...5' --leader N --designated N\n"
             "  %(prog)s --random --seed 42 --cards 5 --compact   # diff-friendly\n"
+            "  %(prog)s --pbn '...' --designated N --secondary min\n"
+            "  %(prog)s --pbn '...' --designated N --nil-already-set\n"
         ),
     )
     src = p.add_mutually_exclusive_group()
@@ -920,6 +1097,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "--break-on-forced-lead",
         action="store_true",
         help="treat a forced spade lead as breaking spades (see module docstring)",
+    )
+    p.add_argument(
+        "--secondary",
+        choices=("max", "min"),
+        default="max",
+        help="tie-break direction: each pair takes as many tricks as it can "
+        "(max, the default) or as few as it can (min)",
+    )
+    p.add_argument(
+        "--nil-already-set",
+        action="store_true",
+        help="the nil has already been broken in the real game, so drop the "
+        "primary objective and optimize only the secondary one",
     )
     p.add_argument(
         "--memo",
@@ -981,12 +1171,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         designated,
         break_on_forced_spade_lead=args.break_on_forced_lead,
         use_memo=args.memo,
+        secondary=args.secondary,
+        nil_already_set=args.nil_already_set,
     )
     print(format_solution(solution, compact=args.compact))
     return 0
 
 
 if __name__ == "__main__":
+    # With arguments, behave like a normal CLI.  With none, run the scratch
+    # position below -- edit it and hit run.
+    if len(sys.argv) > 1:
+        raise SystemExit(main())
+
     # --- scratch position: edit and run with no arguments -----------------
     POSITION = Position.build(
         parse_pbn("N:K.A.A.K 32.2..A .K.3.32 A.3.K2."),
@@ -994,5 +1191,14 @@ if __name__ == "__main__":
         spades_broken=False,
         current_trick=(),                   # e.g. (card_from_str("H4"),)
     )
-    print(format_solution(solve(POSITION, designated=seat_from_str("E"))))
+    print(
+        format_solution(
+            solve(
+                POSITION,
+                designated=seat_from_str("E"),
+                secondary="max",            # "max" or "min"
+                nil_already_set=False,
+            )
+        )
+    )
     raise SystemExit(0)

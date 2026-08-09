@@ -92,6 +92,10 @@ class Case:
         self.nil_seat = rng.randrange(4)
         self.spades_broken = bool(rng.getrandbits(1))
         self.break_forced = bool(rng.getrandbits(1))
+        self.secondary = "min" if rng.getrandbits(1) else "max"
+        # Weighted: the live-nil case is the one that matters most, but the
+        # already-set case has to be exercised too or it will rot.
+        self.nil_already_set = rng.random() < 0.25
 
         trick: List = []
         broken = self.spades_broken
@@ -134,6 +138,10 @@ class Case:
             args.append("--spades-broken")
         if self.break_forced:
             args.append("--break-on-forced-lead")
+        if self.secondary == "min":
+            args += ["--secondary", "min"]
+        if self.nil_already_set:
+            args.append("--nil-already-set")
         if self.trick_text:
             args += ["--trick", self.trick_text]
         args += list(extra)
@@ -151,7 +159,7 @@ class Case:
 # ---------------------------------------------------------------------------
 
 
-def run_oracle(oracle, case: Case, use_memo: bool) -> Tuple[int, str]:
+def run_oracle(oracle, case: Case, use_memo: bool) -> Tuple[int, int, int, str]:
     """Solve with nil_oracle.py, rotating so the nil bidder sits North."""
     k = (4 - case.nil_seat) % 4
     pos = case.position
@@ -170,14 +178,16 @@ def run_oracle(oracle, case: Case, use_memo: bool) -> Tuple[int, str]:
         designated=0,  # the nil bidder, now North, so N/S minimise as required
         break_on_forced_spade_lead=case.break_forced,
         use_memo=use_memo,
+        secondary=case.secondary,
+        nil_already_set=case.nil_already_set,
     )
     pv = " ".join(
         "%s:%s" % (SEAT_CHARS[(seat - k) % 4], card) for seat, card in solution.pv
     )
-    return solution.tricks, pv
+    return solution.tricks, solution.side_tricks, solution.opponent_tricks, pv
 
 
-def run_cpp(exe: str, case: Case, extra: Sequence[str] = ()) -> Tuple[int, int, str]:
+def run_cpp(exe: str, case: Case, extra: Sequence[str] = ()) -> Tuple[int, int, int, int, str]:
     proc = subprocess.run(
         case.cli_args(exe, extra), capture_output=True, text=True
     )
@@ -191,7 +201,13 @@ def run_cpp(exe: str, case: Case, extra: Sequence[str] = ()) -> Tuple[int, int, 
             key, _, value = line.partition("=")
             fields[key.strip()] = value.strip()
     try:
-        return int(fields["tricks"]), int(fields["nil_fails"]), fields["pv"]
+        return (
+            int(fields["tricks"]),
+            int(fields["side_tricks"]),
+            int(fields["opponent_tricks"]),
+            int(fields["nil_fails"]),
+            fields["pv"],
+        )
     except KeyError as exc:
         raise RuntimeError("unparsable nil_cli output: %r" % proc.stdout) from exc
 
@@ -209,20 +225,27 @@ def parse_card_range(text: str) -> Tuple[int, int]:
     return n, n
 
 
-def compare(case: Case, oracle_tricks: int, oracle_pv: str, cpp) -> List[str]:
-    cpp_tricks, cpp_fails, cpp_pv = cpp
+def compare(case: Case, oracle, cpp) -> List[str]:
+    o_nil, o_side, o_opp, o_pv = oracle
+    c_nil, c_side, c_opp, c_fails, c_pv = cpp
     problems = []
-    if cpp_tricks != oracle_tricks:
+    if c_nil != o_nil:
+        problems.append("nil tricks: c++ %d, oracle %d" % (c_nil, o_nil))
+    if c_side != o_side:
+        problems.append("nil-side tricks: c++ %d, oracle %d" % (c_side, o_side))
+    if c_opp != o_opp:
+        problems.append("opponent tricks: c++ %d, oracle %d" % (c_opp, o_opp))
+    # nil_fails is asserted rather than computed once the nil is already set.
+    want_fails = 1 if (case.nil_already_set or o_nil > 0) else 0
+    if c_fails != want_fails:
+        problems.append("nil verdict: c++ %d, expected %d" % (c_fails, want_fails))
+    if c_side + c_opp != case.position.tricks_remaining:
         problems.append(
-            "trick count: c++ %d, oracle %d" % (cpp_tricks, oracle_tricks)
+            "sides do not sum to %d: %d + %d"
+            % (case.position.tricks_remaining, c_side, c_opp)
         )
-    if cpp_fails != (1 if oracle_tricks > 0 else 0):
-        problems.append(
-            "nil verdict: c++ %d, oracle %d"
-            % (cpp_fails, 1 if oracle_tricks > 0 else 0)
-        )
-    if cpp_pv != oracle_pv:
-        problems.append("PV:\n    c++    %s\n    oracle %s" % (cpp_pv, oracle_pv))
+    if c_pv != o_pv:
+        problems.append("PV:\n    c++    %s\n    oracle %s" % (c_pv, o_pv))
     return problems
 
 
@@ -250,6 +273,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.add_argument("--trick", default="")
     p.add_argument("--spades-broken", action="store_true")
     p.add_argument("--break-on-forced-lead", action="store_true")
+    p.add_argument("--secondary", choices=("max", "min"), default="max")
+    p.add_argument("--nil-already-set", action="store_true")
     args = p.parse_args(argv)
 
     oracle, path = load_oracle(args.oracle)
@@ -272,6 +297,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         case.nil_seat = SEAT_CHARS.index(args.nil.upper()[0])
         case.spades_broken = args.spades_broken
         case.break_forced = args.break_on_forced_lead
+        case.secondary = args.secondary
+        case.nil_already_set = args.nil_already_set
         case.current_trick = tuple(
             oracle.card_from_str(t) for t in args.trick.replace(",", " ").split() if t
         )
@@ -292,7 +319,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     mismatches = 0
     for index, case in enumerate(cases):
-        oracle_tricks, oracle_pv = run_oracle(oracle, case, not args.oracle_no_memo)
+        oracle_answer = run_oracle(oracle, case, not args.oracle_no_memo)
 
         runs = [("", run_cpp(args.exe, case))]
         if args.no_memo:
@@ -300,7 +327,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
         problems: List[str] = []
         for label, cpp in runs:
-            for problem in compare(case, oracle_tricks, oracle_pv, cpp):
+            for problem in compare(case, oracle_answer, cpp):
                 problems.append((label + " " + problem).strip())
 
         if problems:

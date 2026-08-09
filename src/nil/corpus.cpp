@@ -50,9 +50,13 @@ bool load_corpus(const std::string& path, std::vector<CorpusEntry>& out, std::st
         const std::vector<std::string> f = split(trimmed, '|');
         std::ostringstream where;
         where << path << ":" << line_no << ": ";
-        if (f.size() < 8) {
-            err = where.str() + "expected at least 8 '|' separated fields, got " +
+        if (f.size() < 11) {
+            err = where.str() + "expected at least 11 '|' separated fields, got " +
                   std::to_string(f.size());
+            if (f.size() == 8 || f.size() == 9) {
+                err += ". This looks like a corpus from before the lexicographic "
+                       "objective; regenerate it with tools/make_corpus.py";
+            }
             return false;
         }
 
@@ -80,8 +84,15 @@ bool load_corpus(const std::string& path, std::vector<CorpusEntry>& out, std::st
             }
             entry.position.trick_len = count;
         }
-        entry.expected_tricks = (f[7] == "?") ? -1 : std::atoi(f[7].c_str());
-        if (f.size() > 8) entry.expected_pv = f[8];
+        if (f[7] != "max" && f[7] != "min") {
+            err = where.str() + "secondary must be 'max' or 'min', got '" + f[7] + "'";
+            return false;
+        }
+        entry.minimise_own_tricks = (f[7] == "min");
+        entry.nil_already_set = (f[8] == "1");
+        entry.expected_tricks = (f[9] == "?") ? -1 : std::atoi(f[9].c_str());
+        entry.expected_side_tricks = (f[10] == "?") ? -1 : std::atoi(f[10].c_str());
+        if (f.size() > 11) entry.expected_pv = f[11];
 
         if (!validate(entry.position, err)) {
             err = where.str() + err;
@@ -104,6 +115,8 @@ std::string corpus_repro(const CorpusEntry& entry, const std::string& exe) {
        << SEAT_CHARS[entry.nil_seat];
     if (entry.position.spades_broken) os << " --spades-broken";
     if (entry.break_on_forced_spade_lead) os << " --break-on-forced-lead";
+    if (entry.minimise_own_tricks) os << " --secondary min";
+    if (entry.nil_already_set) os << " --nil-already-set";
     if (!entry.trick_text.empty()) os << " --trick '" << entry.trick_text << "'";
     return os.str();
 }

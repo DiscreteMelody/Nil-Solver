@@ -20,6 +20,10 @@
 //   nil_bench --corpus tests/corpus/positions.txt --repeat 5 --csv after.csv
 //   nil_bench --corpus tests/corpus/positions.txt --baseline before.csv
 //   nil_bench --random --cards 7 --count 10 --seed 1     # timing only, no answers
+//
+// Corpus entries carry their own objective settings (tie-break direction and
+// the already-set flag), so a corpus run exercises all of them; --secondary and
+// --nil-already-set only apply to --random runs.
 #include <algorithm>
 #include <chrono>
 #include <ctime>
@@ -327,6 +331,9 @@ void usage(const char* argv0) {
               << "  --repeat <n>      time each position n times, keep the best [1]\n"
               << "  --cards-only <n>  restrict a corpus run to one hand size\n"
               << "  --no-memo         disable the full-state memo\n"
+              << "  --secondary max|min  tie-break direction for --random runs; corpus\n"
+              << "                    entries carry their own\n"
+              << "  --nil-already-set    likewise, for --random runs\n"
               << "  --check-pv        also require the recorded PV to match (see below)\n"
               << "  --csv <file>      write per-position rows for later comparison\n"
               << "  --baseline <file> compare against a csv written earlier\n"
@@ -395,6 +402,15 @@ int main(int argc, char** argv) {
             slowest = std::atoi(argv[++i]);
         } else if (arg == "--no-memo") {
             opts.use_memo = false;
+        } else if (arg == "--secondary" && has_next) {
+            const std::string mode = argv[++i];
+            if (mode != "max" && mode != "min") {
+                std::cerr << "error: --secondary takes 'max' or 'min'\n";
+                return 2;
+            }
+            opts.minimise_own_tricks = (mode == "min");
+        } else if (arg == "--nil-already-set") {
+            opts.nil_already_set = true;
         } else if (arg == "--check-pv") {
             check_pv = true;
         } else if (arg == "--quiet") {
@@ -418,7 +434,10 @@ int main(int argc, char** argv) {
         nil::Position position;
         int nil_seat;
         bool forced;
+        bool minimise_own;
+        bool nil_already_set;
         int expected;
+        int expected_side;
         std::string expected_pv;
         std::string repro;
     };
@@ -434,7 +453,8 @@ int main(int argc, char** argv) {
         for (const nil::CorpusEntry& e : entries) {
             if (cards_only && e.position.cards_per_hand() != cards_only) continue;
             items.push_back(Item{e.name, e.position, e.nil_seat, e.break_on_forced_spade_lead,
-                                 e.expected_tricks, e.expected_pv, nil::corpus_repro(e)});
+                                 e.minimise_own_tricks, e.nil_already_set, e.expected_tricks,
+                                 e.expected_side_tricks, e.expected_pv, nil::corpus_repro(e)});
         }
         if (items.empty()) {
             std::cerr << "error: corpus has no positions matching the filter\n";
@@ -447,7 +467,8 @@ int main(int argc, char** argv) {
             nil::Position pos = random_position(rng, cards, nil_seat);
             std::ostringstream name;
             name << "r" << cards << "-" << std::setw(4) << std::setfill('0') << i;
-            items.push_back(Item{name.str(), pos, nil_seat, false, -1, "", ""});
+            items.push_back(Item{name.str(), pos, nil_seat, false, opts.minimise_own_tricks,
+                                 opts.nil_already_set, -1, -1, "", ""});
         }
     }
 
@@ -469,6 +490,8 @@ int main(int argc, char** argv) {
             const Clock::time_point t0 = Clock::now();
             nil::SearchOptions run_opts = opts;
             run_opts.break_on_forced_spade_lead = item.forced;
+            run_opts.minimise_own_tricks = item.minimise_own;
+            run_opts.nil_already_set = item.nil_already_set;
             if (!nil::solve(item.position, item.nil_seat, run_opts, sol, err)) {
                 std::cerr << "FAIL " << item.name << ": solve failed: " << err << "\n";
                 ++failures;
@@ -479,9 +502,15 @@ int main(int argc, char** argv) {
             if (r == 0 || ms < best_ms) best_ms = ms;
         }
 
-        if (item.expected >= 0 && sol.tricks != item.expected) {
-            std::cout << "FAIL " << item.name << ": expected " << item.expected << " trick(s), got "
-                      << sol.tricks << "\n  " << item.repro << "\n";
+        if (item.expected >= 0 && sol.nil_tricks != item.expected) {
+            std::cout << "FAIL " << item.name << ": expected " << item.expected
+                      << " nil trick(s), got " << sol.nil_tricks << "\n  " << item.repro << "\n";
+            ++failures;
+        }
+        if (item.expected_side >= 0 && sol.nil_side_tricks != item.expected_side) {
+            std::cout << "FAIL " << item.name << ": expected " << item.expected_side
+                      << " side trick(s), got " << sol.nil_side_tricks << "\n  " << item.repro
+                      << "\n";
             ++failures;
         }
         if (check_pv && !item.expected_pv.empty()) {
@@ -493,7 +522,7 @@ int main(int argc, char** argv) {
             }
         }
 
-        rows.push_back(Row{item.name, item.position.cards_per_hand(), sol.tricks, sol.nodes,
+        rows.push_back(Row{item.name, item.position.cards_per_hand(), sol.nil_tricks, sol.nodes,
                            best_ms});
     }
 

@@ -8,17 +8,21 @@
 // One record per line, fields separated by '|' and trimmed.  Blank lines and
 // lines starting with '#' are ignored.
 //
-//   name | pbn | leader | nil | broken | forced | trick | tricks | pv
+//   name | pbn | leader | nil | broken | forced | trick | secondary | nilset |
+//   nil_tricks | side_tricks | pv
 //
-//   name    identifier for the record, e.g. "c5-0042"
-//   pbn     PBN deal string
-//   leader  N/E/S/W, seat that led the current trick
-//   nil     N/E/S/W, seat that bid nil
-//   broken  0 or 1, spades already broken
-//   forced  0 or 1, break_on_forced_spade_lead convention
-//   trick   cards already on the trick, e.g. "H4 HK"; may be empty
-//   tricks  expected trick count for the nil bidder; "?" if unknown
-//   pv      expected principal variation; may be empty
+//   name        identifier for the record, e.g. "c5-0042"
+//   pbn         PBN deal string
+//   leader      N/E/S/W, seat that led the current trick
+//   nil         N/E/S/W, seat that bid nil
+//   broken      0 or 1, spades already broken
+//   forced      0 or 1, break_on_forced_spade_lead convention
+//   trick       cards already on the trick, e.g. "H4 HK"; may be empty
+//   secondary   "max" or "min", the tie-break direction
+//   nilset      0 or 1, whether the nil is already broken
+//   nil_tricks  expected trick count for the nil bidder; "?" if unknown
+//   side_tricks expected trick count for the nil bidder's pair; "?" if unknown
+//   pv          expected principal variation; may be empty
 //
 // The `tricks` field is the contract.  `pv` is informational and is only
 // checked when explicitly asked for: any future move ordering will legitimately
@@ -41,8 +45,11 @@ struct CorpusEntry {
     Position position;
     int nil_seat = 0;
     bool break_on_forced_spade_lead = false;
-    int expected_tricks = -1;   // -1 when the file says "?"
-    std::string expected_pv;    // empty when not recorded
+    bool minimise_own_tricks = false;
+    bool nil_already_set = false;
+    int expected_tricks = -1;        // -1 when the file says "?"
+    int expected_side_tricks = -1;   // -1 when the file says "?"
+    std::string expected_pv;         // empty when not recorded
 };
 
 bool load_corpus(const std::string& path, std::vector<CorpusEntry>& out, std::string& err);

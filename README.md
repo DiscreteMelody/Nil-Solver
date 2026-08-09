@@ -1,19 +1,31 @@
 # Nil-Solver
 
-A double-dummy solver for the one question that matters when someone bids nil:
+A double-dummy solver for the questions that matter when someone bids nil.
 
-> **Can the opponents force the nil bidder to win a trick, assuming the nil
-> bidder and its covering partner play perfectly to prevent it?**
+The objective is **lexicographic**:
 
-That is not trick maximisation. Both opponents are trying to push a trick onto
-one specific seat and will happily throw away tricks of their own to do it; the
-nil bidder and its partner are trying to stop them. The two coalitions have
-exactly opposed objectives over a single scalar — the nil bidder's trick count —
-so plain minimax is well defined and no notion of "own tricks" appears anywhere
-in the search.
+> **PRIMARY** — the nil bidder's trick count. The nil bidder and its covering
+> partner minimise it; both opponents maximise it. `nil_fails == true` means the
+> nil is dead however it is played.
+>
+> **SECONDARY** — each pair's own trick count, used only to choose among lines
+> that are already equally good for the primary. Either direction:
+> each pair takes as many tricks as it can, or as few as it can.
 
-The answer comes back as a bool. `nil_fails == true` means the nil is dead
-however it is played from here.
+The primary is not trick maximisation. Both opponents are trying to push a trick
+onto one specific seat and will throw away tricks of their own to do it; the nil
+bidder and its partner are trying to stop them. The secondary only breaks ties,
+so it can never change the answer to the nil question — it decides what the two
+pairs do with the tricks the nil question leaves undetermined.
+
+Both components are strictly opposed, because the two pairs' trick counts sum to
+a constant: the nil side taking more is identical to the opponents taking fewer.
+That is why one flag sets a coherent direction for both sides at once, and why
+plain minimax over the packed pair is still well defined.
+
+`nil_already_set` drops the primary objective. Use it once the nil has actually
+been broken in the real game, or when the score makes the nil irrelevant: there
+is nothing left to protect or attack, and only the secondary objective matters.
 
 This first iteration is **correctness first**: an exhaustive search with no
 alpha-beta, no move ordering, no quick-trick shortcuts and no rank-equivalence
@@ -124,6 +136,29 @@ running clockwise from the named seat, shortened mid-play hands accepted. Cards
 already played to the trick in progress go in `--trick` (in play order starting
 from the leader) and must **not** also appear in the hands.
 
+The same layout under all three settings, showing what the secondary buys you:
+
+```
+$ nil_cli --pbn 'N:7..6.3 6.J.2. J3.7.. 9..3.9' --leader N --nil N --spades-broken
+Objective      nil tricks first, then each pair takes what it can
+Tricks for N   0 of 3
+Side tricks    NS=2  EW=1
+Nil            MAKES  (cannot be forced to take a trick)
+
+$ ... --nil-already-set
+Objective      nil already set, so secondary only; each pair takes what it can
+Tricks for N   1 of 3
+Side tricks    NS=3  EW=0
+
+$ ... --secondary min
+Objective      nil tricks first, then each pair sheds what it can
+Tricks for N   0 of 3
+Side tricks    NS=1  EW=2
+```
+
+Protecting the nil here costs N/S exactly one trick: they can take all three if
+they stop caring about it.
+
 Output is line-oriented so `diff` localises a divergence:
 
 ```
@@ -152,9 +187,23 @@ nil_result r;
 char err[256];
 if (nil_solve("N:A...2 K...3 Q...4 J...5", NIL_SEAT_NORTH, "", NIL_SEAT_NORTH,
               NIL_FLAG_NONE, &r, err, sizeof err) == NIL_OK) {
-    /* r.nil_fails, r.tricks, r.tricks_remaining, r.nodes */
+    /* r.nil_fails, r.nil_tricks, r.nil_side_tricks, r.opponent_tricks,
+       r.tricks_remaining, r.nodes */
 }
 ```
+
+The objective flags:
+
+| flag | effect |
+| --- | --- |
+| *(none)* | nil tricks first, then each pair takes as many tricks as it can |
+| `NIL_FLAG_MINIMISE_OWN_TRICKS` | nil tricks first, then each pair takes as **few** as it can |
+| `NIL_FLAG_NIL_ALREADY_SET` | drop the primary; optimise only the secondary |
+
+`nil_side_tricks + opponent_tricks` always equals `tricks_remaining`, and
+`nil_tricks` is included in `nil_side_tricks`. When you pass
+`NIL_FLAG_NIL_ALREADY_SET`, `nil_fails` comes back as 1 because you said so, not
+because the search worked it out.
 
 `nil_solve_pv` also writes the principal variation as a string;
 `nil_fails(...)` is a one-shot convenience wrapper returning 1, 0 or a negative
@@ -205,7 +254,8 @@ python3 tools/crosscheck.py --exe build/bin/nil_cli --cases 200 --cards 4
 ### The corpus
 
 `tests/corpus/positions.txt` is a flat text file of positions with the trick
-count the oracle gave for each. Replaying it needs no Python and no oracle, so
+counts the oracle gave for each, across a spread of objective settings — both
+tie-break directions and both states of the already-set flag. Replaying it needs no Python and no oracle, so
 it runs on every build and in CI in a couple of seconds — which is the whole
 point, because the oracle itself takes several seconds per 6-card deal.
 
@@ -221,8 +271,9 @@ answer is that it came from the oracle at a moment when someone was watching; a
 corpus that gets silently regenerated whenever it fails is just an echo of the
 current code.
 
-Each record also stores the principal variation, but `nil_bench` only checks it
-under `--check-pv`. Once we add move ordering, the search will legitimately pick
+Each record carries the nil bidder's tricks, its side's tricks, and the settings
+that produced them. It also stores the principal variation, but `nil_bench` only
+checks that under `--check-pv`. Once we add move ordering, the search will legitimately pick
 a different one of several equal-valued cards, and that is not a regression.
 While the search is still exhaustive, `--check-pv` is worth leaving on.
 

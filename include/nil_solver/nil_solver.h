@@ -7,15 +7,30 @@
  *
  * THE QUESTION THIS ANSWERS
  * -------------------------
- * Given a layout, whose turn it is, and which seat bid nil, can the two
- * opponents force the nil bidder to win at least one trick, assuming the nil
- * bidder and its partner play perfectly to prevent it?  `nil_fails == 1` means
- * yes -- the nil is dead however it is played.  `nil_fails == 0` means the nil
- * bidder and partner have a line that survives.
+ * Given a layout, whose turn it is, and which seat bid nil, the solver plays
+ * the hand out under a lexicographic objective:
  *
- * Both sides see all four hands (double dummy).  The defenders will happily
- * throw tricks away if that forces one onto the nil bidder; only the nil
- * bidder's own trick count is being optimised.
+ *   PRIMARY    the nil bidder's trick count.  The nil bidder and its covering
+ *              partner minimise it; both opponents maximise it.  So
+ *              `nil_fails == 1` means the nil is dead however it is played,
+ *              and `nil_fails == 0` means the nil side has a line that
+ *              survives.
+ *
+ *   SECONDARY  each pair's own trick count, used only to choose among lines
+ *              that are already equally good for the primary.  By default each
+ *              pair takes as many tricks as it can; pass
+ *              NIL_FLAG_MINIMISE_OWN_TRICKS to make each pair take as few as
+ *              it can instead.
+ *
+ * Both sides see all four hands (double dummy).  The primary is not ordinary
+ * trick maximisation: a side will happily throw tricks away if that forces one
+ * onto the nil bidder.  The secondary only breaks ties, so it can never change
+ * the answer to the nil question -- it only decides what the two pairs do with
+ * the tricks that the nil question leaves undetermined.
+ *
+ * Pass NIL_FLAG_NIL_ALREADY_SET once the nil has actually been broken in the
+ * real game.  The primary objective is dropped, both sides stop protecting and
+ * attacking it, and only the secondary objective is optimised.
  */
 #ifndef NIL_SOLVER_H
 #define NIL_SOLVER_H
@@ -53,6 +68,14 @@ extern "C" {
 /* Treat a forced spade lead (all-spade hand, spades unbroken) as breaking
  * spades.  Off by default, which is the literal reading of the rule. */
 #define NIL_FLAG_BREAK_ON_FORCED_SPADE_LEAD 0x2u
+/* The tie-break direction: each pair takes as FEW tricks as it can, rather
+ * than as many.  Applies to both pairs at once, which is coherent because
+ * their trick counts sum to a constant. */
+#define NIL_FLAG_MINIMISE_OWN_TRICKS 0x10u
+/* The nil has already been broken in the real game.  Drops the primary
+ * objective; only the secondary one is optimised.  `nil_fails` is then
+ * reported as 1 because you said so, not because it was computed. */
+#define NIL_FLAG_NIL_ALREADY_SET 0x20u
 /* Disable the full-state memo.  The memo caches a pure function, so it changes
  * neither the answer nor the principal variation; this flag exists only to make
  * the search maximally dumb when cross-checking. */
@@ -72,11 +95,18 @@ extern "C" {
 
 typedef struct nil_result {
     /* 1 if the opponents can force the nil bidder to take at least one trick
-     * against best defence of the nil, 0 if the nil can be held. */
+     * against best defence of the nil, 0 if the nil can be held.  Always 1 when
+     * NIL_FLAG_NIL_ALREADY_SET was passed, since that is a fact you supplied
+     * rather than one the search discovered. */
     int32_t nil_fails;
-    /* Exact number of tricks the nil bidder takes under optimal play by both
-     * coalitions.  nil_fails == (tricks > 0). */
-    int32_t tricks;
+    /* Tricks the nil bidder takes from this position onward. */
+    int32_t nil_tricks;
+    /* Tricks the nil bidder and its covering partner take between them.
+     * nil_tricks is included in this. */
+    int32_t nil_side_tricks;
+    /* Tricks the opposing pair takes.  nil_side_tricks + opponent_tricks
+     * always equals tricks_remaining. */
+    int32_t opponent_tricks;
     /* Tricks left to play in the position. */
     int32_t tricks_remaining;
     /* Nodes visited by the search, for benchmarking. */

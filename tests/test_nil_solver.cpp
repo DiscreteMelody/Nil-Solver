@@ -167,9 +167,9 @@ int main(int argc, char** argv) {
     {
         // One card each, all diamonds: E's ace wins, full stop.
         const Position pos = make_position("N:..2. ..A. ..5. ..7.", "N", true);
-        check("single trick, nil E", must_solve(pos, "E").tricks, 1);
-        check("single trick, nil N", must_solve(pos, "N").tricks, 0);
-        check("single trick, nil S", must_solve(pos, "S").tricks, 0);
+        check("single trick, nil E", must_solve(pos, "E").nil_tricks, 1);
+        check("single trick, nil N", must_solve(pos, "N").nil_tricks, 0);
+        check("single trick, nil S", must_solve(pos, "S").nil_tricks, 0);
         check("single trick, nil E fails", must_solve(pos, "E").nil_fails, true);
         check("single trick, nil N makes", must_solve(pos, "N").nil_fails, false);
         check("single trick PV", nil::format_pv_compact(must_solve(pos, "E")),
@@ -179,7 +179,7 @@ int main(int argc, char** argv) {
         // The nil bidder holds the bare ace of the only suit in play: exactly
         // one trick, regardless of anyone's intentions.
         const Position pos = make_position("N:.A2.. .K3.. .54.. .Q6..", "N", true);
-        check("bare ace guarantees a trick", must_solve(pos, "N").tricks, 1);
+        check("bare ace guarantees a trick", must_solve(pos, "N").nil_tricks, 1);
         check("bare ace kills the nil", must_solve(pos, "N").nil_fails, true);
     }
     {
@@ -192,13 +192,13 @@ int main(int argc, char** argv) {
         // A solver whose defenders maximise their OWN tricks would grab the king
         // with the ace and report 0 here.
         const Position pos = make_position("N:.K2.. .A3.. .54.. .Q6..", "N", true);
-        check("squander: E/W duck to hand N a trick", must_solve(pos, "N").tricks, 1);
+        check("squander: E/W duck to hand N a trick", must_solve(pos, "N").nil_tricks, 1);
 
         // The same layout rotated one seat clockwise, with the nil on E.  The
         // coalitions follow the nil bidder's seat, not a fixed parity, so this
         // must give the same answer.
         const Position rotated = make_position("N:.Q6.. .K2.. .A3.. .54..", "E", true);
-        check("squander rotated onto E", must_solve(rotated, "E").tricks, 1);
+        check("squander rotated onto E", must_solve(rotated, "E").nil_tricks, 1);
         check("squander rotated: N/S now maximise", must_solve(rotated, "E").nil_fails, true);
     }
     {
@@ -216,7 +216,7 @@ int main(int argc, char** argv) {
         // W leads a heart; N is void and must play its lone spade, winning.
         const Position pos = make_position("N:2... .3.. .5.. .7..", "W", false);
         const Solution sol = must_solve(pos, "N");
-        check("void nil must ruff and take the trick", sol.tricks, 1);
+        check("void nil must ruff and take the trick", sol.nil_tricks, 1);
         check("void nil fails", sol.nil_fails, true);
     }
     {
@@ -228,7 +228,7 @@ int main(int argc, char** argv) {
         check("mid-trick first play is S's", sol.pv[0].seat, 2);
         check("mid-trick PV covers the rest of the deal",
               static_cast<long long>(sol.pv.size()), 5LL);
-        check("mid-trick nil survives", sol.tricks, 0);
+        check("mid-trick nil survives", sol.nil_tricks, 0);
     }
     {
         // The memo caches a pure function: identical value AND identical PV.
@@ -238,9 +238,80 @@ int main(int argc, char** argv) {
         memo_off.use_memo = false;
         const Solution a = must_solve(pos, "S", memo_on);
         const Solution b = must_solve(pos, "S", memo_off);
-        check("memo agrees on value", a.tricks, b.tricks);
+        check("memo agrees on value", a.nil_tricks, b.nil_tricks);
         check("memo agrees on PV", nil::format_pv_compact(a), nil::format_pv_compact(b));
         check("PV plays every card", static_cast<long long>(a.pv.size()), 12LL);
+    }
+
+    std::cout << "Lexicographic secondary objective\n";
+    {
+        SearchOptions take;                       // default: each pair takes what it can
+        SearchOptions shed;
+        shed.minimise_own_tricks = true;
+        SearchOptions take_set = take;
+        take_set.nil_already_set = true;
+
+        check("weights: primary dominates",
+              nil::objective_weights(4, take).primary, 5);
+        check("weights: take", nil::objective_weights(4, take).secondary_sign, -1);
+        check("weights: shed", nil::objective_weights(4, shed).secondary_sign, 1);
+        check("weights: already set drops the primary",
+              nil::objective_weights(4, take_set).primary, 0);
+
+        // Two cards each, N is nil and safe either way, so the primary is a tie
+        // and the secondary decides.  S holds HA H3: cashing the ace wins tricks
+        // for N/S, ducking with the three sheds them.
+        //   N: H2 C2   E: H5 C5   S: HA H3   W: H6 C6      leader E
+        const Position cover = make_position("N:.2..2 .5..5 .A3.. .6..6", "E", true);
+        const Solution grab = must_solve(cover, "N", take);
+        const Solution duck = must_solve(cover, "N", shed);
+        check("secondary does not disturb the primary (take)", grab.nil_tricks, 0);
+        check("secondary does not disturb the primary (shed)", duck.nil_tricks, 0);
+        check("take: N/S keep what they can", grab.nil_side_tricks, 1);
+        check("shed: N/S give away what they can", duck.nil_side_tricks, 0);
+        check("the two directions really do differ",
+              nil::format_pv_compact(grab) != nil::format_pv_compact(duck), true);
+
+        // Protecting the nil is not free.  N/S can hold N to zero here, but only
+        // by giving up a trick they could otherwise win: with the nil already
+        // set there is nothing to protect, and the same layout yields them all
+        // three tricks, one of which N itself takes.
+        const Position costly = make_position("N:7..6.3 6.J.2. J3.7.. 9..3.9", "N", true);
+        const Solution protect = must_solve(costly, "N", take);
+        const Solution ignore = must_solve(costly, "N", take_set);
+        check("nil is protected", protect.nil_tricks, 0);
+        check("protecting it costs a trick", protect.nil_side_tricks, 2);
+        check("already set: primary is off", ignore.nil_tricks, 1);
+        check("already set: N/S now take everything", ignore.nil_side_tricks, 3);
+        check("already set: nil_fails is asserted, not computed", ignore.nil_fails, true);
+
+        // Tallies stay consistent whatever the knobs say.
+        for (int variant = 0; variant < 4; ++variant) {
+            SearchOptions o;
+            o.minimise_own_tricks = (variant & 1) != 0;
+            o.nil_already_set = (variant & 2) != 0;
+            const Solution sol = must_solve(costly, "N", o);
+            const std::string label = std::string(o.minimise_own_tricks ? "shed" : "take") +
+                                      (o.nil_already_set ? "/set" : "/live");
+            check(label + ": sides sum to the tricks played",
+                  sol.nil_side_tricks + sol.opponent_tricks, costly.tricks_remaining());
+            check(label + ": nil is part of its own side",
+                  sol.nil_tricks <= sol.nil_side_tricks, true);
+        }
+
+        // THE lexicographic property: a tie-break can never move the primary.
+        // If this fails the packing has overflowed and the secondary has started
+        // outranking the nil.
+        const char* layouts[] = {
+            "N:A2.K.. K3.A.. Q4.Q.. J5.J..",
+            "N:7..6.3 6.J.2. J3.7.. 9..3.9",
+            "N:.A2.. .K3.. .54.. .Q6..",
+        };
+        for (const char* layout : layouts) {
+            const Position pos = make_position(layout, "N", true);
+            check(std::string("primary is stable under the tie-break: ") + layout,
+                  must_solve(pos, "N", take).nil_tricks, must_solve(pos, "N", shed).nil_tricks);
+        }
     }
 
     std::cout << "Parsing\n";
@@ -298,18 +369,20 @@ int main(int argc, char** argv) {
     {
         const Position pos = make_position("N:..2. ..A. ..5. ..7.", "N", true);
         const Solution sol = must_solve(pos, "E");
-        int tricks = 0;
+        nil::Tally tally;
         std::string err;
-        check("good PV replays", nil::replay_pv(pos, sol.pv, 1, false, tricks, err), true);
-        check("good PV replays to the same value", tricks, 1);
+        check("good PV replays", nil::replay_pv(pos, sol.pv, 1, false, tally, err), true);
+        check("good PV replays to the same value", tally.nil_tricks, 1);
+        check("replay tallies the nil's side", tally.nil_side_tricks, 1);
+        check("replay tallies the opponents", tally.opponent_tricks, 0);
 
         std::vector<nil::Play> bad = sol.pv;
         std::swap(bad[0], bad[1]);
-        check("out-of-turn PV is rejected", nil::replay_pv(pos, bad, 1, false, tricks, err),
+        check("out-of-turn PV is rejected", nil::replay_pv(pos, bad, 1, false, tally, err),
               false);
 
         std::vector<nil::Play> truncated(sol.pv.begin(), sol.pv.begin() + 2);
-        check("short PV is rejected", nil::replay_pv(pos, truncated, 1, false, tricks, err),
+        check("short PV is rejected", nil::replay_pv(pos, truncated, 1, false, tally, err),
               false);
     }
 
@@ -320,7 +393,11 @@ int main(int argc, char** argv) {
         const int32_t rc = nil_solve("N:.A2.. .K3.. .54.. .Q6..", NIL_SEAT_NORTH, "",
                                      NIL_SEAT_NORTH, NIL_FLAG_SPADES_BROKEN, &r, err, sizeof(err));
         check("nil_solve returns NIL_OK", static_cast<long long>(rc), 0LL);
-        check("nil_solve reports the trick", static_cast<long long>(r.tricks), 1LL);
+        check("nil_solve reports the trick", static_cast<long long>(r.nil_tricks), 1LL);
+        check("nil_solve reports the side total",
+              static_cast<long long>(r.nil_side_tricks), 1LL);
+        check("nil_solve reports the opponents",
+              static_cast<long long>(r.opponent_tricks), 1LL);
         check("nil_solve reports failure", static_cast<long long>(r.nil_fails), 1LL);
         check("nil_solve reports tricks remaining", static_cast<long long>(r.tricks_remaining),
               2LL);
