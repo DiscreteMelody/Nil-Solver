@@ -1,0 +1,138 @@
+// Implementation of the C ABI declared in include/nil_solver/nil_solver.h.
+//
+// This layer does nothing but marshal: parse the caller's strings into a
+// Position, run the search, copy scalars back out.  All the interesting code is
+// in src/nil/.
+#include "nil_solver/nil_solver.h"
+
+#include <algorithm>
+#include <cstring>
+#include <string>
+
+#include "nil/position.hpp"
+#include "nil/search.hpp"
+
+namespace {
+
+void copy_err(char* buf, std::int32_t len, const std::string& msg) {
+    if (!buf || len <= 0) return;
+    const std::size_t n =
+        std::min<std::size_t>(msg.size(), static_cast<std::size_t>(len) - 1);
+    std::memcpy(buf, msg.data(), n);
+    buf[n] = '\0';
+}
+
+// Shared body for nil_solve / nil_solve_pv.
+std::int32_t solve_impl(const char* pbn, std::int32_t leader, const char* current_trick,
+                        std::int32_t nil_seat, std::uint32_t flags, nil_result* out,
+                        std::string* pv_out, char* err_buf, std::int32_t err_len) {
+    if (!pbn || !out) {
+        copy_err(err_buf, err_len, "null argument");
+        return NIL_ERR_NULL_ARG;
+    }
+    if (leader < 0 || leader > 3) {
+        copy_err(err_buf, err_len, "leader out of range (expected 0..3 for N/E/S/W)");
+        return NIL_ERR_ILLEGAL_POSITION;
+    }
+    if (nil_seat < 0 || nil_seat > 3) {
+        copy_err(err_buf, err_len, "nil seat out of range (expected 0..3 for N/E/S/W)");
+        return NIL_ERR_ILLEGAL_POSITION;
+    }
+
+    std::string err;
+    nil::Position pos;
+    if (!nil::parse_pbn(pbn, pos.hands, err)) {
+        copy_err(err_buf, err_len, err);
+        return NIL_ERR_PARSE;
+    }
+    pos.leader = leader;
+    pos.spades_broken = (flags & NIL_FLAG_SPADES_BROKEN) != 0;
+
+    if (current_trick && *current_trick) {
+        int count = 0;
+        if (!nil::parse_cards(current_trick, pos.trick, 3, count, err)) {
+            copy_err(err_buf, err_len, err);
+            return NIL_ERR_PARSE;
+        }
+        pos.trick_len = count;
+    }
+
+    if (!nil::validate(pos, err)) {
+        copy_err(err_buf, err_len, err);
+        return NIL_ERR_ILLEGAL_POSITION;
+    }
+    if (pos.cards_per_hand() > 7 && !(flags & NIL_FLAG_FORCE_LARGE)) {
+        copy_err(err_buf, err_len,
+                 "more than 7 cards per hand: this is an exhaustive search with no "
+                 "pruning and will not finish. Pass NIL_FLAG_FORCE_LARGE to insist.");
+        return NIL_ERR_TOO_MANY_CARDS;
+    }
+
+    nil::SearchOptions opts;
+    opts.break_on_forced_spade_lead = (flags & NIL_FLAG_BREAK_ON_FORCED_SPADE_LEAD) != 0;
+    opts.use_memo = (flags & NIL_FLAG_NO_MEMO) == 0;
+
+    nil::Solution sol;
+    if (!nil::solve(pos, nil_seat, opts, sol, err)) {
+        copy_err(err_buf, err_len, err);
+        return NIL_ERR_INTERNAL;
+    }
+
+    out->nil_fails = sol.nil_fails ? 1 : 0;
+    out->tricks = sol.tricks;
+    out->tricks_remaining = pos.tricks_remaining();
+    out->nodes = sol.nodes;
+    if (pv_out) *pv_out = nil::format_pv_compact(sol);
+    return NIL_OK;
+}
+
+}  // namespace
+
+extern "C" {
+
+NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve(const char* pbn, std::int32_t leader,
+                                                      const char* current_trick,
+                                                      std::int32_t nil_seat, std::uint32_t flags,
+                                                      nil_result* out, char* err_buf,
+                                                      std::int32_t err_len) {
+    return solve_impl(pbn, leader, current_trick, nil_seat, flags, out, nullptr, err_buf, err_len);
+}
+
+NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve_pv(const char* pbn, std::int32_t leader,
+                                                         const char* current_trick,
+                                                         std::int32_t nil_seat,
+                                                         std::uint32_t flags, nil_result* out,
+                                                         char* pv_buf, std::int32_t pv_len,
+                                                         char* err_buf, std::int32_t err_len) {
+    if (!pv_buf || pv_len <= 0) {
+        copy_err(err_buf, err_len, "null or empty PV buffer");
+        return NIL_ERR_NULL_ARG;
+    }
+    std::string pv;
+    const std::int32_t rc =
+        solve_impl(pbn, leader, current_trick, nil_seat, flags, out, &pv, err_buf, err_len);
+    if (rc != NIL_OK) {
+        pv_buf[0] = '\0';
+        return rc;
+    }
+    if (static_cast<std::size_t>(pv_len) < pv.size() + 1) {
+        pv_buf[0] = '\0';
+        copy_err(err_buf, err_len, "PV buffer too small");
+        return NIL_ERR_BUFFER_TOO_SMALL;
+    }
+    std::memcpy(pv_buf, pv.c_str(), pv.size() + 1);
+    return NIL_OK;
+}
+
+NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_fails(const char* pbn, std::int32_t leader,
+                                                      const char* current_trick,
+                                                      std::int32_t nil_seat, std::uint32_t flags) {
+    nil_result result;
+    const std::int32_t rc =
+        solve_impl(pbn, leader, current_trick, nil_seat, flags, &result, nullptr, nullptr, 0);
+    return rc == NIL_OK ? result.nil_fails : rc;
+}
+
+NIL_SOLVER_API const char* NIL_SOLVER_CALL nil_solver_version(void) { return "0.1.0"; }
+
+}  // extern "C"
