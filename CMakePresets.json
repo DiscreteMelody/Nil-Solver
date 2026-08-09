@@ -1,0 +1,42 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 21, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "release",
+      "displayName": "Release",
+      "description": "Optimised build; this is the one to benchmark",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "debug",
+      "displayName": "Debug",
+      "description": "Unoptimised, with assertions; far too slow to benchmark",
+      "binaryDir": "${sourceDir}/build-debug",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "release", "configurePreset": "release", "configuration": "Release" },
+    { "name": "debug", "configurePreset": "debug", "configuration": "Debug" }
+  ],
+  "testPresets": [
+    {
+      "name": "release",
+      "displayName": "All tests",
+      "configurePreset": "release",
+      "configuration": "Release",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "quick",
+      "displayName": "Quick tests only",
+      "description": "Unit tests and the 4-card corpus; skips the slow 6-card set",
+      "configurePreset": "release",
+      "configuration": "Release",
+      "output": { "outputOnFailure": true },
+      "filter": { "include": { "name": "nil_tests|corpus_quick" } }
+    }
+  ]
+}

@@ -28,26 +28,74 @@ src/nil/cards.hpp|.cpp            cards, hands, canonical ordering
 src/nil/rules.hpp                 the four rules, one small function each
 src/nil/position.hpp|.cpp         PBN parsing, validation, formatting
 src/nil/search.hpp|.cpp           the minimax search and the PV replay verifier
+src/nil/corpus.hpp|.cpp           loads tests/corpus/positions.txt
 src/api.cpp                       C ABI implementation (marshalling only)
 tools/nil_cli.cpp                 command line front end
 tools/crosscheck.py               differential test against nil_oracle.py
 tests/test_nil_solver.cpp         self-tests, mirroring the oracle's selftest()
+tests/corpus/positions.txt        positions with answers from the oracle
+tools/nil_bench.cpp               corpus verifier and benchmark
+tools/make_corpus.py              regenerates the corpus
+scripts/build-and-test.cmd|.sh    one-shot build + test
+scripts/run-bench.cmd             one-shot benchmark
 ```
 
 ## Building
 
+### Windows, the short version
+
+Double-click **`scripts\build-and-test.cmd`**. It finds CMake on its own —
+including the copy bundled inside Visual Studio — configures, builds, runs the
+whole test suite, and leaves the window open so you can read the result.
+`scripts\run-bench.cmd` does the same for the benchmark.
+
+If you prefer the IDE: **File > Open > Folder** on the repository root. Visual
+Studio 2022 reads `CMakePresets.json`, so the Release configuration and the test
+presets appear without any setup, and the tests show up in Test Explorer.
+
+### Windows, by hand
+
 ```
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --config Release
+cmake --build build --config Release --parallel
+ctest --test-dir build --build-config Release --output-on-failure
+```
+
+Two things bite here and neither is obvious:
+
+* **`cmake` and `ctest` are usually not on `PATH`.** Either run from the
+  *Developer Command Prompt for VS 2022* (Start menu), or reinstall CMake with
+  "Add CMake to the system PATH" ticked, or add the "C++ CMake tools for
+  Windows" component in the Visual Studio Installer. The `.cmd` scripts above
+  sidestep this entirely.
+* **`--build-config Release` is required for `ctest`.** The Visual Studio
+  generator is multi-config, so without it `ctest` does not know which build of
+  the tests to run and reports no tests. On Makefiles or Ninja the flag is
+  harmlessly ignored, which is why it is safe to always pass it.
+
+Binaries land in `build\bin` — with a `.exe` suffix, so it is
+`build\bin\nil_bench.exe`, not `build/bin/nil_bench`.
+
+### Linux and macOS
+
+```
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
-On Windows with Visual Studio:
+Or `scripts/build-and-test.sh`, which is the same thing with the CMake hunt
+built in.
+
+### With presets (CMake 3.21+)
 
 ```
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64
-cmake --build build --config Release
+cmake --preset release
+cmake --build --preset release
+ctest --preset release      # or --preset quick for just the fast tests
 ```
+
+### What gets built
 
 Everything lands in `build/bin`:
 
@@ -56,6 +104,7 @@ Everything lands in `build/bin`:
 | `nil_solver.dll` (`libnil_solver.so`) | the shared library for C# |
 | `nil_solver.lib` | import library, in `build/lib` |
 | `nil_cli` | command line front end |
+| `nil_bench` | corpus verifier and benchmark |
 | `nil_tests` | self-tests |
 
 `cmake --install build --prefix <dir>` gives you the DLL, the import library and
