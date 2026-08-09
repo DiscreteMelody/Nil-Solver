@@ -36,10 +36,17 @@ jobs:
 
       # Node counts are deterministic, so this number is comparable across runs
       # and is the thing to watch when the search changes.
+      # Node counts are deterministic, so the CI runner's numbers are directly
+      # comparable with a laptop's.  Wall time is not, which is why the history
+      # row records the host and build config alongside it.
       - name: Benchmark
         run: |
-          cmake --install build --prefix build/staged
-          ./build/bin/nil_bench --corpus tests/corpus/positions.txt --repeat 3 --csv bench.csv
+          ./build/bin/nil_bench --corpus tests/corpus/positions.txt --repeat 3 \
+            --csv bench.csv \
+            --history bench-history.csv \
+            --commit "${GITHUB_SHA::7}" \
+            --note "ci: ${GITHUB_REF_NAME}"
+          python3 tools/bench_history.py --history bench-history.csv
         shell: bash
         if: runner.os == 'Linux'
 
@@ -48,7 +55,9 @@ jobs:
         if: runner.os == 'Linux'
         with:
           name: bench-${{ github.sha }}
-          path: bench.csv
+          path: |
+            bench.csv
+            bench-history.csv
 
       - name: Upload library
         uses: actions/upload-artifact@v4

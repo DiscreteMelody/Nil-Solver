@@ -22,6 +22,7 @@
 //   nil_bench --random --cards 7 --count 10 --seed 1     # timing only, no answers
 #include <algorithm>
 #include <chrono>
+#include <ctime>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -38,6 +39,10 @@
 #include "nil/position.hpp"
 #include "nil/rules.hpp"
 #include "nil/search.hpp"
+
+#ifndef NIL_BUILD_CONFIG
+#define NIL_BUILD_CONFIG "unknown"
+#endif
 
 namespace {
 
@@ -66,6 +71,128 @@ struct Rng {
     }
     std::uint64_t below(std::uint64_t n) { return next() % n; }
 };
+
+// ---------------------------------------------------------------------------
+// Run provenance.  A history row is only worth keeping if you can tell later
+// which build produced it, so every row carries the commit, whether the tree
+// was dirty at the time, the build configuration, the compiler and the host.
+// Wall time is not comparable across machines; without these columns a history
+// file quietly turns into nonsense the first time someone benchmarks on a
+// different laptop.
+// ---------------------------------------------------------------------------
+
+#if defined(_WIN32)
+#define NIL_POPEN _popen
+#define NIL_PCLOSE _pclose
+#define NIL_DEVNULL "NUL"
+#else
+#define NIL_POPEN popen
+#define NIL_PCLOSE pclose
+#define NIL_DEVNULL "/dev/null"
+#endif
+
+std::string run_capture(const std::string& command) {
+    FILE* pipe = NIL_POPEN(command.c_str(), "r");
+    if (!pipe) return "";
+    std::string out;
+    char buffer[256];
+    while (std::fgets(buffer, sizeof(buffer), pipe)) out += buffer;
+    NIL_PCLOSE(pipe);
+    while (!out.empty() && (out.back() == '\n' || out.back() == '\r' || out.back() == ' '))
+        out.pop_back();
+    return out;
+}
+
+std::string directory_of(const std::string& path) {
+    const std::size_t cut = path.find_last_of("/\\");
+    return (cut == std::string::npos) ? std::string(".") : path.substr(0, cut);
+}
+
+struct Provenance {
+    std::string timestamp;   // ISO 8601, UTC
+    std::string commit;      // short sha, or "unknown"
+    std::string branch;
+    bool dirty = false;
+    std::string build;
+    std::string compiler;
+    std::string host;
+    std::string run_id;
+};
+
+std::string compiler_string() {
+#if defined(_MSC_VER)
+    return "MSVC " + std::to_string(_MSC_VER);
+#elif defined(__clang__)
+    return "Clang " + std::to_string(__clang_major__) + "." + std::to_string(__clang_minor__);
+#elif defined(__GNUC__)
+    return "GCC " + std::to_string(__GNUC__) + "." + std::to_string(__GNUC_MINOR__);
+#else
+    return "unknown";
+#endif
+}
+
+std::string host_string() {
+    const char* name = std::getenv("COMPUTERNAME");   // Windows
+    if (!name || !*name) name = std::getenv("HOSTNAME");  // most shells
+    if (name && *name) return std::string(name);
+    // Not every shell exports it; `hostname` exists on both platforms.
+    const std::string probed = run_capture("hostname 2>" NIL_DEVNULL);
+    return probed.empty() ? std::string("unknown") : probed;
+}
+
+std::string utc_timestamp(bool compact) {
+    const std::time_t now = std::time(nullptr);
+    std::tm tm {};
+#if defined(_WIN32)
+    gmtime_s(&tm, &now);
+#else
+    gmtime_r(&now, &tm);
+#endif
+    char buffer[32];
+    std::strftime(buffer, sizeof(buffer), compact ? "%Y%m%dT%H%M%SZ" : "%Y-%m-%dT%H:%M:%SZ", &tm);
+    return std::string(buffer);
+}
+
+// `anchor` is a path inside the working tree, so git answers about the right
+// repository even when nil_bench is run from somewhere else.
+Provenance gather_provenance(const std::string& anchor, const std::string& commit_override) {
+    Provenance p;
+    p.timestamp = utc_timestamp(false);
+    p.build = NIL_BUILD_CONFIG;
+    p.compiler = compiler_string();
+    p.host = host_string();
+
+    const std::string prefix = "git -C \"" + anchor + "\" ";
+    const std::string suffix = " 2>" NIL_DEVNULL;
+
+    p.commit = commit_override.empty() ? run_capture(prefix + "rev-parse --short HEAD" + suffix)
+                                       : commit_override;
+    if (p.commit.empty()) p.commit = "unknown";
+    p.branch = run_capture(prefix + "rev-parse --abbrev-ref HEAD" + suffix);
+    if (p.branch.empty()) p.branch = "unknown";
+    p.dirty = !run_capture(prefix + "status --porcelain --untracked-files=no" + suffix).empty();
+
+    p.run_id = utc_timestamp(true) + "-" + p.commit;
+    return p;
+}
+
+// Minimal RFC 4180 quoting, so a --note containing a comma cannot shift every
+// column to the right.
+std::string csv_field(const std::string& value) {
+    if (value.find_first_of(",\"\n\r") == std::string::npos) return value;
+    std::string out = "\"";
+    for (char ch : value) {
+        if (ch == '"') out += '"';
+        out += ch;
+    }
+    out += '"';
+    return out;
+}
+
+bool file_is_empty(const std::string& path) {
+    std::ifstream probe(path.c_str(), std::ios::binary | std::ios::ate);
+    return !probe || probe.tellg() == std::streampos(0);
+}
 
 std::string commas(std::uint64_t n) {
     std::string d = std::to_string(n);
@@ -133,6 +260,43 @@ void write_csv(const std::string& path, const std::vector<Row>& rows) {
     }
 }
 
+// Append one row per hand size plus a "all" total row, every row tagged with
+// the same run_id so a spreadsheet can pivot on it.
+void append_history(const std::string& path, const Provenance& prov, const std::string& corpus,
+                    const std::map<int, Row>& totals, const std::map<int, int>& counts,
+                    std::uint64_t all_nodes, double all_ms, int all_positions, int repeat,
+                    bool memo, const std::string& note) {
+    const bool need_header = file_is_empty(path);
+    std::ofstream out(path.c_str(), std::ios::app);
+    if (!out) {
+        std::cerr << "warning: cannot append to history file '" << path << "'\n";
+        return;
+    }
+    if (need_header) {
+        out << "run_id,timestamp_utc,commit,dirty,branch,corpus,cards,positions,nodes,ms,"
+               "nodes_per_pos,ms_per_pos,repeat,memo,build,compiler,host,note\n";
+    }
+
+    const auto row = [&](const std::string& cards, int positions, std::uint64_t nodes, double ms) {
+        const int divisor = positions ? positions : 1;
+        out << csv_field(prov.run_id) << ',' << csv_field(prov.timestamp) << ','
+            << csv_field(prov.commit) << ',' << (prov.dirty ? 1 : 0) << ','
+            << csv_field(prov.branch) << ',' << csv_field(corpus) << ',' << csv_field(cards) << ','
+            << positions << ',' << nodes << ',' << std::fixed << std::setprecision(1) << ms << ','
+            << (nodes / static_cast<std::uint64_t>(divisor)) << ',' << std::setprecision(3)
+            << (ms / divisor) << ',' << repeat << ',' << (memo ? "on" : "off") << ','
+            << csv_field(prov.build) << ',' << csv_field(prov.compiler) << ','
+            << csv_field(prov.host) << ',' << csv_field(note) << '\n';
+    };
+
+    for (const auto& kv : totals) {
+        const auto count = counts.find(kv.first);
+        row(std::to_string(kv.first), count == counts.end() ? 0 : count->second, kv.second.nodes,
+            kv.second.ms);
+    }
+    row("all", all_positions, all_nodes, all_ms);
+}
+
 // Deal `cards` to each seat, plus a random leader/nil/broken flag.
 nil::Position random_position(Rng& rng, int cards, int& nil_seat) {
     int deck[52];
@@ -166,6 +330,9 @@ void usage(const char* argv0) {
               << "  --check-pv        also require the recorded PV to match (see below)\n"
               << "  --csv <file>      write per-position rows for later comparison\n"
               << "  --baseline <file> compare against a csv written earlier\n"
+              << "  --history <file>  APPEND a summary row to a running history csv\n"
+              << "  --note <text>     free-text label for the history row\n"
+              << "  --commit <sha>    override the commit git reports\n"
               << "  --slowest <n>     list the n slowest positions            [5]\n"
               << "  --quiet           only print the summary and any failures\n"
               << "\n"
@@ -180,6 +347,9 @@ int main(int argc, char** argv) {
     std::string corpus_path;
     std::string csv_path;
     std::string baseline_path;
+    std::string history_path;
+    std::string note;
+    std::string commit_override;
     bool random_mode = false;
     bool quiet = false;
     bool check_pv = false;
@@ -203,6 +373,12 @@ int main(int argc, char** argv) {
             csv_path = argv[++i];
         } else if (arg == "--baseline" && has_next) {
             baseline_path = argv[++i];
+        } else if (arg == "--history" && has_next) {
+            history_path = argv[++i];
+        } else if (arg == "--note" && has_next) {
+            note = argv[++i];
+        } else if (arg == "--commit" && has_next) {
+            commit_override = argv[++i];
         } else if (arg == "--random") {
             random_mode = true;
         } else if (arg == "--cards" && has_next) {
@@ -404,6 +580,27 @@ int main(int argc, char** argv) {
                       << sorted[i].cards << " cards" << std::setw(16) << commas(sorted[i].nodes)
                       << " nodes" << std::setw(10) << std::fixed << std::setprecision(1)
                       << sorted[i].ms << " ms\n";
+        }
+    }
+
+    if (!history_path.empty()) {
+        const std::string anchor_dir =
+            corpus_path.empty() ? std::string(".") : directory_of(corpus_path);
+        const Provenance prov = gather_provenance(anchor_dir, commit_override);
+        const std::string label =
+            corpus_path.empty()
+                ? ("random-" + std::to_string(cards) + "c-seed" + std::to_string(seed))
+                : corpus_path;
+        append_history(history_path, prov, label, totals, counts, all_nodes, all_ms,
+                       all_positions, repeat, opts.use_memo, note);
+        if (!quiet) {
+            std::cout << "\n  logged to " << history_path << "  [" << prov.commit
+                      << (prov.dirty ? " DIRTY" : "") << " on " << prov.host << ", " << prov.build
+                      << "]\n";
+            if (prov.dirty) {
+                std::cout << "  (working tree has uncommitted changes, so this row does not\n"
+                          << "   correspond to a commit anyone else can reproduce)\n";
+            }
         }
     }
 

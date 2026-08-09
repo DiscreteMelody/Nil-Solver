@@ -36,8 +36,9 @@ tests/test_nil_solver.cpp         self-tests, mirroring the oracle's selftest()
 tests/corpus/positions.txt        positions with answers from the oracle
 tools/nil_bench.cpp               corpus verifier and benchmark
 tools/make_corpus.py              regenerates the corpus
+tools/bench_history.py            reads back bench-history.csv
 scripts/build-and-test.cmd|.sh    one-shot build + test
-scripts/run-bench.cmd             one-shot benchmark
+scripts/run-bench.cmd|.sh         one-shot benchmark, logs to history
 ```
 
 ## Building
@@ -278,6 +279,58 @@ across compilers and platforms (unlike `std::mt19937` plus a distribution, whose
 output is implementation defined). There are no expected answers in that mode,
 so it is for timing only — useful for asking how a change scales at 7 cards,
 where the oracle can no longer follow.
+
+### Tracking improvements over time
+
+`nil_bench --history <file>` appends a summary row instead of overwriting, so
+one file accumulates the whole record. `scripts/run-bench.cmd` (or `.sh`) does
+this by default, into `bench-history.csv` at the repository root:
+
+```
+scripts\run-bench.cmd "added alpha-beta"
+python tools\bench_history.py
+```
+
+Each row records the commit, whether the working tree was dirty, the branch,
+which corpus and how much of it, nodes, milliseconds, the memo setting, the
+build configuration, the compiler, the host and your note. The commit comes from
+`git` at run time, anchored to the corpus file's directory so it is right even
+when `nil_bench` is invoked from elsewhere; `--commit` overrides it for CI.
+
+`tools/bench_history.py` reads it back:
+
+```
+bench-history.csv   6 run(s) in 2 comparable group(s)
+
+positions.txt, all hand sizes, 560 positions, memo on
+  commit    when                       nodes   vs prev  vs first          ms  vs prev  note
+  fd8d062   2026-08-09 01:21:44    77,476,932        -        -     30741.3        -  baseline
+  a1b2c3d   2026-08-11 09:14:02    12,004,551   -84.5%   -84.5%      4102.7   -86.7%  alpha-beta
+  best 12,004,551 at a1b2c3d   |   latest visits 6.45x fewer nodes than the first run
+```
+
+Two things it deliberately refuses to do, because a benchmark history that
+quietly lies is worse than none:
+
+* **It groups runs by what was actually measured** — corpus, hand size, position
+  count, memo setting — and only computes node deltas within a group. A 400-position
+  run and a 560-position run are two different measurements, not a 40% regression.
+* **It only computes a time delta when the machine, build configuration,
+  compiler and repeat count all match.** Otherwise the column reads `n/a`. Node
+  counts still compare across machines, because they are deterministic; wall
+  times do not.
+
+Rows from a dirty working tree are marked with `*`, since they do not correspond
+to a commit anyone can check out.
+
+Commit `bench-history.csv` — the running total is the point, and it is more
+useful in the repository than on one laptop. `.gitattributes` marks it
+`merge=union` so two branches that have both benchmarked merge by keeping both
+sets of rows rather than conflicting.
+
+If you would rather have every `ctest` run logged as well, add `--history` to
+the `corpus` test in `CMakeLists.txt`. It is off by default because CI and
+throwaway local runs would then fill the file with rows nobody wants to read.
 
 ### One thing to know about seat parity
 

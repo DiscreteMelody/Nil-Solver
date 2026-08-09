@@ -61,3 +61,13 @@
 #*.PDF   diff=astextplain
 #*.rtf   diff=astextplain
 #*.RTF   diff=astextplain
+
+###############################################################################
+# bench-history.csv is append-only: every benchmark run adds a line and nothing
+# ever edits an existing one.  A union merge keeps both sides' new rows instead
+# of raising a conflict every time two branches have both benchmarked.
+#
+# The one thing to watch: if the file is created independently on two branches,
+# a union merge keeps both header lines.  Delete the duplicate by hand.
+###############################################################################
+bench-history.csv merge=union

@@ -73,6 +73,9 @@ endif()
 if(NIL_SOLVER_BUILD_BENCH)
   add_executable(nil_bench tools/nil_bench.cpp)
   target_link_libraries(nil_bench PRIVATE nil_solver_core)
+  # $<CONFIG> resolves at build time, so this is right for both single-config
+  # generators (Makefiles, Ninja) and multi-config ones (Visual Studio).
+  target_compile_definitions(nil_bench PRIVATE NIL_BUILD_CONFIG="$<CONFIG>")
 endif()
 
 # ---------------------------------------------------------------------------
