@@ -42,3 +42,5 @@ __pycache__/
 # point crosscheck.py at it with --oracle instead.
 # nil_oracle.py
 /changes.patch
+/Nil-Solver/x64/Release
+/Nil-Solver/x64/Debug
