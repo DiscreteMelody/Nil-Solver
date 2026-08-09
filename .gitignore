@@ -41,3 +41,4 @@ __pycache__/
 # Uncomment if you would rather keep the reference oracle out of the repo and
 # point crosscheck.py at it with --oracle instead.
 # nil_oracle.py
+/changes.patch
