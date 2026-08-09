@@ -72,8 +72,9 @@ struct Entry {
 
 struct Ctx {
     int nil_seat = 0;
-    int primary_weight = 0;    // K, or 0 when the nil is already set
-    int secondary_sign = -1;   // -1 the nil side wants tricks, +1 it wants to shed them
+    int primary_weight = 0;    // K*K, or 0 when the nil is already set
+    int secondary_weight = -1; // -K the nil side wants tricks, +K it wants rid of them
+    int tertiary_weight = 0;   // 1 when the cover partner's share is what counts
     bool break_forced = false;
     bool use_memo = true;
     std::uint64_t nodes = 0;
@@ -129,8 +130,8 @@ int search(Ctx& ctx, const State& st, CardId& best_move) {
             next.leader = winner;
             next.trick_len = 0;
             int gained = 0;
-            if (winner == ctx.nil_seat) gained += ctx.primary_weight;
-            if (((winner ^ ctx.nil_seat) & 1) == 0) gained += ctx.secondary_sign;
+            if (winner == ctx.nil_seat) gained += ctx.primary_weight + ctx.tertiary_weight;
+            if (((winner ^ ctx.nil_seat) & 1) == 0) gained += ctx.secondary_weight;
             value = gained + search(ctx, next, ignored);
         } else {
             next.trick[st.trick_len] = card;
@@ -177,9 +178,11 @@ std::string with_commas(std::uint64_t n) {
 }  // namespace
 
 ObjectiveWeights objective_weights(int tricks_remaining, const SearchOptions& opts) {
+    const int k = tricks_remaining + 1;
     ObjectiveWeights w;
-    w.primary = opts.nil_already_set ? 0 : (tricks_remaining + 1);
-    w.secondary_sign = opts.minimise_own_tricks ? 1 : -1;
+    w.primary = opts.nil_already_set ? 0 : k * k;
+    w.secondary = opts.minimise_own_tricks ? k : -k;
+    w.tertiary = opts.minimise_own_tricks ? 0 : 1;
     return w;
 }
 
@@ -196,7 +199,8 @@ bool solve(const Position& pos, int nil_seat, const SearchOptions& opts, Solutio
     Ctx ctx;
     ctx.nil_seat = nil_seat;
     ctx.primary_weight = weights.primary;
-    ctx.secondary_sign = weights.secondary_sign;
+    ctx.secondary_weight = weights.secondary;
+    ctx.tertiary_weight = weights.tertiary;
     ctx.break_forced = opts.break_on_forced_spade_lead;
     ctx.use_memo = opts.use_memo;
 
@@ -243,8 +247,8 @@ bool solve(const Position& pos, int nil_seat, const SearchOptions& opts, Solutio
         err = "internal inconsistency: " + err;
         return false;
     }
-    const int replayed =
-        weights.primary * tally.nil_tricks + weights.secondary_sign * tally.nil_side_tricks;
+    const int replayed = (weights.primary + weights.tertiary) * tally.nil_tricks +
+                         weights.secondary * tally.nil_side_tricks;
     if (replayed != value) {
         std::ostringstream os;
         os << "internal inconsistency: search says " << value << ", replaying the PV gives "

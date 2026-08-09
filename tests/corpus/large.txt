@@ -26,7 +26,7 @@ c7-0002 | N:84.T62.9.9 5.Q73.J8.2 K3.K.Q5.A7 A9.A.A3.J8 | S | W | 0 | 0 |  | max
 #   c7-0003  795803 nodes, oracle took 5s
 #   c7-0004  844155 nodes, oracle took 6s
 #   c7-0005  448026 nodes, oracle took 3s
-c7-0003 | N:Q.J4.QJ2.K A2.9.K.Q7 87.K7.8.T2 JT.T8.3.96 | E | E | 1 | 1 | S9 | max | 1 | 3 | 4 | S:S7 W:ST N:SQ N:H4 E:H9 S:HK W:H8 S:S8 W:SJ N:HJ E:S2 W:HT N:D2 E:SA S:H7 E:C7 S:C2 W:C6 N:CK N:DJ E:DK S:D8 W:D3 E:CQ S:CT W:C9 N:DQ | oracle
+c7-0003 | N:Q.J4.QJ2.K A2.9.K.Q7 87.K7.8.T2 JT.T8.3.96 | E | E | 1 | 1 | S9 | max | 1 | 3 | 4 | S:S7 W:ST N:SQ N:H4 E:H9 S:HK W:H8 S:S8 W:SJ N:D2 E:S2 W:HT N:HJ E:SA S:H7 E:C7 S:C2 W:C6 N:CK N:DJ E:DK S:D8 W:D3 E:CQ S:CT W:C9 N:DQ | oracle
 c7-0004 | N:76.J6.A2.5 KQ8.3.9.98 3.K7.JT.2 4.2.754.43 | S | N | 0 | 1 | H5 | min | 0 | 1 | 2 | W:H2 N:H6 E:H3 N:D2 E:D9 S:DT W:D4 S:C2 W:C3 N:C5 E:C8 E:C9 S:H7 W:C4 N:HJ E:S8 S:S3 W:S4 N:S6 E:SQ S:HK W:D5 N:S7 E:SK S:DJ W:D7 N:DA | oracle
 c7-0005 | N:A.6.K6.Q98 86.43.3.32 K3.J.J4.KJ 5.K7.Q5.64 | E | E | 0 | 0 |  | min | 1 | 1 | 1 | E:H3 S:HJ W:H7 N:H6 S:D4 W:D5 N:D6 E:D3 N:DK E:S6 S:DJ W:DQ E:S8 S:S3 W:S5 N:SA N:C8 E:C2 S:CJ W:C4 S:SK W:HK N:C9 E:H4 S:CK W:C6 N:CQ E:C3 | oracle
 #   c8-0000  10815235 nodes

@@ -13,6 +13,13 @@
 //                  minimise_own_tricks = false   each pair takes what it can
 //                  minimise_own_tricks = true    each pair sheds what it can
 //
+//   TERTIARY   which of the nil side's two partners holds those tricks.  Only
+//              the covering partner's tricks count towards the partner's bid,
+//              so among lines where the pair takes the same total, the pair
+//              prefers the nil bidder to take fewer.  Inert while the primary
+//              is on (it has already pinned the nil bidder's count) and off in
+//              the "shed" direction (bags accrue to the pair whoever won).
+//
 // The primary is not ordinary trick maximisation: a side will happily throw
 // away a trick of its own if that forces one onto the nil bidder.  The
 // secondary only breaks ties.
@@ -91,16 +98,30 @@ struct Solution {
     std::uint64_t nodes = 0;
 };
 
-// Weights that pack the lexicographic pair into one integer:
+// Weights that pack the three levels into one integer:
 //
-//     value = primary_weight * nil_tricks + secondary_sign * nil_side_tricks
+//     value = primary   * nil_tricks
+//           + secondary * nil_side_tricks
+//           + tertiary  * nil_tricks
 //
-// which the nil side minimises and the opponents maximise.  primary_weight is
-// (tricks remaining + 1), strictly larger than any possible secondary term, so
-// the primary always dominates; zero when the nil is already set.
+// which the nil side minimises and the opponents maximise.  With
+// K = tricks remaining + 1, primary is K*K and secondary is +/-K, so each level
+// strictly outranks everything below it and the three compare
+// lexicographically.  primary is zero when the nil is already set.
+//
+// A caveat about the one case the tertiary bites -- a nil already set while the
+// pair is still taking tricks.  There, "the pair maximises its partner's
+// tricks" and "the opponents maximise their own" are not strictly opposed:
+// both sides would rather the nil bidder took nothing, so the split between the
+// two partners is slack that only one side cares about, not a tug of war.  The
+// tertiary sits BELOW the pair's total on purpose, so the opponents' objective
+// stays exactly "take as many as we can" and the split resolves against the
+// pair.  The partner count reported is therefore the one the pair can
+// guarantee, not the one it might get if the opponents were helping.
 struct ObjectiveWeights {
     int primary = 0;
-    int secondary_sign = -1;
+    int secondary = -1;
+    int tertiary = 0;
 };
 
 ObjectiveWeights objective_weights(int tricks_remaining, const SearchOptions& opts);

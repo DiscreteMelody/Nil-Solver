@@ -376,8 +376,9 @@ def deal_to_pbn(hands: Sequence[Sequence[Card]], first_seat: int = 0) -> str:
 class _Ctx:
     designated: int
     break_on_forced_spade_lead: bool
-    primary_weight: int          # K, or 0 when the nil is already set
-    secondary_sign: int          # -1 if N/S want tricks, +1 if they want to shed them
+    primary_weight: int          # K*K, or 0 when the nil is already set
+    secondary_weight: int        # +/-K: N/S want their side's tricks, or want rid of them
+    tertiary_weight: int         # 1 when the cover's share is what counts, else 0
     memo: Optional[Dict] = None
     nodes: int = 0
 
@@ -386,34 +387,55 @@ def objective_weights(
     tricks_remaining: int,
     secondary: str = "max",
     nil_already_set: bool = False,
-) -> Tuple[int, int]:
-    """Return (primary_weight, secondary_sign) for a lexicographic objective.
+) -> Tuple[int, int, int]:
+    """Return (primary, secondary, tertiary) weights for the objective.
 
     The search returns ONE integer that N/S minimize and E/W maximize:
 
-        value = primary_weight * (tricks the designated player takes)
-              + secondary_sign * (tricks N/S take, both partners together)
+        value = primary   * (tricks the designated player takes)
+              + secondary * (tricks N/S take, both partners together)
+              + tertiary  * (tricks the designated player takes)
 
-    primary_weight is K = tricks_remaining + 1, which is strictly larger than
-    any possible secondary term, so the primary objective always dominates and
-    the pair is compared lexicographically.  Setting it to 0 drops the primary
-    objective entirely, which is what nil_already_set means.
+    with K = tricks_remaining + 1, primary = K*K and secondary = +/-K, so each
+    level is strictly larger than anything the levels below it can contribute
+    and the three are compared lexicographically.
 
-    secondary_sign encodes the direction.  N/S minimize the value, so:
+    LEVEL 1, primary.  The designated player's trick count.  Zero when the nil
+    is already set, which switches the whole level off.
 
-        secondary="max"  ->  -1, and minimizing -ns_tricks maximizes them
-        secondary="min"  ->  +1, and minimizing +ns_tricks minimizes them
+    LEVEL 2, secondary.  The N/S pair's trick count.  Negative when they want
+    tricks (minimizing the value maximizes them), positive when they want rid of
+    them.
 
-    Either way E/W get the mirror image for free, because ns_tricks and
-    ew_tricks sum to a constant.  Both components stay strictly opposed, so
-    plain minimax remains well defined -- this is a lexicographic refinement of
-    the old objective, not a different kind of game.
+    LEVEL 3, tertiary.  The designated player's trick count again, always in the
+    direction "N/S would rather their partner took it".  This is what separates
+    three tricks to the nil bidder and one to its partner from one and three: to
+    the partner's bid only the partner's tricks count, so among lines where the
+    pair takes the same total, the pair prefers the nil bidder to take fewer.
+
+    Level 3 is inert whenever level 1 is on, because level 1 has already pinned
+    the designated player's count -- so it changes nothing for a live nil.  It
+    is zero in the "min" direction, because bags accrue to the pair whoever won
+    the trick, which makes the two partners' tricks genuinely interchangeable
+    there.  The one case it bites is a nil that is already set while the pair is
+    still trying to take tricks.
+
+    A caveat about that case.  With the nil set, "the pair maximizes the
+    partner's tricks" and "the opponents maximize their own" are not strictly
+    opposed: both sides would rather the nil bidder took nothing, so the split
+    between the two partners is not a tug of war, it is slack that only one side
+    cares about.  Level 3 sits BELOW the pair's total on purpose, so the
+    opponents' objective stays exactly "take as many as we can" and the split is
+    resolved against the pair -- making the reported partner count the one the
+    pair can guarantee rather than the one it might get if the opponents helped.
     """
     if secondary not in ("max", "min"):
         raise ValueError("secondary must be 'max' or 'min'")
-    primary_weight = 0 if nil_already_set else tricks_remaining + 1
-    secondary_sign = -1 if secondary == "max" else 1
-    return primary_weight, secondary_sign
+    k = tricks_remaining + 1
+    primary = 0 if nil_already_set else k * k
+    secondary_weight = -k if secondary == "max" else k
+    tertiary = 1 if secondary == "max" else 0
+    return primary, secondary_weight, tertiary
 
 
 def _search(
@@ -461,9 +483,9 @@ def _search(
             winner = trick_winner(leader, played)
             gained = 0
             if winner == ctx.designated:
-                gained += ctx.primary_weight
+                gained += ctx.primary_weight + ctx.tertiary_weight
             if winner % 2 == ctx.designated % 2:   # the N/S pair, whichever it is
-                gained += ctx.secondary_sign
+                gained += ctx.secondary_weight
             sub_value, sub_pv = _search(next_hands, winner, (), next_broken, ctx)
             value = gained + sub_value
         else:
@@ -544,14 +566,15 @@ def solve(
     if not 0 <= designated < 4:
         raise ValueError("designated out of range")
 
-    primary_weight, secondary_sign = objective_weights(
+    primary_weight, secondary_weight, tertiary_weight = objective_weights(
         position.tricks_remaining, secondary, nil_already_set
     )
     ctx = _Ctx(
         designated=designated,
         break_on_forced_spade_lead=break_on_forced_spade_lead,
         primary_weight=primary_weight,
-        secondary_sign=secondary_sign,
+        secondary_weight=secondary_weight,
+        tertiary_weight=tertiary_weight,
         memo={} if use_memo else None,
     )
     value, pv = _search(
@@ -566,7 +589,10 @@ def solve(
     # recovers the trick counts independently, and re-encoding them must land
     # back on the value the search reported.
     tally = replay_pv(position, list(pv), designated, break_on_forced_spade_lead)
-    replayed = primary_weight * tally.designated + secondary_sign * tally.designated_side
+    replayed = (
+        (primary_weight + tertiary_weight) * tally.designated
+        + secondary_weight * tally.designated_side
+    )
     if replayed != value:
         raise AssertionError(
             f"internal inconsistency: search says {value}, replaying the PV gives {replayed} "
@@ -963,10 +989,45 @@ def selftest(verbose: bool = True) -> int:
     )
 
     print("Lexicographic secondary objective")
-    check("weights: max", objective_weights(4, "max", False), (5, -1))
-    check("weights: min", objective_weights(4, "min", False), (5, 1))
+    check("weights: max", objective_weights(4, "max", False), (25, -5, 1))
+    check("weights: min", objective_weights(4, "min", False), (25, 5, 0))
     check("weights: nil already set drops the primary",
-          objective_weights(4, "max", True), (0, -1))
+          objective_weights(4, "max", True), (0, -5, 1))
+    check("weights: each level outranks the ones below it",
+          objective_weights(4, "max", False)[0] > abs(objective_weights(4, "max", False)[1]) * 4
+          + objective_weights(4, "max", False)[2] * 4, True)
+
+    # Three tricks to the nil bidder and one to its partner is NOT the same as
+    # one and three: only the partner's tricks count towards the partner's bid.
+    # With the nil live, level 1 has already pinned the nil bidder's count, so
+    # the distinction cannot arise.  With the nil set it can, and level 3 is
+    # what resolves it -- below the pair's total, so the opponents still simply
+    # take what they can.
+    # N/S can take two tricks here whatever they do; the question is who holds
+    # them.  Optimizing the pair total alone leaves the nil bidder with one of
+    # the two, which is worth nothing to the partner's bid.  Level 3 moves both
+    # onto the partner without costing the pair its total.
+    split = Position.build(
+        parse_pbn("N:9.42.J. 5.Q.9.A A6.6..6 ..AT.Q2"), leader=1, spades_broken=True
+    )
+    settled = solve(split, 0, secondary="max", nil_already_set=True)
+    check("nil set: the pair still takes everything it can", settled.side_tricks, 2)
+    check("nil set: and its partner ends up holding it", settled.tricks, 0)
+
+    # Level 3 must never buy a better split at the cost of the pair's total.
+    for seed in range(6):
+        f = random_fixture(seed=300 + seed, cards_per_hand=4)
+        live = solve(f.position, f.designated, use_memo=True, secondary="max")
+        gone = solve(f.position, f.designated, use_memo=True, secondary="max",
+                     nil_already_set=True)
+        check(f"seed {300+seed}: setting the nil never costs the pair tricks",
+              gone.side_tricks >= live.side_tricks, True)
+        # And in the "min" direction the two partners stay interchangeable, so
+        # the pair total is all there is.
+        shed = solve(f.position, f.designated, use_memo=True, secondary="min",
+                     nil_already_set=True)
+        check(f"seed {300+seed}: shedding is a pair total, not a split",
+              shed.side_tricks + shed.opponent_tricks, f.position.tricks_remaining)
 
     # Two cards each, N is nil and safe either way, so the primary is a tie and
     # the secondary decides.  S holds HA H3: cashing the ace wins tricks for

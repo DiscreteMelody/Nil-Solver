@@ -7,6 +7,7 @@
 // The end-to-end agreement testing lives in tools/crosscheck.py, which runs the
 // real oracle.
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <string>
@@ -251,12 +252,32 @@ int main(int argc, char** argv) {
         SearchOptions take_set = take;
         take_set.nil_already_set = true;
 
-        check("weights: primary dominates",
-              nil::objective_weights(4, take).primary, 5);
-        check("weights: take", nil::objective_weights(4, take).secondary_sign, -1);
-        check("weights: shed", nil::objective_weights(4, shed).secondary_sign, 1);
+        check("weights: primary dominates", nil::objective_weights(4, take).primary, 25);
+        check("weights: take", nil::objective_weights(4, take).secondary, -5);
+        check("weights: shed", nil::objective_weights(4, shed).secondary, 5);
+        check("weights: the cover level is on when taking",
+              nil::objective_weights(4, take).tertiary, 1);
+        check("weights: and off when shedding",
+              nil::objective_weights(4, shed).tertiary, 0);
         check("weights: already set drops the primary",
               nil::objective_weights(4, take_set).primary, 0);
+        {
+            // Each level must strictly outrank everything below it, or the
+            // tie-break starts overruling the nil.
+            const nil::ObjectiveWeights w = nil::objective_weights(4, take);
+            check("weights: levels do not overlap",
+                  w.primary > std::abs(w.secondary) * 4 + w.tertiary * 4, true);
+        }
+
+        // N/S take two tricks here whatever they do; the question is who holds
+        // them.  Optimising the pair total alone leaves one with the nil
+        // bidder, where it is worth nothing to the partner's bid.  The tertiary
+        // level moves both onto the partner without costing the pair anything.
+        const Position split = make_position("N:9.42.J. 5.Q.9.A A6.6..6 ..AT.Q2", "E", true);
+        const Solution settled = must_solve(split, "N", take_set);
+        check("nil set: the pair still takes everything it can",
+              settled.nil_side_tricks, 2);
+        check("nil set: and its partner ends up holding it", settled.nil_tricks, 0);
 
         // Two cards each, N is nil and safe either way, so the primary is a tie
         // and the secondary decides.  S holds HA H3: cashing the ace wins tricks

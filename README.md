@@ -11,6 +11,11 @@ The objective is **lexicographic**:
 > **SECONDARY** — each pair's own trick count, used only to choose among lines
 > that are already equally good for the primary. Either direction:
 > each pair takes as many tricks as it can, or as few as it can.
+>
+> **TERTIARY** — which of the nil side's two partners holds those tricks. Only
+> the covering partner's tricks count towards the partner's bid, so among lines
+> where the pair takes the same total, the pair prefers the nil bidder to take
+> fewer.
 
 The primary is not trick maximisation. Both opponents are trying to push a trick
 onto one specific seat and will throw away tricks of their own to do it; the nil
@@ -51,6 +56,7 @@ tools/nil_bench.cpp               corpus verifier and benchmark
 tools/make_corpus.py              regenerates the corpus
 tools/make_large_corpus.py        builds the 7+ card corpus
 tools/invariants.py               transform-based checks, any hand size
+tools/refresh_corpus.py           recompute rows an objective change can move
 tools/bench_history.py            reads back bench-history.csv
 tools/corpus_view.py              browse and spot-check the corpus
 scripts/build-and-test.cmd|.sh    one-shot build + test
@@ -409,13 +415,13 @@ The checks have teeth — swapping spades with hearts instead of permuting the
 other three produces violations immediately, which is the sanity check that they
 are not vacuous.
 
-**One thing they turned up.** With `--nil-already-set` the primary objective is
-off, so only the *side* total is optimised. How those tricks divide between the
-nil bidder and its partner is not part of the objective at all, and falls out of
-the tie-break — so `nil_tricks` may legitimately move under a suit permutation,
-while `nil_side_tricks` and `opponent_tricks` hold firm. If you are reading
-results with that flag set, `nil_tricks` is not an answer to a question anyone
-asked, and it may change when move ordering lands.
+**One thing they turned up.** With `--nil-already-set` *and* `--secondary min`,
+the two partners are interchangeable — bags accrue to the pair whoever won — so
+nothing in the objective decides the split, and it falls out of the tie-break.
+`nil_tricks` may therefore move under a suit permutation while
+`nil_side_tricks` and `opponent_tricks` hold firm. Everywhere else the split is
+pinned: by the primary while the nil is live, and by the tertiary level once it
+is set and the pair is taking tricks.
 
 ### The live cross-check
 

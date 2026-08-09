@@ -31,11 +31,12 @@ suit permutation
     tie-break among equal-valued moves prefers the canonically lowest card, and
     relabelling suits changes which card that is.
 
-One wrinkle the checks themselves turned up: when the nil is already set, the
-primary objective is off, so only the SIDE total is optimised.  Which of the two
-partners takes those tricks is not part of the objective and is settled by the
-tie-break, so it may legitimately move under a suit permutation.  The side and
-opponent totals must still hold.
+One wrinkle: when the nil is already set AND the pair is shedding tricks, the
+two partners are interchangeable, so nothing in the objective decides which of
+them takes a trick and the split falls out of the tie-break.  It may therefore
+move under a suit permutation.  The side and opponent totals must still hold.
+Everywhere else the split is pinned -- by the primary while the nil is live, and
+by the tertiary level once it is set and the pair is taking tricks.
 
 rank compression
     In each suit, relabel the ranks actually in play down to a contiguous block
@@ -240,14 +241,17 @@ def check(exe: str, spec: Dict, timeout: float, rng: random.Random) -> Tuple[int
             messages.append("  %s: solver did not finish" % info["kind"])
             continue
         run += 1
-        # With the nil already set the primary objective is switched off, so
-        # only the SIDE total is optimised; how those tricks split between the
-        # nil bidder and its partner is not part of the objective and falls out
-        # of the tie-break.  Relabelling suits changes which card is canonically
-        # lowest, so that split may legitimately move.  Rotation and rank
-        # compression preserve canonical order, so there it must not.
+        # With the nil already set AND the pair shedding tricks, the two
+        # partners are interchangeable -- bags accrue to the pair whoever won --
+        # so nothing in the objective decides the split and it falls out of the
+        # tie-break.  Relabelling suits changes which card is canonically
+        # lowest, so the split may legitimately move there.  Everywhere else the
+        # split is pinned: by the primary when the nil is live, and by the
+        # tertiary level when it is set and the pair is taking tricks.
+        undetermined_split = (spec.get("nilset") == "1"
+                              and spec.get("secondary") == "min")
         fields = ["side_tricks", "opponent_tricks"]
-        if not (info["kind"] == "suits" and spec.get("nilset") == "1"):
+        if not (info["kind"] == "suits" and undetermined_split):
             fields.insert(0, "tricks")
         for field in fields:
             if result[field] != base[field]:

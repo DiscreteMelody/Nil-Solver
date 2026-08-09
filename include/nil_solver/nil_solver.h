@@ -22,6 +22,15 @@
  *              NIL_FLAG_MINIMISE_OWN_TRICKS to make each pair take as few as
  *              it can instead.
  *
+ *   TERTIARY   which of the nil side's two partners holds those tricks.  Only
+ *              the covering partner's tricks count towards the partner's bid,
+ *              so among lines where the pair takes the same total, the pair
+ *              prefers the nil bidder to take fewer.  This level is inert while
+ *              the primary is on -- that has already pinned the nil bidder's
+ *              count -- and off entirely under NIL_FLAG_MINIMISE_OWN_TRICKS,
+ *              where bags accrue to the pair whoever won the trick and the two
+ *              partners are genuinely interchangeable.
+ *
  * Both sides see all four hands (double dummy).  The primary is not ordinary
  * trick maximisation: a side will happily throw tricks away if that forces one
  * onto the nil bidder.  The secondary only breaks ties, so it can never change
@@ -32,12 +41,19 @@
  * real game.  The primary objective is dropped, both sides stop protecting and
  * attacking it, and only the secondary objective is optimised.
  *
- * One consequence worth knowing before you rely on the numbers: with that flag
- * set, only nil_side_tricks and opponent_tricks are optimised.  How the side's
- * tricks divide between the nil bidder and its partner is not part of the
- * objective any more, so nil_tricks is whatever the tie-break happened to
- * produce.  It is deterministic, but it is not an answer to a question anyone
- * asked, and it may move when move ordering is added later.
+ * With that flag set and the pair still taking tricks, the tertiary level is
+ * what decides the split, and it sits BELOW the pair's total on purpose.  The
+ * two sides are not strictly opposed there: both would rather the nil bidder
+ * took nothing, so the split is slack only one side cares about rather than a
+ * tug of war.  Keeping it below the total leaves the opponents' objective
+ * exactly "take as many as we can" and resolves the split against the pair, so
+ * nil_side_tricks - nil_tricks is the partner count the pair can GUARANTEE, not
+ * the one it might get if the opponents were being unhelpful to themselves.
+ *
+ * Combine that flag with NIL_FLAG_MINIMISE_OWN_TRICKS and the tertiary level is
+ * off: bags accrue to the pair whoever won, the two partners are
+ * interchangeable, and nil_tricks is then whatever the tie-break produced
+ * rather than an answer to a question anyone asked.
  */
 #ifndef NIL_SOLVER_H
 #define NIL_SOLVER_H
@@ -106,8 +122,9 @@ typedef struct nil_result {
      * NIL_FLAG_NIL_ALREADY_SET was passed, since that is a fact you supplied
      * rather than one the search discovered. */
     int32_t nil_fails;
-    /* Tricks the nil bidder takes from this position onward.  Meaningful only
-     * when NIL_FLAG_NIL_ALREADY_SET was NOT passed; see the note above. */
+    /* Tricks the nil bidder takes from this position onward.  Not meaningful
+     * when NIL_FLAG_NIL_ALREADY_SET and NIL_FLAG_MINIMISE_OWN_TRICKS are both
+     * set; see the note above. */
     int32_t nil_tricks;
     /* Tricks the nil bidder and its covering partner take between them.
      * nil_tricks is included in this. */
