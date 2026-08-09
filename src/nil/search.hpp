@@ -46,6 +46,7 @@
 #ifndef NIL_SEARCH_HPP
 #define NIL_SEARCH_HPP
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -72,12 +73,26 @@ struct SearchOptions {
     // side has anything left to protect or attack.
     bool nil_already_set = false;
 
-    // Memoise on the FULL state (all four hands, leader, cards on the current
-    // trick, broken flag).  The search is a pure function of exactly that
-    // state, so the cache changes neither the value nor the principal
-    // variation -- it is memoisation of a pure function, not alpha-beta or any
-    // other search enhancement.  There is still no pruning of any kind.
+    // Look positions up in a transposition table.  The search is a pure
+    // function of the position, so the table changes neither the value nor the
+    // principal variation -- it is memoisation, not alpha-beta or any other
+    // search enhancement.  There is still no pruning of any kind.
+    //
+    // What it keys on is nil/statekey.hpp: not the literal state, but the
+    // smallest description of it that still determines the value.  Two
+    // positions that differ only in absolute ranks, or only in which card is
+    // currently winning a trick as opposed to how many live cards it beats, are
+    // one entry.
     bool use_memo = true;
+
+    // Table size in mebibytes, rounded DOWN to a power-of-two bucket count.
+    // Zero has the same effect as use_memo = false.
+    //
+    // The table is bounded, so once a search overflows it the node count
+    // depends on this number: a bigger table finds more of its own earlier work
+    // and visits fewer nodes.  Benchmarks are only comparable at equal size,
+    // which is why nil_bench records it in the history file.
+    std::size_t tt_megabytes = 32;
 };
 
 // Who took what along a line.
@@ -96,6 +111,15 @@ struct Solution {
     int nil_seat = 0;
     std::vector<Play> pv;    // principal variation, one entry per remaining card
     std::uint64_t nodes = 0;
+
+    // Transposition table behaviour for this solve.  `tt_hits` is the number of
+    // nodes answered from the table; `tt_evictions` counts stores that threw
+    // away a different live position, which is the signal that the table is too
+    // small for the depth being attempted.
+    std::uint64_t tt_probes = 0;
+    std::uint64_t tt_hits = 0;
+    std::uint64_t tt_stores = 0;
+    std::uint64_t tt_evictions = 0;
 };
 
 // Weights that pack the three levels into one integer:
@@ -136,6 +160,12 @@ bool solve(const Position& pos, int nil_seat, const SearchOptions& opts,
 // who took what.  Also useful for checking a PV produced elsewhere.
 bool replay_pv(const Position& pos, const std::vector<Play>& pv, int nil_seat,
                bool break_on_forced_spade_lead, Tally& tally_out, std::string& err);
+
+// The transposition table is kept between calls, because a corpus run solves
+// hundreds of positions and reallocating tens of megabytes for each one costs
+// more than the search does.  Call this to hand the memory back; the next
+// solve() will simply allocate again.
+void release_transposition_table();
 
 std::string format_pv_compact(const Solution& sol);       // "N:D2 E:DA S:D5 W:D7"
 std::string format_pv(const Position& pos, const Solution& sol);  // one line per trick

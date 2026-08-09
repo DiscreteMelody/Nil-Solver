@@ -17,6 +17,8 @@
 #include "nil/position.hpp"
 #include "nil/rules.hpp"
 #include "nil/search.hpp"
+#include "nil/statekey.hpp"
+#include "nil/tt.hpp"
 #include "nil_solver/nil_solver.h"
 
 namespace {
@@ -110,6 +112,29 @@ Solution must_solve(const Position& pos, const char* nil_seat,
         std::exit(70);
     }
     return sol;
+}
+
+nil::StateKey key_of(const Position& pos) {
+    nil::StateKey key;
+    nil::SuitProfile profile;
+    nil::encode_state_key(pos.hands, pos.leader, pos.spades_broken, pos.trick, pos.trick_len, key,
+                          profile);
+    return key;
+}
+
+nil::SuitProfile profile_of(const Position& pos) {
+    nil::StateKey key;
+    nil::SuitProfile profile;
+    nil::encode_state_key(pos.hands, pos.leader, pos.spades_broken, pos.trick, pos.trick_len, key,
+                          profile);
+    return profile;
+}
+
+bool key_fits(const Position& pos) {
+    nil::StateKey key;
+    nil::SuitProfile profile;
+    return nil::encode_state_key(pos.hands, pos.leader, pos.spades_broken, pos.trick,
+                                 pos.trick_len, key, profile);
 }
 
 int trick_winner_of(const char* leader, const std::vector<const char*>& cards) {
@@ -333,6 +358,136 @@ int main(int argc, char** argv) {
             check(std::string("primary is stable under the tie-break: ") + layout,
                   must_solve(pos, "N", take).nil_tricks, must_solve(pos, "N", shed).nil_tricks);
         }
+    }
+
+    std::cout << "Compact state key\n";
+    {
+        // Absolute ranks do not matter, only the order the four hands hold
+        // them in.  These two positions are the same game.
+        const Position low = make_position("N:2... 3... 4... 5...", "N");
+        const Position high = make_position("N:3... 5... 9... T...", "N");
+        check("rank relabelling keys the same", key_of(low) == key_of(high), true);
+
+        // ...but who holds what still does.
+        const Position swapped = make_position("N:2... 4... 3... 5...", "N");
+        check("owner order keys differently", key_of(low) == key_of(swapped), false);
+
+        // Both of these have the owner stream N,E,S,W and would collide if the
+        // suit lengths were not in the header: one is four spades, the other is
+        // two spades and two hearts.
+        const Position split = make_position("N:2... 3... .2.. .3..", "N");
+        check("suit lengths disambiguate", key_of(low) == key_of(split), false);
+
+        // The leader and the broken flag are part of the position.
+        Position other_leader = low;
+        other_leader.leader = nil::parse_seat("E");
+        check("leader is in the key", key_of(low) == key_of(other_leader), false);
+        Position broken = low;
+        broken.spades_broken = true;
+        check("broken flag is in the key", key_of(low) == key_of(broken), false);
+    }
+    {
+        // What survives of a card already on the trick is not its rank but how
+        // many live cards it beats.  HK and HA both sit above all three
+        // survivors, so the rest of the deal cannot tell them apart.
+        const Position king = make_position("N:- .3.. .4.. .5..", "N", false, "HK");
+        const Position ace = make_position("N:- .3.. .4.. .5..", "N", false, "HA");
+        check("equally dominant trick cards key the same", key_of(king) == key_of(ace), true);
+
+        // H2 beats none of them, which is a different position.
+        const Position deuce = make_position("N:- .3.. .4.. .5..", "N", false, "H2");
+        check("a beatable trick card keys differently", key_of(king) == key_of(deuce), false);
+    }
+    {
+        // A relative move is a slot number, so it only means anything read
+        // against the live cards of the position it came from.
+        const Position pos = make_position("N:AK... Q9... J8... T7...", "N");
+        const nil::SuitProfile profile = profile_of(pos);
+        check("live spades counted", profile.length[nil::SUIT_SPADES], 8);
+        check("live hearts counted", profile.length[nil::SUIT_HEARTS], 0);
+        check("total counted", profile.total, 8);
+
+        const CardId queen = C("SQ");
+        check("relative move round trips",
+              nil::from_relative(nil::to_relative(queen, profile), profile), queen);
+        check("bottom slot is the lowest live card",
+              nil::from_relative(static_cast<nil::RelMove>(nil::SUIT_SPADES * 16), profile),
+              C("S7"));
+        check("no-move sentinel round trips",
+              nil::from_relative(nil::REL_NO_MOVE, profile), nil::NO_CARD);
+    }
+    {
+        // 21 + 2n bits at the start of a trick, 30 + 2n inside one.  A whole
+        // deal fits; a whole deal with one card already led does not -- and
+        // that is the only shape that does not, because it can only arise in
+        // the first trick, where nothing has transposed yet.
+        const char* full = "N:8.K5.KT2.KQT9762 AQT643.T.QJ864.8 J9.A943.73.AJ543 K752.QJ8762.A95.";
+        check("52 cards at a trick boundary fit", key_fits(make_position(full, "N")), true);
+        const char* led = "N:.K5.KT2.KQT9762 AQT643.T.QJ864.8 J9.A943.73.AJ543 K752.QJ8762.A95.";
+        check("51 cards mid-trick do not fit",
+              key_fits(make_position(led, "N", false, "S8")), false);
+
+        const Position five = make_position("N:AK2.4.5. Q93.6.7. J84.8.9. T75.T.J.", "N");
+        nil::StateKey key;
+        nil::SuitProfile profile;
+        nil::encode_state_key(five.hands, five.leader, five.spades_broken, five.trick,
+                              five.trick_len, key, profile);
+        check("a five-card ending keys into one word", key.hi == 0ull, true);
+    }
+
+    std::cout << "Transposition table\n";
+    {
+        // The table caches a pure function.  Whatever it does to the node
+        // count, it must not move the value or the principal variation --
+        // including when it is far too small and evicting constantly.
+        const char* deals[] = {
+            "N:A2.K3.. .A4.K5. Q6..J8. T9.T9..",
+            "N:AK.Q.J. 23.4.5. 67.8.9. TQ.T.A.",
+        };
+        const char* seats[] = {"N", "E", "S", "W"};
+        for (const char* pbn : deals) {
+            for (const char* seat : seats) {
+                for (int mode = 0; mode < 2; ++mode) {
+                    SearchOptions big;
+                    big.minimise_own_tricks = mode == 1;
+                    SearchOptions none = big;
+                    none.use_memo = false;
+                    SearchOptions tiny = big;
+                    tiny.tt_megabytes = 1;
+
+                    const Position pos = make_position(pbn, "N", true);
+                    const Solution with = must_solve(pos, seat, big);
+                    const Solution without = must_solve(pos, seat, none);
+                    const Solution cramped = must_solve(pos, seat, tiny);
+
+                    const std::string tag = std::string(pbn).substr(2, 8) + " nil " + seat +
+                                            (mode ? " min" : " max");
+                    check("no table: same value, " + tag, without.value, with.value);
+                    check("no table: same PV, " + tag, nil::format_pv_compact(without),
+                          nil::format_pv_compact(with));
+                    check("1 MiB table: same value, " + tag, cramped.value, with.value);
+                    check("1 MiB table: same PV, " + tag, nil::format_pv_compact(cramped),
+                          nil::format_pv_compact(with));
+                }
+            }
+        }
+    }
+    {
+        // Consecutive solves share one table.  A different nil seat gives the
+        // same positions different values, so the generation counter is what
+        // stops the previous solve's answers leaking into this one; four seats
+        // on one deal, twice, is the case that would expose it.
+        const Position pos = make_position("N:A2.K3.. .A4.K5. Q6..J8. T9.T9..", "N", true);
+        const char* seats[] = {"N", "E", "S", "W"};
+        int first[4] = {0, 0, 0, 0};
+        for (int i = 0; i < 4; ++i) first[i] = must_solve(pos, seats[i], SearchOptions()).value;
+        for (int i = 3; i >= 0; --i) {
+            check(std::string("value is seat-stable across table reuse, ") + seats[i],
+                  must_solve(pos, seats[i], SearchOptions()).value, first[i]);
+        }
+        nil::release_transposition_table();
+        check("value survives releasing the table",
+              must_solve(pos, "N", SearchOptions()).value, first[0]);
     }
 
     std::cout << "Parsing\n";

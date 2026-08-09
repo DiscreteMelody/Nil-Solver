@@ -6,6 +6,7 @@
 #include "nil_solver/nil_solver.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstring>
 #include <string>
 
@@ -13,6 +14,11 @@
 #include "nil/search.hpp"
 
 namespace {
+
+// Settable through nil_set_table_size; see the header.  Deliberately not part of
+// the flags word, because it is a resource knob rather than a question about
+// the position, and callers set it once rather than per solve.
+thread_local std::size_t g_table_megabytes = nil::SearchOptions().tt_megabytes;
 
 void copy_err(char* buf, std::int32_t len, const std::string& msg) {
     if (!buf || len <= 0) return;
@@ -61,16 +67,18 @@ std::int32_t solve_impl(const char* pbn, std::int32_t leader, const char* curren
         copy_err(err_buf, err_len, err);
         return NIL_ERR_ILLEGAL_POSITION;
     }
-    if (pos.cards_per_hand() > 7 && !(flags & NIL_FLAG_FORCE_LARGE)) {
+    if (pos.cards_per_hand() > NIL_CARD_LIMIT && !(flags & NIL_FLAG_FORCE_LARGE)) {
         copy_err(err_buf, err_len,
-                 "more than 7 cards per hand: this is an exhaustive search with no "
-                 "pruning and will not finish. Pass NIL_FLAG_FORCE_LARGE to insist.");
+                 "too many cards per hand: the search is still exhaustive (the "
+                 "transposition table collapses repeated positions but prunes nothing) "
+                 "and will take a very long time. Pass NIL_FLAG_FORCE_LARGE to insist.");
         return NIL_ERR_TOO_MANY_CARDS;
     }
 
     nil::SearchOptions opts;
     opts.break_on_forced_spade_lead = (flags & NIL_FLAG_BREAK_ON_FORCED_SPADE_LEAD) != 0;
     opts.use_memo = (flags & NIL_FLAG_NO_MEMO) == 0;
+    opts.tt_megabytes = g_table_megabytes;
     opts.minimise_own_tricks = (flags & NIL_FLAG_MINIMISE_OWN_TRICKS) != 0;
     opts.nil_already_set = (flags & NIL_FLAG_NIL_ALREADY_SET) != 0;
 
@@ -135,6 +143,14 @@ NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_fails(const char* pbn, std::int3
     const std::int32_t rc =
         solve_impl(pbn, leader, current_trick, nil_seat, flags, &result, nullptr, nullptr, 0);
     return rc == NIL_OK ? result.nil_fails : rc;
+}
+
+NIL_SOLVER_API void NIL_SOLVER_CALL nil_set_table_size(std::uint32_t megabytes) {
+    g_table_megabytes = static_cast<std::size_t>(megabytes);
+}
+
+NIL_SOLVER_API void NIL_SOLVER_CALL nil_release_table(void) {
+    nil::release_transposition_table();
 }
 
 NIL_SOLVER_API const char* NIL_SOLVER_CALL nil_solver_version(void) { return "0.1.0"; }

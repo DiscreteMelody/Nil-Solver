@@ -37,6 +37,8 @@ add_library(nil_solver_core STATIC
   src/nil/corpus.cpp
   src/nil/position.cpp
   src/nil/search.cpp
+  src/nil/statekey.cpp
+  src/nil/tt.cpp
 )
 target_include_directories(nil_solver_core PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}/src"

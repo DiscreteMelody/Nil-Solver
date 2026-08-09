@@ -3,9 +3,10 @@
 #include <algorithm>
 #include <iomanip>
 #include <sstream>
-#include <unordered_map>
 
 #include "nil/rules.hpp"
+#include "nil/statekey.hpp"
+#include "nil/tt.hpp"
 
 namespace nil {
 namespace {
@@ -22,53 +23,12 @@ struct State {
     int led_suit() const { return trick_len ? card_suit(trick[0]) : -1; }
 };
 
-struct Key {
-    Hand h[4];
-    std::uint32_t packed;
-
-    bool operator==(const Key& o) const {
-        return h[0] == o.h[0] && h[1] == o.h[1] && h[2] == o.h[2] && h[3] == o.h[3] &&
-               packed == o.packed;
-    }
-};
-
-struct KeyHash {
-    std::size_t operator()(const Key& k) const {
-        std::uint64_t x = 1469598103934665603ull;
-        const auto mix = [&x](std::uint64_t v) {
-            x ^= v;
-            x *= 1099511628211ull;
-            x ^= x >> 29;
-        };
-        mix(k.h[0]);
-        mix(k.h[1]);
-        mix(k.h[2]);
-        mix(k.h[3]);
-        mix(k.packed);
-        return static_cast<std::size_t>(x);
-    }
-};
-
-Key make_key(const State& s) {
-    Key k;
-    k.h[0] = s.hands[0];
-    k.h[1] = s.hands[1];
-    k.h[2] = s.hands[2];
-    k.h[3] = s.hands[3];
-    std::uint32_t p = static_cast<std::uint32_t>(s.leader) |
-                      (static_cast<std::uint32_t>(s.trick_len) << 2) |
-                      (static_cast<std::uint32_t>(s.broken ? 1 : 0) << 4);
-    for (int i = 0; i < s.trick_len; ++i) {
-        p |= (static_cast<std::uint32_t>(s.trick[i]) & 0x3Fu) << (5 + 6 * i);
-    }
-    k.packed = p;
-    return k;
+// One table per thread, reused across solves and invalidated by generation
+// rather than by clearing.  See release_transposition_table().
+TranspositionTable& shared_table() {
+    static thread_local TranspositionTable table;
+    return table;
 }
-
-struct Entry {
-    std::int16_t value;
-    std::int8_t move;
-};
 
 struct Ctx {
     int nil_seat = 0;
@@ -76,9 +36,8 @@ struct Ctx {
     int secondary_weight = -1; // -K the nil side wants tricks, +K it wants rid of them
     int tertiary_weight = 0;   // 1 when the cover partner's share is what counts
     bool break_forced = false;
-    bool use_memo = true;
     std::uint64_t nodes = 0;
-    std::unordered_map<Key, Entry, KeyHash> memo;
+    TranspositionTable* tt = nullptr;  // null when the caller turned it off
 };
 
 // Returns the packed objective value from `st` onwards (see objective_weights),
@@ -95,13 +54,26 @@ int search(Ctx& ctx, const State& st, CardId& best_move) {
     best_move = NO_CARD;
     if (st.empty()) return 0;
 
-    Key key;
-    if (ctx.use_memo) {
-        key = make_key(st);
-        const auto it = ctx.memo.find(key);
-        if (it != ctx.memo.end()) {
-            best_move = it->second.move;
-            return it->second.value;
+    // The key describes the position up to a relabelling of ranks, so the move
+    // that comes back out of the table is a slot number rather than a card and
+    // has to be read against THIS position's live cards.  That relabelling is
+    // order preserving -- it never moves a card across a suit and never
+    // reorders two cards within one -- so the canonically lowest of several
+    // equally good moves is still the canonically lowest one after it, and the
+    // principal variation is the same one an uncached search would produce.
+    StateKey key;
+    SuitProfile profile;
+    std::uint64_t hash = 0;
+    bool keyed = false;
+    if (ctx.tt) {
+        keyed = encode_state_key(st.hands, st.leader, st.broken, st.trick, st.trick_len, key,
+                                 profile);
+        if (keyed) {
+            hash = mix_key(key);
+            if (const TTEntry* hit = ctx.tt->probe(key, hash)) {
+                best_move = from_relative(hit->move, profile);
+                return hit->value;
+            }
         }
     }
 
@@ -146,9 +118,9 @@ int search(Ctx& ctx, const State& st, CardId& best_move) {
         }
     }
 
-    if (ctx.use_memo) {
-        ctx.memo.emplace(key, Entry{static_cast<std::int16_t>(best),
-                                    static_cast<std::int8_t>(best_move)});
+    if (keyed) {
+        const RelMove rel = best_move == NO_CARD ? REL_NO_MOVE : to_relative(best_move, profile);
+        ctx.tt->store(key, hash, best, rel, profile.total, BOUND_EXACT);
     }
     return best;
 }
@@ -202,12 +174,21 @@ bool solve(const Position& pos, int nil_seat, const SearchOptions& opts, Solutio
     ctx.secondary_weight = weights.secondary;
     ctx.tertiary_weight = weights.tertiary;
     ctx.break_forced = opts.break_on_forced_spade_lead;
-    ctx.use_memo = opts.use_memo;
+
+    TranspositionTable& table = shared_table();
+    if (opts.use_memo && opts.tt_megabytes > 0) {
+        table.resize(opts.tt_megabytes);  // a no-op at the size it already is
+        table.new_search();               // this solve may not see the last one's values
+        ctx.tt = &table;
+    }
 
     State st = state_of(pos);
     CardId move = NO_CARD;
     const int value = search(ctx, st, move);
     const std::uint64_t search_nodes = ctx.nodes;
+    // Snapshot before the PV walk below, which probes the table again and would
+    // otherwise inflate the hit count with lookups that did no search work.
+    const TTStats table_stats = ctx.tt ? ctx.tt->stats() : TTStats();
 
     // Walk the chosen moves to recover the principal variation.  With the memo
     // on this is a handful of lookups; with it off each step re-searches a
@@ -267,8 +248,14 @@ bool solve(const Position& pos, int nil_seat, const SearchOptions& opts, Solutio
     out.value = value;
     out.nil_seat = nil_seat;
     out.nodes = search_nodes;
+    out.tt_probes = table_stats.probes;
+    out.tt_hits = table_stats.hits;
+    out.tt_stores = table_stats.stores;
+    out.tt_evictions = table_stats.evictions;
     return true;
 }
+
+void release_transposition_table() { shared_table().resize(0); }
 
 bool replay_pv(const Position& pos, const std::vector<Play>& pv, int nil_seat,
                bool break_on_forced_spade_lead, Tally& tally_out, std::string& err) {

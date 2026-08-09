@@ -269,7 +269,7 @@ void write_csv(const std::string& path, const std::vector<Row>& rows) {
 void append_history(const std::string& path, const Provenance& prov, const std::string& corpus,
                     const std::map<int, Row>& totals, const std::map<int, int>& counts,
                     std::uint64_t all_nodes, double all_ms, int all_positions, int repeat,
-                    bool memo, const std::string& note) {
+                    const std::string& memo, const std::string& note) {
     const bool need_header = file_is_empty(path);
     std::ofstream out(path.c_str(), std::ios::app);
     if (!out) {
@@ -288,7 +288,7 @@ void append_history(const std::string& path, const Provenance& prov, const std::
             << csv_field(prov.branch) << ',' << csv_field(corpus) << ',' << csv_field(cards) << ','
             << positions << ',' << nodes << ',' << std::fixed << std::setprecision(1) << ms << ','
             << (nodes / static_cast<std::uint64_t>(divisor)) << ',' << std::setprecision(3)
-            << (ms / divisor) << ',' << repeat << ',' << (memo ? "on" : "off") << ','
+            << (ms / divisor) << ',' << repeat << ',' << csv_field(memo) << ','
             << csv_field(prov.build) << ',' << csv_field(prov.compiler) << ','
             << csv_field(prov.host) << ',' << csv_field(note) << '\n';
     };
@@ -341,11 +341,20 @@ void usage(const char* argv0) {
               << "  --note <text>     free-text label for the history row\n"
               << "  --commit <sha>    override the commit git reports\n"
               << "  --slowest <n>     list the n slowest positions            [5]\n"
+              << "  --tt-mb <n>       transposition table size in MiB         [32]\n"
+              << "  --no-memo         no transposition table at all\n"
               << "  --quiet           only print the summary and any failures\n"
               << "\n"
               << "--check-pv is off by default on purpose: move ordering will change\n"
               << "which of several equal-valued cards the search picks, and that is\n"
               << "not a regression.  Turn it on while the search is still exhaustive.\n";
+}
+
+// Node counts are only comparable between runs that used the same table, so the
+// size travels with them.  bench_history.py already groups runs on this column.
+std::string memo_label(const nil::SearchOptions& opts) {
+    if (!opts.use_memo || opts.tt_megabytes == 0) return "off";
+    return std::to_string(opts.tt_megabytes) + "mb";
 }
 
 }  // namespace
@@ -400,6 +409,9 @@ int main(int argc, char** argv) {
             repeat = std::max(1, std::atoi(argv[++i]));
         } else if (arg == "--slowest" && has_next) {
             slowest = std::atoi(argv[++i]);
+        } else if (arg == "--tt-mb" && has_next) {
+            const long long value = std::atoll(argv[++i]);
+            opts.tt_megabytes = value > 0 ? static_cast<std::size_t>(value) : 0u;
         } else if (arg == "--no-memo") {
             opts.use_memo = false;
         } else if (arg == "--secondary" && has_next) {
@@ -479,7 +491,7 @@ int main(int argc, char** argv) {
 
     if (!quiet) {
         std::cout << (corpus_path.empty() ? "random" : corpus_path) << "   " << items.size()
-                  << " positions, memo " << (opts.use_memo ? "on" : "off") << ", best of "
+                  << " positions, memo " << memo_label(opts) << ", best of "
                   << repeat << "\n\n";
     }
 
@@ -626,7 +638,7 @@ int main(int argc, char** argv) {
                 ? ("random-" + std::to_string(cards) + "c-seed" + std::to_string(seed))
                 : corpus_path;
         append_history(history_path, prov, label, totals, counts, all_nodes, all_ms,
-                       all_positions, repeat, opts.use_memo, note);
+                       all_positions, repeat, memo_label(opts), note);
         if (!quiet) {
             std::cout << "\n  logged to " << history_path << "  [" << prov.commit
                       << (prov.dirty ? " DIRTY" : "") << " on " << prov.host << ", " << prov.build

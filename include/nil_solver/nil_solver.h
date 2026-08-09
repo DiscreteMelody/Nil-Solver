@@ -99,13 +99,18 @@ extern "C" {
  * objective; only the secondary one is optimised.  `nil_fails` is then
  * reported as 1 because you said so, not because it was computed. */
 #define NIL_FLAG_NIL_ALREADY_SET 0x20u
-/* Disable the full-state memo.  The memo caches a pure function, so it changes
- * neither the answer nor the principal variation; this flag exists only to make
- * the search maximally dumb when cross-checking. */
+/* Disable the transposition table.  The table caches a pure function, so it
+ * changes neither the answer nor the principal variation; this flag exists only
+ * to make the search maximally dumb when cross-checking.  It is also very much
+ * slower -- orders of magnitude beyond about five cards a hand. */
 #define NIL_FLAG_NO_MEMO 0x4u
-/* Allow more than 7 cards per hand.  Without this the solver refuses, because
- * there is no pruning and it will not finish. */
+/* Allow more than NIL_CARD_LIMIT cards per hand.  Without this the solver
+ * refuses, because the search is still exhaustive and will take a very long
+ * time. */
 #define NIL_FLAG_FORCE_LARGE 0x8u
+
+/* Cards per hand the solver will attempt without NIL_FLAG_FORCE_LARGE. */
+#define NIL_CARD_LIMIT 9
 
 /* Status codes.  0 is success, everything else is a failure. */
 #define NIL_OK 0
@@ -178,6 +183,21 @@ NIL_SOLVER_API int32_t NIL_SOLVER_CALL nil_solve_pv(const char* pbn, int32_t lea
 NIL_SOLVER_API int32_t NIL_SOLVER_CALL nil_fails(const char* pbn, int32_t leader,
                                                  const char* current_trick, int32_t nil_seat,
                                                  uint32_t flags);
+
+/* Set the transposition table size, in mebibytes, for subsequent calls on the
+ * calling thread.  The table is per-thread, and so is this setting.  Rounded DOWN to a power-of-two bucket count, so the table actually
+ * allocated holds between half and all of what was asked for.  Zero has the
+ * same effect as NIL_FLAG_NO_MEMO.  The default is 32.
+ *
+ * Bigger is faster on deep positions and makes no difference on shallow ones.
+ * The table is bounded, so the node count a deep search reports depends on this
+ * setting; the ANSWER never does. */
+NIL_SOLVER_API void NIL_SOLVER_CALL nil_set_table_size(uint32_t megabytes);
+
+/* Release the transposition table held by the calling thread.  Purely a
+ * memory-reclaim call: the next solve on that thread allocates again.  Call it
+ * from a thread that is done solving, or before unloading the library. */
+NIL_SOLVER_API void NIL_SOLVER_CALL nil_release_table(void);
 
 /* Static version string, e.g. "0.1.0". */
 NIL_SOLVER_API const char* NIL_SOLVER_CALL nil_solver_version(void);

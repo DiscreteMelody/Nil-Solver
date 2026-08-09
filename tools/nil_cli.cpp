@@ -7,6 +7,7 @@
 //   nil_cli --pbn '...' --leader W --nil S --trick 'H4 HK' --spades-broken
 //   nil_cli --pbn '...' --nil S --compact
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
 #include <string>
@@ -15,6 +16,11 @@
 #include "nil/search.hpp"
 
 namespace {
+
+// Above this the search is still not finishing in a sitting.  It is a guard
+// rail, not a statement about what the solver can represent -- pass --force to
+// go past it.
+constexpr int NIL_CLI_CARD_LIMIT = 9;
 
 void usage(const char* argv0) {
     std::cout
@@ -35,9 +41,11 @@ void usage(const char* argv0) {
         << "                          primary objective and optimise only the\n"
         << "                          secondary one\n"
         << "  --break-on-forced-lead  a forced spade lead breaks spades (see README)\n"
-        << "  --no-memo               disable the full-state memo (same answer, slower)\n"
+        << "  --no-memo               disable the transposition table (same answer,\n"
+        << "                          much slower)\n"
+        << "  --tt-mb <n>             transposition table size in MiB          [32]\n"
         << "  --compact               print only the machine-readable result\n"
-        << "  --force                 allow more than 7 cards per hand (will not finish)\n"
+        << "  --force                 allow more than 9 cards per hand (very slow)\n"
         << "  --help                  this message\n";
 }
 
@@ -95,6 +103,15 @@ int main(int argc, char** argv) {
             opts.break_on_forced_spade_lead = true;
         } else if (arg == "--no-memo") {
             opts.use_memo = false;
+        } else if (arg == "--tt-mb") {
+            std::string mb;
+            if (!need_value(argc, argv, i, "--tt-mb", mb)) return 2;
+            const long long value = std::atoll(mb.c_str());
+            if (value < 0) {
+                std::cerr << "error: --tt-mb cannot be negative\n";
+                return 2;
+            }
+            opts.tt_megabytes = static_cast<std::size_t>(value);
         } else if (arg == "--compact") {
             compact = true;
         } else if (arg == "--force") {
@@ -143,10 +160,11 @@ int main(int argc, char** argv) {
         std::cerr << "error: " << err << "\n";
         return 2;
     }
-    if (pos.cards_per_hand() > 7 && !force) {
+    if (pos.cards_per_hand() > NIL_CLI_CARD_LIMIT && !force) {
         std::cerr << "error: " << pos.cards_per_hand()
-                  << " cards per hand; this is an exhaustive search with no pruning "
-                     "and will not finish. Use --force to insist.\n";
+                  << " cards per hand; the search is still exhaustive (the transposition "
+                     "table collapses repeated positions but prunes nothing) and this will "
+                     "take a very long time. Use --force to insist.\n";
         return 2;
     }
 

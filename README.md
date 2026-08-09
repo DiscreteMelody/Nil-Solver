@@ -32,10 +32,13 @@ plain minimax over the packed pair is still well defined.
 been broken in the real game, or when the score makes the nil irrelevant: there
 is nothing left to protect or attack, and only the secondary objective matters.
 
-This first iteration is **correctness first**: an exhaustive search with no
-alpha-beta, no move ordering, no quick-trick shortcuts and no rank-equivalence
-collapsing. It is meant for 4–6 card endings and is validated card-for-card
-against `nil_oracle.py`. Speed work comes later, on top of a solver we trust.
+The search is **correctness first**: exhaustive, with no alpha-beta, no move
+ordering and no quick-trick shortcuts, validated card-for-card against
+`nil_oracle.py`. The one speed mechanism it has is a transposition table over a
+canonical position key that collapses rank-equivalent and trick-equivalent
+positions ([The transposition table](#the-transposition-table)). That does not
+prune anything, so it cannot change an answer; it is comfortable to about eight
+cards a hand. Pruning comes next, on top of a solver we trust.
 
 ## Layout
 
@@ -337,10 +340,11 @@ While the search is still exhaustive, `--check-pv` is worth leaving on.
 
 ### Large hands, and what can actually be verified up there
 
-Cost grows roughly twentyfold per extra card, and the oracle is Python with a
+Cost grows roughly sixfold per extra card, and the oracle is Python with a
 dictionary for a transposition table. On one core it is fine to about six cards
 and then falls over — on a typical 7-card deal it runs out of *memory* before it
-runs out of patience.
+runs out of patience. The C++ side goes further than the oracle can follow,
+which is why the invariance checks below exist.
 
 But cost also varies by two orders of magnitude *within* a hand size. Random
 7-card deals measured here ranged from one million nodes to seventy-eight. The
@@ -499,7 +503,7 @@ when `nil_bench` is invoked from elsewhere; `--commit` overrides it for CI.
 ```
 bench-history.csv   6 run(s) in 2 comparable group(s)
 
-positions.txt, all hand sizes, 560 positions, memo on
+positions.txt, all hand sizes, 560 positions, memo 32mb
   commit    when                       nodes   vs prev  vs first          ms  vs prev  note
   fd8d062   2026-08-09 01:21:44    77,476,932        -        -     30741.3        -  baseline
   a1b2c3d   2026-08-11 09:14:02    12,004,551   -84.5%   -84.5%      4102.7   -86.7%  alpha-beta
@@ -558,20 +562,90 @@ The literal reading is the default here, matching the oracle. Pass
 `--break-on-forced-lead` (or `NIL_FLAG_BREAK_ON_FORCED_SPADE_LEAD`) for the
 other convention. The cross-check exercises both.
 
-## The memo
+## The transposition table
 
-The search memoises on the **full** state: all four hands, the leader, the cards
-on the current trick and the broken flag. It is a pure function of exactly that
-state, so the cache changes neither the value nor the principal variation — it
-is memoisation of a pure function, not alpha-beta or any other search
-enhancement. There is still no pruning of any kind.
+The search is a pure function of the position, so a cache over it can change the
+node count and nothing else. What matters is **what counts as the same
+position**, and the answer is in `src/nil/statekey.hpp`.
 
-It is on by default because 6-card hands are otherwise slow. `--no-memo` (or
-`NIL_FLAG_NO_MEMO`) turns it off; the cross-check passes either way.
+The first version keyed on the literal state — four 64-bit hand masks plus a
+packed word, 288 bits — in an `unordered_map`. That is exact, and it is also
+the most verbose possible key: it calls two positions different whenever any
+irrelevant detail differs. The key now records only what actually determines
+the value.
+
+**Relative ranks, not absolute ones.** Once the `SK` and `SQ` are gone, holding
+`SA SJ` is the same position as holding `SA SK`. Each suit is compressed to the
+cards still in the four hands, numbered from the bottom, and only the *owner* of
+each surviving slot is stored — two bits per live card. This is where nearly
+all of the collapsing comes from.
+
+**The trick as a threshold, not as cards.** Cards already played are out of
+every hand; the only thing the rest of the deal needs from them is the suit led,
+who is winning, and `gap` — how many live cards of that suit the winning card
+beats. Two tricks that were played with different cards but trap the same number
+of survivors are one position, which the literal key could never see.
+
+The result is 21 + 2n bits at the start of a trick and 30 + 2n inside one, where
+n is the number of cards still in hands. A five-card ending is 61 bits: the
+whole endgame, which is where all the nodes are, keys into a single machine
+word.
+
+Positions live in a fixed-size table — four-way buckets, evict the shallowest
+entry, generation-stamped so consecutive solves cannot see each other's values.
+Entries store the full 128-bit key, so a hash collision costs one comparison and
+never an answer. `--tt-mb` sets the size (default 32); `--no-memo` or
+`NIL_FLAG_NO_MEMO` turns the table off entirely and the cross-check passes
+either way.
+
+Against the 560-position corpus, versus the old full-state memo:
+
+| cards | nodes/position before | after | ratio |
+|------:|----------------------:|------:|------:|
+| 4     | 7,085                 | 1,274 | 5.6x  |
+| 5     | 125,346               | 9,500 | 13.2x |
+| 6     | 1,163,389             | 44,309| 26.3x |
+
+The multiplier grows with hand size, which is the point. Randomly dealt hands
+now run about 0.5 M nodes at seven cards and 2 M at eight.
+
+**Deliberately not collapsed: the side suits.** Hearts, diamonds and clubs are
+interchangeable — only spades are special — so canonicalising them is a genuine
+symmetry of the game and would in principle collapse up to six more positions
+into one. It was implemented and measured, and it does not pay:
+
+| | nodes/position now | suit-canonical | change |
+|---|---:|---:|---:|
+| 6 cards, corpus | 44,309 | 41,942 | −5.3% |
+| 7 cards, random | 484,469 | 447,316 | −7.7% |
+
+Node counts are exact; the sort costs roughly 12% of throughput because it runs
+at every node, so wall time came out slightly *worse*.
+
+Six times theoretical becomes seven percent actual because every player's
+holding in a suit is a subset of what they were dealt: one line's residual
+hearts can only look like another line's residual diamonds once both suits are
+nearly exhausted, which is where the subtrees are cheap anyway. Rank compression
+has already taken the structural win. And when a non-spade is led, that suit is
+pinned by the trick and only two suits are free, so most nodes see a group of
+order two rather than six.
+
+There is a correctness hazard on top of that. The move order is suit-major, so
+the tie-break between two equally good cards in *different* suits depends on
+which suit is which; a move read back from an entry stored under a permuted
+labelling can be the other equally good card. Legal, optimal, replay-verified —
+but not the card `nil_oracle.py` picks. The measurement did not trip it (560
+corpus positions and 150 random deals still agreed on the PV), which is
+reassuring rather than conclusive.
+
+**A note on benchmarking.** The table is bounded, so once a search overflows it
+the node count depends on the table size. `nil_bench` records the size in the
+history file's `memo` column, which `bench_history.py` already groups on, so
+runs made at different sizes are never compared as regressions.
 
 ## Not here yet
 
-Alpha-beta with a `[0, 1]` window (the bool answer needs nothing wider), move
-ordering, rank-equivalence collapsing, a real transposition table with
-replacement policy, partial-hand caching, and 13-card support. All of that
-belongs on top of a solver that is already known to be right.
+Alpha-beta with a `[0, 1]` window (the bool answer needs nothing wider),
+quick-trick evaluation, move ordering, side-suit symmetry, and 13-card support.
+`TTEntry` already carries a `bound` field so that adding alpha-beta is a change
+to the search rather than to the table format.
