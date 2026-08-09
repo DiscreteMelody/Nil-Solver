@@ -49,6 +49,7 @@ tests/corpus/positions.txt        positions with answers from the oracle
 tools/nil_bench.cpp               corpus verifier and benchmark
 tools/make_corpus.py              regenerates the corpus
 tools/bench_history.py            reads back bench-history.csv
+tools/corpus_view.py              browse and spot-check the corpus
 scripts/build-and-test.cmd|.sh    one-shot build + test
 scripts/run-bench.cmd|.sh         one-shot benchmark, logs to history
 ```
@@ -250,6 +251,52 @@ build/bin/nil_tests                                        # verbose
 build/bin/nil_bench --corpus tests/corpus/positions.txt    # verify + time
 python3 tools/crosscheck.py --exe build/bin/nil_cli --cases 200 --cards 4
 ```
+
+### Seeing and checking the tests yourself
+
+The three layers are all readable, and none of them hides its work.
+
+**Unit checks.** `build/bin/nil_tests` prints every assertion by name, passing or
+not; `python3 nil_oracle.py --selftest` does the same on the oracle side. Both
+are ordinary source files — `tests/test_nil_solver.cpp` and the `selftest()`
+function in `nil_oracle.py` — and the interesting cases carry a comment
+explaining why the expected number is what it is. Read those first; they are the
+ones a person can check by reasoning rather than by running something.
+
+**The corpus.** `tools/corpus_view.py` makes the 560 lines browsable:
+
+```
+python3 tools/corpus_view.py                     what is in there
+python3 tools/corpus_view.py --list --cards 4 --outcome makes
+python3 tools/corpus_view.py --show c4-0001      expand one record
+python3 tools/corpus_view.py --random 5          spot-check five at random
+python3 tools/corpus_view.py --simplest 10       the ones easiest to check by hand
+```
+
+`--show` prints the four hands laid out by suit, the settings in English, the
+recorded answer, the line trick by trick, and the exact `nil_cli` and
+`nil_oracle.py` commands that reproduce it. It then re-runs `nil_cli` and says
+whether the solver still agrees. Add `--verify` to recompute the position from
+scratch with the oracle as well. It exits non-zero on any disagreement, so it
+works in a script.
+
+Be clear about what each check is worth:
+
+* Re-running `nil_cli` is a **regression** check. It proves the C++ still says
+  what the oracle said when the corpus was built — both numbers trace back to
+  one source.
+* `--verify` is a **second implementation** check. Better, but still two
+  programs, and they were written to the same understanding of the rules.
+* The only **independent** check is you reading the hands and the trick list and
+  deciding whether the line is sensible. `--simplest` exists for that: it sorts
+  by fewest cards, no mid-trick resumption, and fewest suits in play, so the top
+  of that list is where hand-verification is actually feasible.
+
+If you find a position where the answer looks wrong, the fastest thing to do is
+paste the two reproduce lines and compare the full outputs — `nil_cli` marks the
+winner of every trick, which is usually where the disagreement becomes obvious.
+Anything real should then become a named case in `tests/test_nil_solver.cpp` and
+in the oracle's `selftest()`, not just another corpus row.
 
 ### The corpus
 
