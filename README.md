@@ -180,6 +180,40 @@ Side tricks    NS=1  EW=2
 Protecting the nil here costs N/S exactly one trick: they can take all three if
 they stop caring about it.
 
+### Two modes
+
+`--mode full` (the default) is everything above: trick counts, a principal
+variation, and a value the replay verifier checks itself against. `--mode fast`
+asks the boolean question on its own — can this nil be broken — and answers only
+that:
+
+```
+$ nil_cli --pbn 'N:K.A.A.K 32.2..A .K.3.32 A.3.K2.' --leader N --nil E --mode fast
+Objective      fast mode: the nil question only, no trick counts and no PV
+Nil            FAILS  (can be forced to take a trick)
+Nodes          456
+```
+
+The full objective packs the nil bidder's trick count into a scalar with two
+tie-break levels underneath it, which makes the value span thousands and a
+window on it worth almost nothing; every tie on the primary has to be searched
+to the bottom anyway or the secondary comes out wrong. Fast mode zeroes those
+levels and gives the primary weight 1, so the value *is* the nil bidder's trick
+count and the window worth searching is `[0, 1]`.
+
+**It is not faster yet.** Nothing prunes, and the transposition table keys on
+the position rather than on the value, so both modes visit exactly the same
+nodes — `nil_bench --mode both` prints `1.00x` and will keep doing so until
+alpha-beta lands. What the split buys today is the shape: the fork exists in the
+search and in the C ABI before there is a shipped interface to retrofit it
+around.
+
+In fast mode the three trick counts read `-1` and the compact output's `pv` is
+empty; `mode=fast` on the first line is what says so, rather than leaving `-1`
+to be guessed at. `--secondary` has no effect there — it points at a tie-break
+level that mode does not have — and `--nil-already-set` makes the answer `1`
+with no search at all, since it asserts the only thing fast mode computes.
+
 Output is line-oriented so `diff` localises a divergence:
 
 ```
@@ -220,16 +254,31 @@ The objective flags:
 | *(none)* | nil tricks first, then each pair takes as many tricks as it can |
 | `NIL_FLAG_MINIMISE_OWN_TRICKS` | nil tricks first, then each pair takes as **few** as it can |
 | `NIL_FLAG_NIL_ALREADY_SET` | drop the primary; optimise only the secondary |
+| `NIL_FLAG_FAST_MODE` | answer `nil_fails` and nothing else |
 
 `nil_side_tricks + opponent_tricks` always equals `tricks_remaining`, and
 `nil_tricks` is included in `nil_side_tricks`. When you pass
 `NIL_FLAG_NIL_ALREADY_SET`, `nil_fails` comes back as 1 because you said so, not
 because the search worked it out.
 
-`nil_solve_pv` also writes the principal variation as a string;
+Under `NIL_FLAG_FAST_MODE` the three trick counts come back as
+`NIL_TRICKS_UNKNOWN` (`-1`), which is deliberately not `0`: zero is a real
+answer to "how many tricks did the nil bidder take", and a caller that mistook
+one for the other would read a broken nil as a made one. The count is withheld
+rather than reported because the search stops computing it exactly — the roadmap
+items after this one turn the fast value into a bound, and a caller who had come
+to depend on the number would not find out.
+
+`nil_solve_pv` also writes the principal variation as a string, and returns
+`NIL_ERR_UNSUPPORTED` if you ask for one in fast mode: that mode never chooses
+among lines that tie on the nil count, so there is no variation to give, and
+quietly running the slow mode instead would be worse than saying so.
 `nil_fails(...)` is a one-shot convenience wrapper returning 1, 0 or a negative
-error code. `nil_result.tricks` carries the exact trick count as well as the
-bool, which is what the cross-check compares — a bool is a weak thing to diff.
+error code, and it selects fast mode for you — the boolean is its entire output.
+
+For the C# wrapper, that is the shape of the split: `nil_fails` for "can this
+still be broken", which is the question a game client asks on every trick, and
+`nil_solve` without the flag when the score needs the actual counts.
 
 From C# later, the shape is:
 
@@ -262,6 +311,7 @@ ctest --test-dir build --output-on-failure
 | `nil_tests` | the four rules in isolation, small hand-verifiable searches, PBN parsing, position validation, the PV replay verifier, the C ABI | nothing |
 | `corpus` | ~560 positions whose answers came from `nil_oracle.py` | nothing |
 | `corpus_quick` | the 4-card subset of the same, for the inner loop | nothing |
+| `corpus_modes` | every corpus position solved in both modes, required to agree on `nil_fails` | nothing |
 | `invariants` | transformed copies of each position that must give the same answer | Python |
 | `crosscheck` | live differential test against the oracle on freshly generated positions | Python + `nil_oracle.py` |
 | `corpus_large` | the 7-card rows of `tests/corpus/large.txt`; **off by default** | nothing |
@@ -313,6 +363,16 @@ Be clear about what each check is worth:
   deciding whether the line is sensible. `--simplest` exists for that: it sorts
   by fewest cards, no mid-trick resumption, and fewest suits in play, so the top
   of that list is where hand-verification is actually feasible.
+
+**What checks fast mode.** Full mode carries its own witness: it replays the
+principal variation it produced, counts the tricks independently, and requires
+re-packing them to land back on the search value. Fast mode has no principal
+variation, so it has no such witness — what stands in is that the two modes must
+agree on `nil_fails` for every position, which is what `corpus_modes` and
+`nil_bench --mode both` check. That agreement is free evidence while nothing
+prunes; once alpha-beta lands it is the only thing between a pruning bug and a
+confidently wrong boolean, so it is worth keeping in the default test run rather
+than reaching for it when something already looks wrong.
 
 If you find a position where the answer looks wrong, the fastest thing to do is
 paste the two reproduce lines and compare the full outputs — `nil_cli` marks the
@@ -493,6 +553,23 @@ across compilers and platforms (unlike `std::mt19937` plus a distribution, whose
 output is implementation defined). There are no expected answers in that mode,
 so it is for timing only — useful for asking how a change scales at 7 cards,
 where the oracle can no longer follow.
+
+`--mode full` (default) checks each corpus row's trick counts. `--mode fast`
+checks only `nil_fails`, because that is all fast mode computes. `--mode both`
+runs each position twice, requires the two to agree, and reports the fast run:
+
+```
+$ build/bin/nil_bench --corpus tests/corpus/positions.txt --mode both
+  mode check: 560 position(s) solved both ways, 130 answered without searching (nil already set)
+    nodes over the 430 searched:  full 2,151,487  fast 2,151,487   1.00x
+```
+
+The nodes are compared over the searched positions only: fast mode answers a
+nil-already-set row without looking at a single card, and counting those zeroes
+against full mode's real work would report a speedup that is nothing of the
+kind. The memo column gains `+fast` for the same reason `--no-collapse` gains
+`+nocollapse` — a fast row sitting next to a full row in the history would read
+as a win that never happened.
 
 ### Tracking improvements over time
 
@@ -730,7 +807,11 @@ runs made at different sizes are never compared as regressions.
 
 ## Not here yet
 
-Alpha-beta with a `[0, 1]` window (the bool answer needs nothing wider),
-quick-trick evaluation, move ordering, side-suit symmetry, and 13-card support.
-`TTEntry` already carries a `bound` field so that adding alpha-beta is a change
-to the search rather than to the table format.
+Alpha-beta with a `[0, 1]` window, quick-trick evaluation, move ordering,
+side-suit symmetry, and 13-card support. Two of the pieces that has to sit on
+are in: `TTEntry` already carries a `bound` field so that adding alpha-beta is a
+change to the search rather than to the table format, and `--mode fast` already
+gives the window something to be a window *on* — with the tie-break levels
+zeroed, the search value is the nil bidder's trick count and nothing else, so
+`[0, 1]` is the literal window rather than a slice of a scalar spanning
+thousands. See `ROADMAP.md` for the order the rest is planned in.

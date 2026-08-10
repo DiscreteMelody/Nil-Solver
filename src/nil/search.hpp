@@ -36,6 +36,35 @@
 // `nil_fails` is (nil_tricks > 0), or forced true when the caller has told us
 // the nil is already set.
 //
+// TWO MODES
+// ---------
+// Everything above describes the FULL objective, and it is what you want when
+// the answer has to say who took which trick.  It is also close to unprunable.
+// The packed scalar spans thousands of values, so a window on it excludes
+// almost nothing, and every tie on the primary has to be explored to the bottom
+// anyway or the secondary comes out wrong.
+//
+// The nil question itself is boolean, and a boolean question wants a boolean
+// search.  MODE_FAST zeroes the secondary and tertiary weights and gives the
+// primary weight 1, so the value is literally the nil bidder's trick count and
+// the window worth searching is [0, 1].  It answers `nil_fails` and nothing
+// else: no trick counts, no principal variation.
+//
+// Nothing prunes yet, so today the two modes visit the same nodes and MODE_FAST
+// is not actually faster.  What it is is the shape the pruning needs, settled
+// before there is an alpha-beta window and a shipped C ABI to retrofit it
+// around.
+//
+// WHAT CHECKS FAST MODE
+// ---------------------
+// Full mode checks itself by replaying its own principal variation and
+// re-deriving the value from the replayed trick counts.  Fast mode has no PV to
+// replay, so it has no such internal witness; what stands in for it is that the
+// two modes must agree on `nil_fails` for every position.  `nil_bench --mode
+// both` runs a whole corpus that way and the `corpus_modes` test does it on
+// every build.  Keep that honest as items 3 and 4 land: it is the only thing
+// standing between a pruning bug and a confidently wrong boolean.
+//
 // RELATION TO nil_oracle.py
 // -------------------------
 // The oracle fixes the coalitions by seat parity (N/S always minimise), so it
@@ -60,7 +89,25 @@ struct Play {
     CardId card = NO_CARD;
 };
 
+// Which question the search is being asked.  See the header comment.
+enum SearchMode {
+    // The lexicographic objective: trick counts, a principal variation, and a
+    // value the PV replay can be checked against.
+    MODE_FULL = 0,
+    // The nil question alone.  Primary weight 1, secondary and tertiary zero.
+    MODE_FAST = 1,
+};
+
+// What the trick counts read in MODE_FAST.  Not zero: zero is a real answer to
+// "how many tricks did the nil bidder take", and a caller that mistook one for
+// the other would read a failing nil as a made one.
+inline constexpr int TRICKS_NOT_COMPUTED = -1;
+
 struct SearchOptions {
+    // MODE_FULL by default: the caller who has not thought about it wants the
+    // answer that carries its own evidence.
+    SearchMode mode = MODE_FULL;
+
     // See rules.hpp: false is the literal reading of the break rule and matches
     // nil_oracle.py's default.
     bool break_on_forced_spade_lead = false;
@@ -115,14 +162,25 @@ struct Tally {
 };
 
 struct Solution {
+    // In MODE_FAST these three are TRICKS_NOT_COMPUTED: the search never
+    // tracked them, and reporting the number that happens to fall out of the
+    // primary today would make callers depend on something items 3 and 4 take
+    // away.
     int nil_tricks = 0;
     int nil_side_tricks = 0;
     int opponent_tricks = 0;
+    // The one field both modes fill in, and the one they must agree on.
     bool nil_fails = false;
-    int value = 0;           // the packed lexicographic scalar the search minimised
+    // The scalar the search minimised: the packed lexicographic value in
+    // MODE_FULL, the nil bidder's trick count in MODE_FAST.
+    int value = 0;
     int nil_seat = 0;
-    std::vector<Play> pv;    // principal variation, one entry per remaining card
+    // Principal variation, one entry per remaining card.  Empty in MODE_FAST.
+    std::vector<Play> pv;
     std::uint64_t nodes = 0;
+    // Which mode produced this, so a caller holding a Solution can tell what is
+    // in it without having kept the SearchOptions around.
+    SearchMode mode = MODE_FULL;
 
     // Transposition table behaviour for this solve.  `tt_hits` is the number of
     // nodes answered from the table; `tt_evictions` counts stores that threw
@@ -154,6 +212,11 @@ struct Solution {
 // stays exactly "take as many as we can" and the split resolves against the
 // pair.  The partner count reported is therefore the one the pair can
 // guarantee, not the one it might get if the opponents were helping.
+//
+// In MODE_FAST the weights are (1, 0, 0) regardless of every other option, so
+// the value is the nil bidder's trick count with nothing packed above or below
+// it.  Weight 1 rather than K*K on purpose: it makes the alpha-beta window the
+// next roadmap item wants literally [0, 1] rather than [0, K*K].
 struct ObjectiveWeights {
     int primary = 0;
     int secondary = -1;

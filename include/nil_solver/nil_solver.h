@@ -54,6 +54,29 @@
  * off: bags accrue to the pair whoever won, the two partners are
  * interchangeable, and nil_tricks is then whatever the tie-break produced
  * rather than an answer to a question anyone asked.
+ *
+ * TWO MODES
+ * ---------
+ * All of the above describes the FULL mode, which is the default and which
+ * answers everything.  NIL_FLAG_FAST_MODE asks the boolean question alone:
+ * `nil_fails` comes back, the three trick counts come back as
+ * NIL_TRICKS_UNKNOWN, and there is no principal variation.
+ *
+ * The two modes always agree on nil_fails.  They have to: full mode packs the
+ * nil bidder's trick count into a scalar with two tie-break levels below it,
+ * fast mode drops those levels and searches the count on its own, and the
+ * levels below could never have moved the level above.  What fast mode buys is
+ * that a boolean objective can be pruned hard and a thousand-wide lexicographic
+ * one cannot -- so as pruning lands, fast mode is where it lands.
+ *
+ * Which to call, from a game client:
+ *
+ *   "can this nil still be broken?"        fast mode (or nil_fails(), which
+ *                                          selects it for you)
+ *   "what is the score if we play on?"     full mode
+ *   "show me the line"                     full mode; nil_solve_pv refuses the
+ *                                          fast flag rather than hand back an
+ *                                          empty string
  */
 #ifndef NIL_SOLVER_H
 #define NIL_SOLVER_H
@@ -114,9 +137,24 @@ extern "C" {
  * refuses, because the search is still exhaustive and will take a very long
  * time. */
 #define NIL_FLAG_FORCE_LARGE 0x8u
+/* Answer the nil question and nothing else.  nil_fails is filled in; the three
+ * trick counts come back as NIL_TRICKS_UNKNOWN and there is no principal
+ * variation, so nil_solve_pv rejects this flag.
+ *
+ * Combined with NIL_FLAG_NIL_ALREADY_SET the answer is 1 with no search at all,
+ * since that flag asserts the only thing this mode computes.
+ * NIL_FLAG_MINIMISE_OWN_TRICKS is inert here: it points at a tie-break level
+ * this mode does not have. */
+#define NIL_FLAG_FAST_MODE 0x80u
 
 /* Cards per hand the solver will attempt without NIL_FLAG_FORCE_LARGE. */
 #define NIL_CARD_LIMIT 9
+
+/* What the trick counts read under NIL_FLAG_FAST_MODE.  Deliberately not zero:
+ * zero is a real answer to "how many tricks did the nil bidder take", and a
+ * caller that mistook one for the other would read a failing nil as a made
+ * one.  Test nil_fails, or ask again without the flag. */
+#define NIL_TRICKS_UNKNOWN (-1)
 
 /* Status codes.  0 is success, everything else is a failure. */
 #define NIL_OK 0
@@ -126,6 +164,9 @@ extern "C" {
 #define NIL_ERR_TOO_MANY_CARDS (-4)
 #define NIL_ERR_BUFFER_TOO_SMALL (-5)
 #define NIL_ERR_INTERNAL (-6)
+/* The flags asked for something this entry point cannot produce -- today, a
+ * principal variation in fast mode. */
+#define NIL_ERR_UNSUPPORTED (-7)
 
 typedef struct nil_result {
     /* 1 if the opponents can force the nil bidder to take at least one trick
@@ -135,13 +176,16 @@ typedef struct nil_result {
     int32_t nil_fails;
     /* Tricks the nil bidder takes from this position onward.  Not meaningful
      * when NIL_FLAG_NIL_ALREADY_SET and NIL_FLAG_MINIMISE_OWN_TRICKS are both
-     * set; see the note above. */
+     * set; see the note above.  NIL_TRICKS_UNKNOWN under
+     * NIL_FLAG_FAST_MODE, which never computes it. */
     int32_t nil_tricks;
     /* Tricks the nil bidder and its covering partner take between them.
-     * nil_tricks is included in this. */
+     * nil_tricks is included in this.  NIL_TRICKS_UNKNOWN under
+     * NIL_FLAG_FAST_MODE. */
     int32_t nil_side_tricks;
     /* Tricks the opposing pair takes.  nil_side_tricks + opponent_tricks
-     * always equals tricks_remaining. */
+     * always equals tricks_remaining.  NIL_TRICKS_UNKNOWN under
+     * NIL_FLAG_FAST_MODE. */
     int32_t opponent_tricks;
     /* Tricks left to play in the position. */
     int32_t tricks_remaining;
@@ -177,7 +221,11 @@ NIL_SOLVER_API int32_t NIL_SOLVER_CALL nil_solve(const char* pbn, int32_t leader
 /* As nil_solve, but also writes the principal variation as a space-separated
  * play list ("N:D2 E:DA S:D5 W:D7") into pv_buf.  Returns
  * NIL_ERR_BUFFER_TOO_SMALL if it does not fit; 4 bytes per remaining card plus
- * one is always enough. */
+ * one is always enough.
+ *
+ * Returns NIL_ERR_UNSUPPORTED if NIL_FLAG_FAST_MODE is set: that mode has no
+ * principal variation, and quietly running the slower mode instead -- or
+ * quietly returning an empty string -- are both worse than saying so. */
 NIL_SOLVER_API int32_t NIL_SOLVER_CALL nil_solve_pv(const char* pbn, int32_t leader,
                                                     const char* current_trick, int32_t nil_seat,
                                                     uint32_t flags, nil_result* out, char* pv_buf,
@@ -185,7 +233,13 @@ NIL_SOLVER_API int32_t NIL_SOLVER_CALL nil_solve_pv(const char* pbn, int32_t lea
                                                     int32_t err_len);
 
 /* Convenience wrapper for the yes/no question.  Returns 1 (nil can be forced to
- * take a trick), 0 (it cannot), or a negative NIL_ERR_* code. */
+ * take a trick), 0 (it cannot), or a negative NIL_ERR_* code.
+ *
+ * Always runs in fast mode: the boolean is this function's entire output, and
+ * fast mode is the mode that computes exactly that.  NIL_FLAG_FAST_MODE is
+ * therefore implied and passing it changes nothing.  The answer is identical to
+ * what nil_solve gives without the flag; only the work done to reach it
+ * differs. */
 NIL_SOLVER_API int32_t NIL_SOLVER_CALL nil_fails(const char* pbn, int32_t leader,
                                                  const char* current_trick, int32_t nil_seat,
                                                  uint32_t flags);

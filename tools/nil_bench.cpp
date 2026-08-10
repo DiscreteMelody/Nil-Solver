@@ -24,6 +24,15 @@
 // Corpus entries carry their own objective settings (tie-break direction and
 // the already-set flag), so a corpus run exercises all of them; --secondary and
 // --nil-already-set only apply to --random runs.
+//
+// MODES
+// -----
+// --mode full (default) is the lexicographic search: every corpus row's trick
+// counts get checked.  --mode fast is the boolean nil search, which computes no
+// trick counts, so only nil_fails gets checked.  --mode both runs each position
+// twice and requires the two to agree -- fast mode has no principal variation
+// to replay against itself, so this is what stands in for full mode's internal
+// self-check.  The timed and recorded rows in --mode both are the fast ones.
 #include <algorithm>
 #include <chrono>
 #include <ctime>
@@ -331,6 +340,9 @@ void usage(const char* argv0) {
               << "  --repeat <n>      time each position n times, keep the best [1]\n"
               << "  --cards-only <n>  restrict a corpus run to one hand size\n"
               << "  --no-memo         disable the full-state memo\n"
+              << "  --mode full|fast|both   full (default) checks trick counts; fast\n"
+              << "                    checks only nil_fails; both runs each position in\n"
+              << "                    each mode and requires the two to agree\n"
               << "  --secondary max|min  tie-break direction for --random runs; corpus\n"
               << "                    entries carry their own\n"
               << "  --nil-already-set    likewise, for --random runs\n"
@@ -357,7 +369,12 @@ void usage(const char* argv0) {
 std::string memo_label(const nil::SearchOptions& opts) {
     // Turning the equivalent-card reduction off multiplies the node count, so it
     // has to land in a group of its own too or it reads as a huge regression.
-    const std::string suffix = opts.collapse_equivalents ? "" : "+nocollapse";
+    std::string suffix = opts.collapse_equivalents ? "" : "+nocollapse";
+    // Same reasoning for the mode.  Fast mode answers a different question with
+    // a different node count -- once it prunes, a much smaller one -- and a
+    // fast row next to a full row in the history would read as a win that never
+    // happened.
+    if (opts.mode == nil::MODE_FAST) suffix += "+fast";
     if (!opts.use_memo || opts.tt_megabytes == 0) return "off" + suffix;
     return std::to_string(opts.tt_megabytes) + "mb" + suffix;
 }
@@ -374,6 +391,9 @@ int main(int argc, char** argv) {
     bool random_mode = false;
     bool quiet = false;
     bool check_pv = false;
+    // --mode both: solve every position in the other mode as well and require
+    // the two to agree on nil_fails.
+    bool cross_check_modes = false;
     int cards = 6;
     int count = 10;
     int repeat = 1;
@@ -421,6 +441,22 @@ int main(int argc, char** argv) {
             opts.use_memo = false;
         } else if (arg == "--no-collapse") {
             opts.collapse_equivalents = false;
+        } else if (arg == "--mode" && has_next) {
+            const std::string mode = argv[++i];
+            if (mode == "full") {
+                opts.mode = nil::MODE_FULL;
+            } else if (mode == "fast") {
+                opts.mode = nil::MODE_FAST;
+            } else if (mode == "both") {
+                // The fast run is the one that gets timed and recorded; full
+                // mode rides along as the thing that says the fast answer is
+                // right.
+                opts.mode = nil::MODE_FAST;
+                cross_check_modes = true;
+            } else {
+                std::cerr << "error: --mode takes 'full', 'fast' or 'both'\n";
+                return 2;
+            }
         } else if (arg == "--secondary" && has_next) {
             const std::string mode = argv[++i];
             if (mode != "max" && mode != "min") {
@@ -445,6 +481,13 @@ int main(int argc, char** argv) {
         std::cerr << "error: give either --corpus <file> or --random\n";
         usage(argv[0]);
         return 2;
+    }
+    if (check_pv && opts.mode == nil::MODE_FAST) {
+        // Silently checking nothing is how a test starts passing for the wrong
+        // reason, so say it out loud and carry on.
+        std::cerr << "warning: --check-pv does nothing in fast mode, which produces no "
+                     "principal variation; ignoring it\n";
+        check_pv = false;
     }
 
     // ---- assemble the work list ------------------------------------------
@@ -507,8 +550,18 @@ int main(int argc, char** argv) {
     rows.reserve(items.size());
     int failures = 0;
 
+    // --mode both bookkeeping.  Nodes are compared only over positions both
+    // modes actually searched: fast mode answers a nil-already-set row without
+    // looking at a single card, and counting those zeroes against full mode's
+    // real work would report a speedup that is nothing of the kind.
+    int mode_checked = 0;
+    int mode_unsearched = 0;
+    std::uint64_t cmp_full_nodes = 0;
+    std::uint64_t cmp_fast_nodes = 0;
+
     for (const Item& item : items) {
         nil::Solution sol;
+        bool solved = false;
         double best_ms = 0.0;
         for (int r = 0; r < repeat; ++r) {
             const Clock::time_point t0 = Clock::now();
@@ -524,18 +577,65 @@ int main(int argc, char** argv) {
             const double ms =
                 std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
             if (r == 0 || ms < best_ms) best_ms = ms;
+            solved = true;
         }
 
-        if (item.expected >= 0 && sol.nil_tricks != item.expected) {
-            std::cout << "FAIL " << item.name << ": expected " << item.expected
-                      << " nil trick(s), got " << sol.nil_tricks << "\n  " << item.repro << "\n";
-            ++failures;
+        if (opts.mode == nil::MODE_FAST) {
+            // Fast mode computes no trick counts, so what a corpus row pins
+            // here is the boolean those counts imply.  A row with no recorded
+            // answer at all pins nothing, in either mode.
+            if (solved && (item.expected >= 0 || item.nil_already_set)) {
+                const bool want = item.nil_already_set || item.expected > 0;
+                if (sol.nil_fails != want) {
+                    std::cout << "FAIL " << item.name << ": expected nil_fails=" << (want ? 1 : 0)
+                              << ", got " << (sol.nil_fails ? 1 : 0) << "\n  " << item.repro
+                              << "\n";
+                    ++failures;
+                }
+            }
+        } else {
+            if (item.expected >= 0 && sol.nil_tricks != item.expected) {
+                std::cout << "FAIL " << item.name << ": expected " << item.expected
+                          << " nil trick(s), got " << sol.nil_tricks << "\n  " << item.repro
+                          << "\n";
+                ++failures;
+            }
+            if (item.expected_side >= 0 && sol.nil_side_tricks != item.expected_side) {
+                std::cout << "FAIL " << item.name << ": expected " << item.expected_side
+                          << " side trick(s), got " << sol.nil_side_tricks << "\n  " << item.repro
+                          << "\n";
+                ++failures;
+            }
         }
-        if (item.expected_side >= 0 && sol.nil_side_tricks != item.expected_side) {
-            std::cout << "FAIL " << item.name << ": expected " << item.expected_side
-                      << " side trick(s), got " << sol.nil_side_tricks << "\n  " << item.repro
-                      << "\n";
-            ++failures;
+
+        if (cross_check_modes && solved) {
+            nil::SearchOptions full_opts = opts;
+            full_opts.mode = nil::MODE_FULL;
+            full_opts.break_on_forced_spade_lead = item.forced;
+            full_opts.minimise_own_tricks = item.minimise_own;
+            full_opts.nil_already_set = item.nil_already_set;
+            nil::Solution full;
+            if (!nil::solve(item.position, item.nil_seat, full_opts, full, err)) {
+                std::cout << "FAIL " << item.name << ": full-mode solve failed: " << err << "\n  "
+                          << item.repro << "\n";
+                ++failures;
+            } else {
+                ++mode_checked;
+                if (full.nil_fails != sol.nil_fails) {
+                    std::cout << "FAIL " << item.name << ": the modes disagree -- fast says "
+                              << (sol.nil_fails ? "FAILS" : "MAKES") << ", full says "
+                              << (full.nil_fails ? "FAILS" : "MAKES") << " (full mode has the nil "
+                              << "bidder taking " << full.nil_tricks << ")\n  " << item.repro
+                              << "\n";
+                    ++failures;
+                }
+                if (item.nil_already_set) {
+                    ++mode_unsearched;
+                } else {
+                    cmp_full_nodes += full.nodes;
+                    cmp_fast_nodes += sol.nodes;
+                }
+            }
         }
         if (check_pv && !item.expected_pv.empty()) {
             const std::string got = nil::format_pv_compact(sol);
@@ -600,6 +700,26 @@ int main(int argc, char** argv) {
                   << std::fixed << std::setprecision(1) << all_ms << std::setw(11)
                   << std::setprecision(2) << (all_ms / (all_positions ? all_positions : 1))
                   << std::setw(13) << commas(static_cast<std::uint64_t>(nps)) << "\n";
+    }
+
+    if (cross_check_modes) {
+        std::cout << "\n  mode check: " << mode_checked << " position(s) solved both ways, "
+                  << mode_unsearched << " answered without searching (nil already set)\n";
+        const int searched = mode_checked - mode_unsearched;
+        if (searched > 0) {
+            const double ratio =
+                cmp_fast_nodes ? static_cast<double>(cmp_full_nodes) /
+                                     static_cast<double>(cmp_fast_nodes)
+                               : 0.0;
+            std::cout << "    nodes over the " << searched << " searched:  full "
+                      << commas(cmp_full_nodes) << "  fast " << commas(cmp_fast_nodes) << "   "
+                      << std::fixed << std::setprecision(2) << ratio << "x\n";
+            if (cmp_full_nodes == cmp_fast_nodes) {
+                std::cout << "    (identical, as expected: zeroing the tie-break levels changes\n"
+                          << "     what the value means, not which nodes get visited. The two\n"
+                          << "     part company when alpha-beta lands.)\n";
+            }
+        }
     }
 
     if (have_baseline) {

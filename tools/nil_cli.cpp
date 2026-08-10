@@ -35,8 +35,13 @@ void usage(const char* argv0) {
         << "  --trick '<cards>'       cards already played to the current trick, in\n"
         << "                          play order from the leader, e.g. 'H4 HK'\n"
         << "  --spades-broken         start with spades already broken\n"
+        << "  --mode full|fast        full (default) answers everything: trick\n"
+        << "                          counts, a principal variation, and a value\n"
+        << "                          the replay checks. fast answers only whether\n"
+        << "                          the nil can be broken\n"
         << "  --secondary max|min     tie-break: each pair takes as many tricks as\n"
-        << "                          it can (max, default) or as few (min)\n"
+        << "                          it can (max, default) or as few (min); no\n"
+        << "                          effect in fast mode, which has no tie-break\n"
         << "  --nil-already-set       the nil has already been broken; drop the\n"
         << "                          primary objective and optimise only the\n"
         << "                          secondary one\n"
@@ -89,6 +94,17 @@ int main(int argc, char** argv) {
             if (!need_value(argc, argv, i, "--trick", trick_text)) return 2;
         } else if (arg == "--spades-broken") {
             spades_broken = true;
+        } else if (arg == "--mode") {
+            std::string mode;
+            if (!need_value(argc, argv, i, "--mode", mode)) return 2;
+            if (mode == "fast") {
+                opts.mode = nil::MODE_FAST;
+            } else if (mode == "full") {
+                opts.mode = nil::MODE_FULL;
+            } else {
+                std::cerr << "error: --mode takes 'full' or 'fast'\n";
+                return 2;
+            }
         } else if (arg == "--secondary") {
             std::string mode;
             if (!need_value(argc, argv, i, "--secondary", mode)) return 2;
@@ -180,7 +196,12 @@ int main(int argc, char** argv) {
     }
 
     if (compact) {
-        std::cout << "tricks=" << sol.nil_tricks << "\n"
+        // Every key is present in both modes so that a parser written against
+        // one keeps working against the other; in fast mode the three counts
+        // read -1 (nil::TRICKS_NOT_COMPUTED) and pv is empty, and `mode` is
+        // what says so rather than leaving -1 to be guessed at.
+        std::cout << "mode=" << (opts.mode == nil::MODE_FAST ? "fast" : "full") << "\n"
+                  << "tricks=" << sol.nil_tricks << "\n"
                   << "side_tricks=" << sol.nil_side_tricks << "\n"
                   << "opponent_tricks=" << sol.opponent_tricks << "\n"
                   << "nil_fails=" << (sol.nil_fails ? 1 : 0) << "\n"

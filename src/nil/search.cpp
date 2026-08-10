@@ -137,6 +137,30 @@ int search(Ctx& ctx, const State& st, CardId& best_move) {
     return best;
 }
 
+// Both modes set up identically: weights into the context, then the shared
+// table attached unless the caller turned it off.
+//
+// The value an entry holds is relative to the weights that produced it, and the
+// weights differ between the modes -- a fast-mode 1 and a full-mode 1 are not
+// the same number.  new_search() on every solve is what keeps one mode's
+// entries out of the other's search, and it is not optional.
+void configure(Ctx& ctx, int nil_seat, const SearchOptions& opts,
+               const ObjectiveWeights& weights) {
+    ctx.nil_seat = nil_seat;
+    ctx.primary_weight = weights.primary;
+    ctx.secondary_weight = weights.secondary;
+    ctx.tertiary_weight = weights.tertiary;
+    ctx.break_forced = opts.break_on_forced_spade_lead;
+    ctx.collapse = opts.collapse_equivalents;
+
+    if (opts.use_memo && opts.tt_megabytes > 0) {
+        TranspositionTable& table = shared_table();
+        table.resize(opts.tt_megabytes);  // a no-op at the size it already is
+        table.new_search();               // this solve may not see the last one's values
+        ctx.tt = &table;
+    }
+}
+
 State state_of(const Position& pos) {
     State st;
     for (int s = 0; s < 4; ++s) st.hands[s] = pos.hands[s];
@@ -162,6 +186,19 @@ std::string with_commas(std::uint64_t n) {
 }  // namespace
 
 ObjectiveWeights objective_weights(int tricks_remaining, const SearchOptions& opts) {
+    if (opts.mode == MODE_FAST) {
+        // Nothing packed above or below the nil bidder's trick count, so the
+        // value IS that count and the window is [0, 1].  minimise_own_tricks is
+        // inert here by construction -- there is no secondary level for it to
+        // point at -- and nil_already_set never reaches this function, because
+        // solve() answers that combination without searching.
+        ObjectiveWeights w;
+        w.primary = 1;
+        w.secondary = 0;
+        w.tertiary = 0;
+        return w;
+    }
+
     const int k = tricks_remaining + 1;
     ObjectiveWeights w;
     w.primary = opts.nil_already_set ? 0 : k * k;
@@ -180,20 +217,60 @@ bool solve(const Position& pos, int nil_seat, const SearchOptions& opts, Solutio
 
     const ObjectiveWeights weights = objective_weights(pos.tricks_remaining(), opts);
 
-    Ctx ctx;
-    ctx.nil_seat = nil_seat;
-    ctx.primary_weight = weights.primary;
-    ctx.secondary_weight = weights.secondary;
-    ctx.tertiary_weight = weights.tertiary;
-    ctx.break_forced = opts.break_on_forced_spade_lead;
-    ctx.collapse = opts.collapse_equivalents;
+    // ---- fast mode: the nil question, and nothing else ---------------------
+    if (opts.mode == MODE_FAST) {
+        out = Solution();
+        out.nil_seat = nil_seat;
+        out.mode = MODE_FAST;
+        out.nil_tricks = TRICKS_NOT_COMPUTED;
+        out.nil_side_tricks = TRICKS_NOT_COMPUTED;
+        out.opponent_tricks = TRICKS_NOT_COMPUTED;
 
-    TranspositionTable& table = shared_table();
-    if (opts.use_memo && opts.tt_megabytes > 0) {
-        table.resize(opts.tt_megabytes);  // a no-op at the size it already is
-        table.new_search();               // this solve may not see the last one's values
-        ctx.tt = &table;
+        // The caller has asserted the very thing this mode computes.  There is
+        // nothing to search: the secondary objective that nil_already_set
+        // exists to expose has no output to land in here, because fast mode
+        // reports no trick counts.  Ask in full mode if you want those numbers.
+        if (opts.nil_already_set) {
+            out.nil_fails = true;
+            return true;
+        }
+
+        Ctx fast_ctx;
+        configure(fast_ctx, nil_seat, opts, weights);
+        State root = state_of(pos);
+        CardId root_move = NO_CARD;
+        const int fast_value = search(fast_ctx, root, root_move);
+        const TTStats fast_stats = fast_ctx.tt ? fast_ctx.tt->stats() : TTStats();
+
+        // No principal variation means no replay, so these two are what is left
+        // of the self-check: the value has to be a trick count that the
+        // position could actually produce, and a position with cards still in
+        // it has to have yielded a move.  The real check on this mode is that
+        // it agrees with full mode -- see nil_bench --mode both.
+        if (fast_value < 0 || fast_value > pos.tricks_remaining()) {
+            std::ostringstream os;
+            os << "internal inconsistency: fast mode returned " << fast_value
+               << " for a position with " << pos.tricks_remaining() << " trick(s) left";
+            err = os.str();
+            return false;
+        }
+        if (root_move == NO_CARD && !root.empty()) {
+            err = "internal error: no move available at a non-terminal position";
+            return false;
+        }
+
+        out.nil_fails = fast_value > 0;
+        out.value = fast_value;
+        out.nodes = fast_ctx.nodes;
+        out.tt_probes = fast_stats.probes;
+        out.tt_hits = fast_stats.hits;
+        out.tt_stores = fast_stats.stores;
+        out.tt_evictions = fast_stats.evictions;
+        return true;
     }
+
+    Ctx ctx;
+    configure(ctx, nil_seat, opts, weights);
 
     State st = state_of(pos);
     CardId move = NO_CARD;
@@ -260,6 +337,7 @@ bool solve(const Position& pos, int nil_seat, const SearchOptions& opts, Solutio
     out.nil_fails = opts.nil_already_set || tally.nil_tricks > 0;
     out.value = value;
     out.nil_seat = nil_seat;
+    out.mode = MODE_FULL;
     out.nodes = search_nodes;
     out.tt_probes = table_stats.probes;
     out.tt_hits = table_stats.hits;
@@ -391,6 +469,7 @@ std::string format_pv(const Position& pos, const Solution& sol) {
 std::string format_solution(const Position& pos, const Solution& sol,
                             const SearchOptions& opts) {
     const bool nil_is_ns = (sol.nil_seat & 1) == 0;
+    const bool fast = sol.mode == MODE_FAST;
     const char* side = nil_is_ns ? "NS" : "EW";
     const char* other = nil_is_ns ? "EW" : "NS";
     std::ostringstream os;
@@ -399,13 +478,17 @@ std::string format_solution(const Position& pos, const Solution& sol,
        << "Leader         " << SEAT_CHARS[pos.leader] << '\n'
        << "Nil bidder     " << SEAT_CHARS[sol.nil_seat] << "  ("
        << (nil_is_ns ? "N/S minimise, E/W maximise" : "E/W minimise, N/S maximise") << ")\n"
-       << "Objective      "
-       << (opts.nil_already_set ? "nil already set, so secondary only; "
-                                : "nil tricks first, then ")
-       << (opts.minimise_own_tricks ? "each pair sheds what it can"
-                                    : "each pair takes what it can")
-       << '\n'
-       << "Spades broken  " << (pos.spades_broken ? "yes" : "no") << '\n';
+       << "Objective      ";
+    if (fast) {
+        os << "fast mode: the nil question only, no trick counts and no PV\n";
+    } else {
+        os << (opts.nil_already_set ? "nil already set, so secondary only; "
+                                    : "nil tricks first, then ")
+           << (opts.minimise_own_tricks ? "each pair sheds what it can"
+                                        : "each pair takes what it can")
+           << '\n';
+    }
+    os << "Spades broken  " << (pos.spades_broken ? "yes" : "no") << '\n';
     if (pos.trick_len) {
         os << "On the trick   ";
         for (int i = 0; i < pos.trick_len; ++i) {
@@ -414,10 +497,12 @@ std::string format_solution(const Position& pos, const Solution& sol,
         }
         os << "  (marked * below)\n";
     }
-    os << "Tricks for " << SEAT_CHARS[sol.nil_seat] << "   " << sol.nil_tricks << " of "
-       << pos.tricks_remaining() << '\n'
-       << "Side tricks    " << side << '=' << sol.nil_side_tricks << "  " << other << '='
-       << sol.opponent_tricks << '\n';
+    if (!fast) {
+        os << "Tricks for " << SEAT_CHARS[sol.nil_seat] << "   " << sol.nil_tricks << " of "
+           << pos.tricks_remaining() << '\n'
+           << "Side tricks    " << side << '=' << sol.nil_side_tricks << "  " << other << '='
+           << sol.opponent_tricks << '\n';
+    }
     if (opts.nil_already_set) {
         os << "Nil            ALREADY SET (told, not computed)\n";
     } else {
@@ -426,8 +511,13 @@ std::string format_solution(const Position& pos, const Solution& sol,
                              : "MAKES  (cannot be forced to take a trick)")
            << '\n';
     }
-    os << "Nodes          " << with_commas(sol.nodes) << '\n'
-       << "Principal variation:\n"
+    os << "Nodes          " << with_commas(sol.nodes) << '\n';
+    if (fast) {
+        os << "(fast mode answers the nil question alone; run without --mode fast for\n"
+              " trick counts and a principal variation)";
+        return os.str();
+    }
+    os << "Principal variation:\n"
        << format_pv(pos, sol) << '\n'
        << "Compact PV:\n"
        << "  " << format_pv_compact(sol);

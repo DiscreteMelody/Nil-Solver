@@ -82,6 +82,7 @@ std::int32_t solve_impl(const char* pbn, std::int32_t leader, const char* curren
     opts.tt_megabytes = g_table_megabytes;
     opts.minimise_own_tricks = (flags & NIL_FLAG_MINIMISE_OWN_TRICKS) != 0;
     opts.nil_already_set = (flags & NIL_FLAG_NIL_ALREADY_SET) != 0;
+    opts.mode = (flags & NIL_FLAG_FAST_MODE) != 0 ? nil::MODE_FAST : nil::MODE_FULL;
 
     nil::Solution sol;
     if (!nil::solve(pos, nil_seat, opts, sol, err)) {
@@ -90,6 +91,9 @@ std::int32_t solve_impl(const char* pbn, std::int32_t leader, const char* curren
     }
 
     out->nil_fails = sol.nil_fails ? 1 : 0;
+    // nil::TRICKS_NOT_COMPUTED and NIL_TRICKS_UNKNOWN are the same -1; the two
+    // names exist so neither side of the boundary has to include the other's
+    // header to say what it means.
     out->nil_tricks = sol.nil_tricks;
     out->nil_side_tricks = sol.nil_side_tricks;
     out->opponent_tricks = sol.opponent_tricks;
@@ -98,6 +102,9 @@ std::int32_t solve_impl(const char* pbn, std::int32_t leader, const char* curren
     if (pv_out) *pv_out = nil::format_pv_compact(sol);
     return NIL_OK;
 }
+
+static_assert(nil::TRICKS_NOT_COMPUTED == NIL_TRICKS_UNKNOWN,
+              "the C ABI's unknown-trick sentinel must match the core's");
 
 }  // namespace
 
@@ -121,6 +128,14 @@ NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve_pv(const char* pbn, std::i
         copy_err(err_buf, err_len, "null or empty PV buffer");
         return NIL_ERR_NULL_ARG;
     }
+    if (flags & NIL_FLAG_FAST_MODE) {
+        pv_buf[0] = '\0';
+        copy_err(err_buf, err_len,
+                 "fast mode has no principal variation: it optimises the nil bidder's trick "
+                 "count alone and never chooses among lines that tie on it. Drop "
+                 "NIL_FLAG_FAST_MODE, or call nil_solve if the boolean is all you need.");
+        return NIL_ERR_UNSUPPORTED;
+    }
     std::string pv;
     const std::int32_t rc =
         solve_impl(pbn, leader, current_trick, nil_seat, flags, out, &pv, err_buf, err_len);
@@ -141,8 +156,11 @@ NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_fails(const char* pbn, std::int3
                                                       const char* current_trick,
                                                       std::int32_t nil_seat, std::uint32_t flags) {
     nil_result result;
-    const std::int32_t rc =
-        solve_impl(pbn, leader, current_trick, nil_seat, flags, &result, nullptr, nullptr, 0);
+    // The boolean is the whole output, and fast mode is the mode that computes
+    // exactly the boolean.  Selecting it here rather than making every caller
+    // remember the flag is the point of this entry point existing.
+    const std::int32_t rc = solve_impl(pbn, leader, current_trick, nil_seat,
+                                       flags | NIL_FLAG_FAST_MODE, &result, nullptr, nullptr, 0);
     return rc == NIL_OK ? result.nil_fails : rc;
 }
 

@@ -109,6 +109,15 @@ if(NIL_SOLVER_BUILD_TESTS)
     add_test(NAME corpus_quick
              COMMAND nil_bench --corpus "${NIL_CORPUS}" --cards-only 4 --quiet --slowest 0)
     set_tests_properties(corpus PROPERTIES TIMEOUT 900)
+
+    # The boolean search has no principal variation to replay against itself,
+    # so this is what stands in for full mode's internal self-check: every
+    # position solved both ways, and the two required to agree on nil_fails.
+    # It is not optional cover -- once alpha-beta lands it is the only thing
+    # between a pruning bug and a confidently wrong boolean.
+    add_test(NAME corpus_modes
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --mode both --quiet --slowest 0)
+    set_tests_properties(corpus_modes PROPERTIES TIMEOUT 900)
   endif()
 
   set(NIL_LARGE_CORPUS "${CMAKE_CURRENT_SOURCE_DIR}/tests/corpus/large.txt")

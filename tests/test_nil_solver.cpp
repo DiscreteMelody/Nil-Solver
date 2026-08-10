@@ -516,6 +516,96 @@ int main(int argc, char** argv) {
         }
     }
 
+    std::cout << "Boolean / lexicographic mode split\n";
+    {
+        SearchOptions full;
+        SearchOptions fast;
+        fast.mode = nil::MODE_FAST;
+
+        // The whole point of the mode: nothing packed above or below the nil
+        // bidder's trick count, so the value IS that count and the window
+        // alpha-beta wants is [0, 1] rather than [0, K*K].
+        check("fast weights: primary is 1", nil::objective_weights(4, fast).primary, 1);
+        check("fast weights: no secondary", nil::objective_weights(4, fast).secondary, 0);
+        check("fast weights: no tertiary", nil::objective_weights(4, fast).tertiary, 0);
+        {
+            SearchOptions fast_shed = fast;
+            fast_shed.minimise_own_tricks = true;
+            check("fast weights: the tie-break direction has nothing to point at",
+                  nil::objective_weights(4, fast_shed).secondary, 0);
+        }
+
+        // E can be forced to take a trick here; this is the same layout the C
+        // ABI section uses, from N's side.
+        const Position forced = make_position("N:.A2.. .K3.. .54.. .Q6..", "N", true);
+        const Solution fast_sol = must_solve(forced, "N", fast);
+        const Solution full_sol = must_solve(forced, "N", full);
+        check("fast mode answers the question", fast_sol.nil_fails, true);
+        check("and agrees with full mode", fast_sol.nil_fails, full_sol.nil_fails);
+        check("fast mode records its mode", fast_sol.mode == nil::MODE_FAST, true);
+        check("full mode records its mode", full_sol.mode == nil::MODE_FULL, true);
+
+        // Not zero, and not the number that happens to be right today: items 4
+        // and 3 turn the fast value into a bound, and a caller who had come to
+        // read these would not find out.
+        check("fast mode does not report nil tricks", fast_sol.nil_tricks,
+              nil::TRICKS_NOT_COMPUTED);
+        check("fast mode does not report side tricks", fast_sol.nil_side_tricks,
+              nil::TRICKS_NOT_COMPUTED);
+        check("fast mode does not report opponent tricks", fast_sol.opponent_tricks,
+              nil::TRICKS_NOT_COMPUTED);
+        check("fast mode has no principal variation", fast_sol.pv.empty(), true);
+        check("full mode still has one", full_sol.pv.size(), forced.tricks_remaining() * 4);
+
+        // The caller asserted the only thing this mode computes, so there is
+        // nothing to search.
+        {
+            SearchOptions fast_set = fast;
+            fast_set.nil_already_set = true;
+            const Solution told = must_solve(forced, "N", fast_set);
+            check("fast + already set: answered by assertion", told.nil_fails, true);
+            check("fast + already set: without searching", told.nodes, 0ull);
+        }
+
+        // minimise_own_tricks is inert in fast mode -- same answer, and the
+        // same work done to reach it, because the weights it feeds are zero.
+        {
+            SearchOptions fast_shed = fast;
+            fast_shed.minimise_own_tricks = true;
+            const Solution shed_sol = must_solve(forced, "N", fast_shed);
+            check("fast mode ignores the tie-break: answer", shed_sol.nil_fails,
+                  fast_sol.nil_fails);
+            check("fast mode ignores the tie-break: nodes", shed_sol.nodes, fast_sol.nodes);
+        }
+
+        // THE property this whole item rests on.  Fast mode has no PV to
+        // replay, so this agreement is its only self-check; when it stops
+        // holding, the boolean has started lying and nothing else would say so.
+        {
+            Rng rng;
+            int checked = 0;
+            int disagreed = 0;
+            for (int deal = 0; deal < 30; ++deal) {
+                const Position pos = random_deal(rng, 4);
+                for (const char* seat : SEAT_NAMES) {
+                    for (int variant = 0; variant < 2; ++variant) {
+                        SearchOptions a;
+                        a.minimise_own_tricks = variant != 0;
+                        SearchOptions b = a;
+                        b.mode = nil::MODE_FAST;
+                        ++checked;
+                        if (must_solve(pos, seat, a).nil_fails !=
+                            must_solve(pos, seat, b).nil_fails) {
+                            ++disagreed;
+                        }
+                    }
+                }
+            }
+            check("modes agree on nil_fails across a random sweep", disagreed, 0);
+            check("and the sweep actually ran", checked, 240);
+        }
+    }
+
     std::cout << "Compact state key\n";
     {
         // Absolute ranks do not matter, only the order the four hands hold
@@ -752,6 +842,36 @@ int main(int argc, char** argv) {
               static_cast<long long>(nil_fails("N:.A2.. .K3.. .54.. .Q6..", NIL_SEAT_NORTH, "",
                                                NIL_SEAT_NORTH, NIL_FLAG_SPADES_BROKEN)),
               1LL);
+
+        // Fast mode across the ABI: same boolean, no counts, and asking for a
+        // principal variation is refused rather than quietly answered with an
+        // empty string or with a slower search the caller did not ask for.
+        nil_result fr;
+        const int32_t rc_fast =
+            nil_solve("N:.A2.. .K3.. .54.. .Q6..", NIL_SEAT_NORTH, "", NIL_SEAT_NORTH,
+                      NIL_FLAG_SPADES_BROKEN | NIL_FLAG_FAST_MODE, &fr, err, sizeof(err));
+        check("fast mode returns NIL_OK", static_cast<long long>(rc_fast), 0LL);
+        check("fast mode agrees on the boolean", static_cast<long long>(fr.nil_fails),
+              static_cast<long long>(r.nil_fails));
+        check("fast mode reports unknown nil tricks", static_cast<long long>(fr.nil_tricks),
+              static_cast<long long>(NIL_TRICKS_UNKNOWN));
+        check("fast mode reports unknown side tricks",
+              static_cast<long long>(fr.nil_side_tricks),
+              static_cast<long long>(NIL_TRICKS_UNKNOWN));
+        check("fast mode reports unknown opponent tricks",
+              static_cast<long long>(fr.opponent_tricks),
+              static_cast<long long>(NIL_TRICKS_UNKNOWN));
+        check("fast mode still reports tricks remaining",
+              static_cast<long long>(fr.tricks_remaining), 2LL);
+
+        char fast_pv[256] = {0};
+        const int32_t rc_pv_fast =
+            nil_solve_pv("N:..2. ..A. ..5. ..7.", NIL_SEAT_NORTH, "", NIL_SEAT_EAST,
+                         NIL_FLAG_SPADES_BROKEN | NIL_FLAG_FAST_MODE, &fr, fast_pv,
+                         sizeof(fast_pv), err, sizeof(err));
+        check("nil_solve_pv refuses fast mode", static_cast<long long>(rc_pv_fast),
+              static_cast<long long>(NIL_ERR_UNSUPPORTED));
+        check("and says why", std::strlen(err) > 0, true);
 
         const int32_t rc4 = nil_solve("garbage", NIL_SEAT_NORTH, "", NIL_SEAT_NORTH, 0, &r, err,
                                       sizeof(err));
