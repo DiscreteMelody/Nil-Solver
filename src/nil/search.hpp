@@ -73,6 +73,18 @@ struct SearchOptions {
     // side has anything left to protect or attack.
     bool nil_already_set = false;
 
+    // Generate one move per class of rank-equivalent cards instead of all of
+    // them -- with the jack gone, SK and SQ are one move played under two
+    // names.  See rules.hpp: the classes are exact, and the representative is
+    // the canonically lowest card, which is the one the tie-break would have
+    // picked anyway.  So this changes neither the value nor the principal
+    // variation, only the branching factor.
+    //
+    // It is on by default and the flag exists to be turned off: a search that
+    // enumerates every legal card is the thing to compare against when
+    // something disagrees.
+    bool collapse_equivalents = true;
+
     // Look positions up in a transposition table.  The search is a pure
     // function of the position, so the table changes neither the value nor the
     // principal variation -- it is memoisation, not alpha-beta or any other

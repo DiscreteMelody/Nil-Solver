@@ -6,6 +6,7 @@
 //
 // The end-to-end agreement testing lives in tools/crosscheck.py, which runs the
 // real oracle.
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -55,6 +56,8 @@ template <typename A, typename B>
 void check(const std::string& name, const A& got, const B& want) {
     check_text(name, to_text(got), to_text(want));
 }
+
+const char* const SEAT_NAMES[4] = {"N", "E", "S", "W"};
 
 using nil::CardId;
 using nil::Hand;
@@ -135,6 +138,33 @@ bool key_fits(const Position& pos) {
     nil::SuitProfile profile;
     return nil::encode_state_key(pos.hands, pos.leader, pos.spades_broken, pos.trick,
                                  pos.trick_len, key, profile);
+}
+
+// xorshift64, so the differential sweep below is a fixed set of deals rather
+// than a different one on every run.
+struct Rng {
+    std::uint64_t state = 0x9E3779B97F4A7C15ull;
+    std::uint64_t next() {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        return state;
+    }
+    int below(int n) { return static_cast<int>(next() % static_cast<std::uint64_t>(n)); }
+};
+
+// `cards` to each seat off a shuffled deck, plus a leader and a broken flag.
+Position random_deal(Rng& rng, int cards) {
+    int deck[52];
+    for (int i = 0; i < 52; ++i) deck[i] = nil::make_card(i / 13, i % 13 + 2);
+    for (int i = 51; i > 0; --i) std::swap(deck[i], deck[rng.below(i + 1)]);
+    Position pos;
+    for (int seat = 0; seat < 4; ++seat) {
+        for (int k = 0; k < cards; ++k) pos.hands[seat] |= nil::card_bit(deck[seat * cards + k]);
+    }
+    pos.leader = rng.below(4);
+    pos.spades_broken = rng.below(2) != 0;
+    return pos;
 }
 
 int trick_winner_of(const char* leader, const std::vector<const char*>& cards) {
@@ -267,6 +297,132 @@ int main(int argc, char** argv) {
         check("memo agrees on value", a.nil_tricks, b.nil_tricks);
         check("memo agrees on PV", nil::format_pv_compact(a), nil::format_pv_compact(b));
         check("PV plays every card", static_cast<long long>(a.pv.size()), 12LL);
+    }
+
+    std::cout << "Equivalent-card reduction\n";
+    {
+        // With the queen gone, holding SK and SJ is holding one card twice: the
+        // representative is the canonically lower of the two, which is the one
+        // the tie-break would have chosen anyway.
+        const Hand held = H({"SK", "SJ"});
+        check("a dead gap collapses the pair", nil::distinct_moves(held, held), H({"SJ"}));
+        check("a live card between them keeps both",
+              nil::distinct_moves(held, held | H({"SQ"})), held);
+
+        // The gap may be any width, and a run of any length is still one move.
+        check("the widest gap collapses", nil::distinct_moves(H({"SA", "S2"}), H({"SA", "S2"})),
+              H({"S2"}));
+        check("a run of three is one move",
+              nil::distinct_moves(H({"SA", "SK", "SQ"}), H({"SA", "SK", "SQ"})), H({"SQ"}));
+
+        // Two runs split by a card somebody else holds are two moves.
+        check("a run either side of a live card gives two",
+              nil::distinct_moves(H({"SA", "SK", "S3", "S2"}),
+                                  H({"SA", "SK", "SQ", "S3", "S2"})),
+              H({"SK", "S2"}));
+
+        // SA and H2 are adjacent BITS, and never the same move.  This is what
+        // SUIT_PADDING is for; without it the fill walks out of the spades.
+        check("the fill stops at a suit boundary",
+              nil::distinct_moves(H({"SA", "H2"}), H({"SA", "H2"})), H({"SA", "H2"}));
+        check("equal ranks in different suits never collapse",
+              nil::distinct_moves(H({"SK", "HK", "DK", "CK"}), H({"SK", "HK", "DK", "CK"})),
+              H({"SK", "HK", "DK", "CK"}));
+
+        // A single legal card is its own class, which is what lets the search
+        // skip the reduction outright when there is only one move.
+        check("a lone move survives", nil::distinct_moves(H({"SK"}), H({"SK", "SQ", "SJ"})),
+              H({"SK"}));
+        check("an empty move set stays empty",
+              nil::distinct_moves(0, H({"SK", "SQ"})), static_cast<Hand>(0));
+    }
+    {
+        // Only the card currently WINNING the trick can separate two ranks.
+        CardId trick[3] = {C("HQ"), C("HA"), C("H3")};
+        check("the best card is the running winner",
+              nil::card_to_string(nil::trick_best_card(trick, 3)), std::string("HA"));
+        check("an empty trick has no best card", nil::trick_best_card(trick, 0), nil::NO_CARD);
+        CardId ruffed[3] = {C("HA"), C("S2"), nil::NO_CARD};
+        check("a ruff is the best card",
+              nil::card_to_string(nil::trick_best_card(ruffed, 2)), std::string("S2"));
+
+        const Hand hands[4] = {H({"HK", "HJ"}), H({"H4"}), H({"H5"}), H({"H6"})};
+        // HQ led and is winning: the king takes the trick and the jack does not,
+        // so the queen holds them apart.
+        check("the winning card separates the ranks it sits between",
+              nil::distinct_moves(H({"HK", "HJ"}), nil::relevant_cards(hands, C("HQ"))),
+              H({"HK", "HJ"}));
+        // Overtake it with the ace and the queen is as dead as any card from a
+        // finished trick: nothing will ever be compared against it again.
+        CardId beaten[3] = {C("HQ"), C("HA"), nil::NO_CARD};
+        check("a losing trick card separates nothing",
+              nil::distinct_moves(H({"HK", "HJ"}),
+                                  nil::relevant_cards(hands, nil::trick_best_card(beaten, 2))),
+              H({"HJ"}));
+    }
+    {
+        // End to end on layouts built out of runs, where the reduction has the
+        // most to remove: same answer, same principal variation, fewer nodes.
+        SearchOptions on;
+        SearchOptions off;
+        off.collapse_equivalents = false;
+        const char* deals[] = {
+            "N:AKQ.2.. JT9.3.. 876.4.. 543.5..",
+            "N:AK.AK.. QJ.QJ.. T9.T9.. 87.87..",
+            "N:432.A.. 765.K.. T98.Q.. AKQ.J..",
+        };
+        const char* seats[] = {"N", "E", "S", "W"};
+        for (const char* pbn : deals) {
+            for (const char* seat : seats) {
+                const Position pos = make_position(pbn, "N", true);
+                const Solution a = must_solve(pos, seat, on);
+                const Solution b = must_solve(pos, seat, off);
+                const std::string tag = std::string(pbn).substr(2, 8) + " nil " + seat;
+                check("reduction keeps the value, " + tag, a.value, b.value);
+                check("reduction keeps the PV, " + tag, nil::format_pv_compact(a),
+                      nil::format_pv_compact(b));
+                check("reduction removes work, " + tag, a.nodes < b.nodes, true);
+            }
+        }
+    }
+    {
+        // The same claim over deals nobody chose: every objective variant, every
+        // nil seat, value and PV compared card for card against the search that
+        // enumerates all of them.  A fixed seed, so a failure is reproducible.
+        Rng rng;
+        long long with = 0;
+        long long without = 0;
+        for (int deal = 0; deal < 30; ++deal) {
+            const Position pos = random_deal(rng, 3 + (deal % 2));
+            std::string err;
+            if (!nil::validate(pos, err)) {
+                check("random deal is valid", err, std::string(""));
+                continue;
+            }
+            for (int variant = 0; variant < 4; ++variant) {
+                SearchOptions on;
+                on.minimise_own_tricks = (variant & 1) != 0;
+                on.nil_already_set = (variant & 2) != 0;
+                SearchOptions off = on;
+                off.collapse_equivalents = false;
+                for (int seat = 0; seat < 4; ++seat) {
+                    const Solution a = must_solve(pos, SEAT_NAMES[seat], on);
+                    const Solution b = must_solve(pos, SEAT_NAMES[seat], off);
+                    with += static_cast<long long>(a.nodes);
+                    without += static_cast<long long>(b.nodes);
+                    if (a.value == b.value &&
+                        nil::format_pv_compact(a) == nil::format_pv_compact(b))
+                        continue;
+                    const std::string tag = nil::deal_to_pbn(pos.hands) + " v" +
+                                            std::to_string(variant) + " nil " + SEAT_NAMES[seat];
+                    check("sweep: same value, " + tag, a.value, b.value);
+                    check("sweep: same PV, " + tag, nil::format_pv_compact(a),
+                          nil::format_pv_compact(b));
+                }
+            }
+        }
+        check("sweep: the reduction never costs nodes", with <= without, true);
+        check("sweep: and it saves some", with < without, true);
     }
 
     std::cout << "Lexicographic secondary objective\n";

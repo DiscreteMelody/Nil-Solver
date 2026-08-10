@@ -34,18 +34,26 @@ is nothing left to protect or attack, and only the secondary objective matters.
 
 The search is **correctness first**: exhaustive, with no alpha-beta, no move
 ordering and no quick-trick shortcuts, validated card-for-card against
-`nil_oracle.py`. The one speed mechanism it has is a transposition table over a
-canonical position key that collapses rank-equivalent and trick-equivalent
-positions ([The transposition table](#the-transposition-table)). That does not
-prune anything, so it cannot change an answer; it is comfortable to about eight
-cards a hand. Pruning comes next, on top of a solver we trust.
+`nil_oracle.py`. It has two speed mechanisms, and neither of them prunes:
+
+- a transposition table over a canonical position key that collapses
+  rank-equivalent and trick-equivalent positions
+  ([The transposition table](#the-transposition-table));
+- an equivalent-card reduction in the move generator, which refuses to search
+  the same move twice under two names
+  ([Equivalent cards](#equivalent-cards)).
+
+Both are exact — same answer, same principal variation, fewer nodes — which is
+why the cross-check still runs against the search as shipped rather than against
+some slower mode kept alive for the purpose. Together they are comfortable to
+about nine cards a hand. Pruning comes next, on top of a solver we trust.
 
 ## Layout
 
 ```
 include/nil_solver/nil_solver.h   the C ABI — the only thing the DLL exports
 src/nil/cards.hpp|.cpp            cards, hands, canonical ordering
-src/nil/rules.hpp                 the four rules, one small function each
+src/nil/rules.hpp                 the four rules plus the equivalent-card reduction
 src/nil/position.hpp|.cpp         PBN parsing, validation, formatting
 src/nil/search.hpp|.cpp           the minimax search and the PV replay verifier
 src/nil/corpus.hpp|.cpp           loads tests/corpus/positions.txt
@@ -438,6 +446,11 @@ python3 tools/crosscheck.py --exe build/bin/nil_cli --cases 20  --cards 6
 python3 tools/crosscheck.py --exe build/bin/nil_cli --cases 60  --cards 4 --no-memo --oracle-no-memo
 ```
 
+`nil_cli` also takes `--no-collapse`, which turns the equivalent-card reduction
+off and enumerates every legal card. It is much slower and must produce
+byte-identical output; a divergence between the two says the reduction has
+started collapsing cards that are not actually equivalent.
+
 The harness generates random positions — random leader, random nil seat, random
 broken flag, and roughly a third of them resumed mid-trick — and compares three
 things: the bool, the exact trick count, and the **principal variation, card for
@@ -561,6 +574,78 @@ leader is not void in the led suit. Many implementations break spades anyway.
 The literal reading is the default here, matching the oracle. Pass
 `--break-on-forced-lead` (or `NIL_FLAG_BREAK_ON_FORCED_SPADE_LEAD`) for the
 other convention. The cross-check exercises both.
+
+## Equivalent cards
+
+With the jack already played, holding `SK SQ` is not two moves. It is one move
+available under two names: every card still in existence is either above both or
+below both, so playing the king and playing the queen reach positions that
+differ only by swapping two labels. Searching both is searching the same tree
+twice, and the second time is free of information.
+
+The move generator therefore emits one representative per class. `src/nil/rules.hpp`
+does it in three pieces:
+
+**What counts as relevant.** A card's rank matters only if something can still
+be compared against it. Cards from finished tricks are gone. So are the *losing*
+cards of the trick in progress — `beats` is only ever asked about the running
+best, so nothing will be compared against them again. The card currently
+*winning* is the exception: a hand card above it takes the trick and one below it
+does not, so it separates ranks that would otherwise be interchangeable. That
+one card, plus everything still in the four hands, is the relevant set.
+
+**Finding the classes.** A class is a run of legal cards that is contiguous in
+the relevant set, so a card is redundant exactly when the next relevant card
+*below* it is also a legal move. Read downwards that is a search per card. Read
+upwards it is a fill: flood from every candidate through the ranks no relevant
+card occupies, step once more, and whatever the step lands on is the first
+relevant card above it. A candidate landed on this way has an equal, lower twin
+already in the set. Four widening shifts carry a bit up to fifteen ranks — past
+the widest gap thirteen ranks can hold — and `SUIT_PADDING`, the three unused
+bits above every suit, keeps the fill from walking out of the spades and into
+the hearts.
+
+**Why it is exact.** Let `X > Y` be two cards of one suit in the mover's hand
+with no relevant card between them, and let *s* be the relabelling that swaps
+them. Nothing relevant separates them, so *s* preserves the order of every card
+the game can still compare, and it maps the position after playing `X` onto the
+position after playing `Y`. The rules read nothing else: follow-suit sees suits,
+the break rule sees suits, and who wins a trick is decided by comparisons alone.
+The two positions have the same value.
+
+**Why the principal variation survives.** Candidates are enumerated from the
+bottom and replace the incumbent only on a strict improvement, so the
+canonically lowest of several equal-valued moves already wins. The card dropped
+here is always the *higher* member of a pair that scores identically, which
+could never have displaced it. This is the property that keeps the card-for-card
+cross-check against `nil_oracle.py` alive, and it is the last optimisation on the
+roadmap that has it — move ordering will legitimately pick a different one of
+several equal cards.
+
+**Why the transposition table stays consistent.** A stored move is a slot index,
+read back against a possibly different position with the same key, so the
+reduction has to be a function of the *key* rather than of the literal cards. It
+is: the key already records each suit's live cards in order, and the winning
+card of the trick as `gap`, its position among them. Those are exactly the two
+ingredients above.
+
+Node counts, against `--no-collapse` on the same binary:
+
+| workload | all legal cards | one per class | change |
+|---|---:|---:|---:|
+| corpus, 4 cards | 1,274 | 1,038 | −18.5% |
+| corpus, 5 cards | 9,500 | 7,462 | −21.5% |
+| corpus, 6 cards | 44,309 | 33,423 | −24.6% |
+| random, 7 cards | 615,474 | 425,937 | −30.8% |
+| random, 8 cards | 3,052,071 | 2,019,207 | −33.8% |
+| random, 9 cards | 51,860,711 | 23,519,702 | −54.7% |
+
+The ratio climbing with hand size is the point: longer suits hold longer runs,
+and the saving compounds down the tree rather than being taken once at the root.
+Nine-card deals went from about 45 seconds to about 23. Per-node throughput
+costs a few percent, most of which comes back from skipping the reduction
+outright at nodes with only one legal card — common in the deep endgame, where
+most of the nodes are.
 
 ## The transposition table
 

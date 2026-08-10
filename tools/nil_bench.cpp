@@ -343,6 +343,8 @@ void usage(const char* argv0) {
               << "  --slowest <n>     list the n slowest positions            [5]\n"
               << "  --tt-mb <n>       transposition table size in MiB         [32]\n"
               << "  --no-memo         no transposition table at all\n"
+              << "  --no-collapse     generate every legal card rather than one per class\n"
+              << "                    of rank-equivalent ones (same answer, many more nodes)\n"
               << "  --quiet           only print the summary and any failures\n"
               << "\n"
               << "--check-pv is off by default on purpose: move ordering will change\n"
@@ -353,8 +355,11 @@ void usage(const char* argv0) {
 // Node counts are only comparable between runs that used the same table, so the
 // size travels with them.  bench_history.py already groups runs on this column.
 std::string memo_label(const nil::SearchOptions& opts) {
-    if (!opts.use_memo || opts.tt_megabytes == 0) return "off";
-    return std::to_string(opts.tt_megabytes) + "mb";
+    // Turning the equivalent-card reduction off multiplies the node count, so it
+    // has to land in a group of its own too or it reads as a huge regression.
+    const std::string suffix = opts.collapse_equivalents ? "" : "+nocollapse";
+    if (!opts.use_memo || opts.tt_megabytes == 0) return "off" + suffix;
+    return std::to_string(opts.tt_megabytes) + "mb" + suffix;
 }
 
 }  // namespace
@@ -414,6 +419,8 @@ int main(int argc, char** argv) {
             opts.tt_megabytes = value > 0 ? static_cast<std::size_t>(value) : 0u;
         } else if (arg == "--no-memo") {
             opts.use_memo = false;
+        } else if (arg == "--no-collapse") {
+            opts.collapse_equivalents = false;
         } else if (arg == "--secondary" && has_next) {
             const std::string mode = argv[++i];
             if (mode != "max" && mode != "min") {

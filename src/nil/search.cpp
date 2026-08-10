@@ -36,6 +36,7 @@ struct Ctx {
     int secondary_weight = -1; // -K the nil side wants tricks, +K it wants rid of them
     int tertiary_weight = 0;   // 1 when the cover partner's share is what counts
     bool break_forced = false;
+    bool collapse = true;      // one move per class of rank-equivalent cards
     std::uint64_t nodes = 0;
     TranspositionTable* tt = nullptr;  // null when the caller turned it off
 };
@@ -44,11 +45,15 @@ struct Ctx {
 // and the canonically chosen best move for the seat to play.  The nil side
 // minimises the value; the opponents maximise it.
 //
-// No alpha-beta, no move ordering, no rank-equivalence collapsing, no quick
-// tricks.  Candidate moves are enumerated in canonical order and replace the
-// incumbent only on a STRICT improvement, so among equal-valued moves the
-// canonically lowest card wins and the PV is reproducible.  This is the same
-// tie-break nil_oracle.py uses.
+// No alpha-beta, no move ordering, no quick tricks.  Candidate moves are
+// enumerated in canonical order and replace the incumbent only on a STRICT
+// improvement, so among equal-valued moves the canonically lowest card wins and
+// the PV is reproducible.  This is the same tie-break nil_oracle.py uses.
+//
+// The one thing that is not a plain enumeration is the equivalent-card
+// reduction (rules.hpp), which drops candidates that are a lower candidate
+// played under a different name.  Those could never have won the tie-break, so
+// the PV is the same one the full enumeration produces.
 int search(Ctx& ctx, const State& st, CardId& best_move) {
     ++ctx.nodes;
     best_move = NO_CARD;
@@ -83,6 +88,13 @@ int search(Ctx& ctx, const State& st, CardId& best_move) {
     const int led = st.led_suit();
 
     Hand moves = legal_moves(st.hands[seat], st.trick_len, led, st.broken);
+    // A lone legal card is its own class, so the deep endgame -- where most of
+    // the nodes are and where forced plays are common -- skips the work.  The
+    // test is `two or more bits set`.
+    if (ctx.collapse && (moves & (moves - 1)) != 0) {
+        moves = distinct_moves(
+            moves, relevant_cards(st.hands, trick_best_card(st.trick, st.trick_len)));
+    }
     int best = 0;
     bool have_best = false;
 
@@ -174,6 +186,7 @@ bool solve(const Position& pos, int nil_seat, const SearchOptions& opts, Solutio
     ctx.secondary_weight = weights.secondary;
     ctx.tertiary_weight = weights.tertiary;
     ctx.break_forced = opts.break_on_forced_spade_lead;
+    ctx.collapse = opts.collapse_equivalents;
 
     TranspositionTable& table = shared_table();
     if (opts.use_memo && opts.tt_megabytes > 0) {

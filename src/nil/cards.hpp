@@ -49,6 +49,11 @@ using Hand = std::uint64_t;    // set of CardIds
 inline constexpr Hand SUIT_BITS = 0x1FFFull;  // 13 ranks
 inline constexpr CardId NO_CARD = -1;
 
+// The three bits above every suit's thirteen ranks.  No card ever sets them.
+// Naming them lets a bitwise sweep up the ranks treat a suit boundary as a
+// wall instead of walking out of the clubs and into the next suit's deuce.
+inline constexpr Hand SUIT_PADDING = 0xE000E000E000E000ull;
+
 inline constexpr Hand suit_mask(int suit) { return SUIT_BITS << (suit * 16); }
 inline constexpr int card_suit(CardId c) { return c >> 4; }
 inline constexpr int card_rank(CardId c) { return (c & 15) + 2; }

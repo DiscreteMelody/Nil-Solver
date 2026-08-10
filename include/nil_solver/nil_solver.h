@@ -104,6 +104,12 @@ extern "C" {
  * to make the search maximally dumb when cross-checking.  It is also very much
  * slower -- orders of magnitude beyond about five cards a hand. */
 #define NIL_FLAG_NO_MEMO 0x4u
+/* Generate every legal card instead of one per class of rank-equivalent ones.
+ * With the jack gone, playing the king and playing the queen are the same move
+ * under two names, and the solver normally searches only one of them; this flag
+ * turns that off.  Same answer and same principal variation either way -- it is
+ * a diagnostic, and it is several times slower. */
+#define NIL_FLAG_NO_COLLAPSE 0x40u
 /* Allow more than NIL_CARD_LIMIT cards per hand.  Without this the solver
  * refuses, because the search is still exhaustive and will take a very long
  * time. */

@@ -43,6 +43,9 @@ void usage(const char* argv0) {
         << "  --break-on-forced-lead  a forced spade lead breaks spades (see README)\n"
         << "  --no-memo               disable the transposition table (same answer,\n"
         << "                          much slower)\n"
+        << "  --no-collapse           generate every legal card rather than one per\n"
+        << "                          class of rank-equivalent ones (same answer and\n"
+        << "                          same PV, many more nodes)\n"
         << "  --tt-mb <n>             transposition table size in MiB          [32]\n"
         << "  --compact               print only the machine-readable result\n"
         << "  --force                 allow more than 9 cards per hand (very slow)\n"
@@ -103,6 +106,8 @@ int main(int argc, char** argv) {
             opts.break_on_forced_spade_lead = true;
         } else if (arg == "--no-memo") {
             opts.use_memo = false;
+        } else if (arg == "--no-collapse") {
+            opts.collapse_equivalents = false;
         } else if (arg == "--tt-mb") {
             std::string mb;
             if (!need_value(argc, argv, i, "--tt-mb", mb)) return 2;
