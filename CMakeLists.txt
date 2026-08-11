@@ -119,6 +119,17 @@ if(NIL_SOLVER_BUILD_TESTS)
     add_test(NAME corpus_modes
              COMMAND nil_bench --corpus "${NIL_CORPUS}" --mode both --quiet --slowest 0)
     set_tests_properties(corpus_modes PROPERTIES TIMEOUT 900)
+
+    # The control arm for the static bounds.  corpus_modes exercises them ON --
+    # fast mode takes them by default -- and this is the same corpus with them
+    # OFF, so the pair is a differential: both must land on the oracle's
+    # answers, and a proof that has started lying can only agree with the search
+    # by being unreachable.  Same reasoning as --no-collapse, and cheap enough
+    # to keep in the default run.
+    add_test(NAME corpus_static
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --mode fast --no-static --quiet
+                     --slowest 0)
+    set_tests_properties(corpus_static PROPERTIES TIMEOUT 900)
   endif()
 
   set(NIL_LARGE_CORPUS "${CMAKE_CURRENT_SOURCE_DIR}/tests/corpus/large.txt")

@@ -153,6 +153,13 @@ extern "C" {
  * NIL_FLAG_MINIMISE_OWN_TRICKS is inert here: it points at a tie-break level
  * this mode does not have. */
 #define NIL_FLAG_FAST_MODE 0x80u
+/* Do not settle a position by proof when it can be settled by proof: search for
+ * the answer instead.  Under NIL_FLAG_FAST_MODE the solver returns immediately
+ * when the nil bidder provably cannot be forced to win a trick, or provably
+ * must win one; this flag turns both proofs off.  Same answer either way -- it
+ * is a diagnostic, and it is slower.  Inert without NIL_FLAG_FAST_MODE, which
+ * is the only mode the proofs apply to. */
+#define NIL_FLAG_NO_STATIC_BOUNDS 0x100u
 
 /* Cards per hand the solver will attempt without NIL_FLAG_FORCE_LARGE. */
 #define NIL_CARD_LIMIT 9

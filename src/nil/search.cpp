@@ -4,6 +4,7 @@
 #include <iomanip>
 #include <sstream>
 
+#include "nil/bounds.hpp"
 #include "nil/rules.hpp"
 #include "nil/statekey.hpp"
 #include "nil/tt.hpp"
@@ -52,10 +53,33 @@ struct Ctx {
     // search() rests on.  Always true in MODE_FAST, where the weights are
     // (1, 0, 0) and the value is a count.
     bool gains_nonnegative = false;
+    // True when a subtree's value is exactly the number of tricks the nil
+    // bidder takes in it -- primary 1, nothing weighted above or below.  That
+    // is what turns the two proofs in bounds.hpp from statements about the PLAY
+    // into statements about the VALUE, and it is what confines them to
+    // MODE_FAST: the full objective still owes its caller the pair's trick
+    // total and the split between the two partners, and neither proof says
+    // anything about either.  Read off the weights rather than off the mode,
+    // like gains_nonnegative, because it is a fact about the weights.
+    bool value_is_nil_tricks = false;
+    bool static_bounds = true;  // the proofs in bounds.hpp; off is the control arm
     std::uint8_t tt_tag = TAG_NONE;  // which objective this solve's values are on
     std::uint64_t nodes = 0;
     TranspositionTable* tt = nullptr;  // null when the caller turned it off
 };
+
+// Any legal move, for a static cutoff to hand back.  Both proofs in bounds.hpp
+// hold down EVERY line from the position, so no move is better placed than any
+// other to carry the bound they return -- there is nothing to choose between
+// them, and the canonically lowest is what the tie-break picks among equals
+// anyway.  Nothing downstream reads it as a recommendation: the static bounds
+// only run in MODE_FAST, which reports no principal variation.  What it is for
+// is solve()'s invariant that a position with cards in it yields a move.
+CardId first_legal_move(const State& st) {
+    const int seat = st.to_play();
+    const Hand moves = legal_moves(st.hands[seat], st.trick_len, st.led_suit(), st.broken);
+    return moves ? lowest_card(moves) : NO_CARD;
+}
 
 // Returns the objective value from `st` onwards (see objective_weights), and
 // the best move found for the seat to play.  The nil side minimises the value;
@@ -99,6 +123,41 @@ int search(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta) {
     ++ctx.nodes;
     best_move = NO_CARD;
     if (st.empty()) return 0;
+
+    // STATIC BOUNDS.  Two proofs that settle the position outright; see
+    // bounds.hpp for both, and for why only one of them survives mid-trick.
+    // They sit ahead of the transposition probe because they are cheaper than
+    // encoding a key and hashing it, and a node they answer wants neither a
+    // probe nor a store: it is not work the table needs to remember, because
+    // reaching this position again costs the same few mask tests.
+    if (ctx.static_bounds && ctx.value_is_nil_tricks && st.trick_len == 0) {
+        // Whether the nil bidder still holds a spade is the cheap gate on both
+        // proofs, and they want opposite answers to it -- a spade is what makes
+        // safety unprovable and what makes a forced trick provable -- so it is
+        // asked once here instead of twice inside them.  It also keeps the work
+        // off the common path: a node that fails this test does no more than
+        // one mask AND.
+        if ((st.hands[ctx.nil_seat] & suit_mask(SUIT_SPADES)) == 0) {
+            if (nil_cannot_be_forced(st.hands, ctx.nil_seat, st.leader == ctx.nil_seat)) {
+                // Not a bound.  The nil bidder takes no trick down any line, so
+                // the value of this subtree is zero exactly, and it is returned
+                // as an exact value whatever window was asked about.
+                best_move = first_legal_move(st);
+                return 0;
+            }
+        } else if (beta <= 1 && nil_must_take_a_trick(st.hands, ctx.nil_seat)) {
+            // A lower bound of one is only a legal fail-soft return when one is
+            // at or above beta; below it the caller is entitled to an exact
+            // value, and a nil bidder about to take three tricks would be
+            // reported as taking one.  In MODE_FAST beta is 1 at every node --
+            // see the cutoff further down -- so the guard never costs a cutoff.
+            // It is here so that the correctness of this line is a property of
+            // the code rather than of a fact about the window that some later
+            // item could quietly change.
+            best_move = first_legal_move(st);
+            return 1;
+        }
+    }
 
     // The key describes the position up to a relabelling of ranks, so the move
     // that comes back out of the table is a slot number rather than a card and
@@ -240,6 +299,14 @@ void configure(Ctx& ctx, int nil_seat, const SearchOptions& opts,
     // back down, and what is banked so far would bound nothing.
     ctx.gains_nonnegative =
         weights.primary >= 0 && weights.secondary >= 0 && weights.tertiary >= 0;
+    // Likewise a fact about the weights.  In MODE_FULL the primary is K*K and
+    // the secondary is +/-K, so this is false for every K -- including K = 1,
+    // where the primary is 1 but the secondary is not zero.  MODE_FULL
+    // therefore never takes a static cutoff, and its node counts stay the fixed
+    // point they have been since patch 8.
+    ctx.value_is_nil_tricks =
+        weights.primary == 1 && weights.secondary == 0 && weights.tertiary == 0;
+    ctx.static_bounds = opts.use_static_bounds;
     ctx.tt_tag = opts.mode == MODE_FAST ? TAG_FAST : TAG_FULL;
 
     if (opts.use_memo && opts.tt_megabytes > 0) {

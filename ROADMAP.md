@@ -1,20 +1,26 @@
 # Nil-Solver optimization roadmap
 
 Ordered by impact, highest first, with the constraint that a few items must
-precede others to be worth anything at all. As of HEAD `faac313` plus patch 10.
+precede others to be worth anything at all. As of HEAD `09099f4` plus patch 11.
 
-The target was 13-card hands, and the boolean search now reaches them. A median
-13-card position answers in roughly 150 ms; the mean over twenty random deals is
-609 ms, and the worst of those twenty took 8.6 s. The estimate before patch 10
+The target was 13-card hands, and the boolean search reaches them. A median
+13-card position answers in well under a second. The estimate before patch 10
 was a couple of hours. What is left on this list is therefore no longer about
-getting to 13 cards at all — it is about that tail, and about the full
+getting to 13 cards at all — it is about the tail, and about the full
 lexicographic search, which is still exhaustive and is still where the trick
 counts and the principal variation come from.
 
-The property that makes this solver trustworthy survived the trip. Full mode is
-untouched by patch 10, node for node at every hand size measured, and still
-agrees with `nil_oracle.py` card for card. That is not incidental: it is what
-the pruned answer is checked against.
+Patch 11 is the first item aimed squarely at that tail, and it is worth reading
+its entry for the result rather than the headline: two exact proofs, −28% of
+nodes on the corpus, and 7-11% of wall time at 13 cards against a prediction of
+much more. The reason is measured in item 4 and it generalises — a slow deal is
+slow because the nil is genuinely contested, and a static proof is silent
+exactly there.
+
+The property that makes this solver trustworthy survived both trips. Full mode
+is untouched by patches 10 and 11, node for node at every hand size measured,
+and still agrees with `nil_oracle.py` card for card. That is not incidental: it
+is what the pruned answer is checked against.
 
 ---
 
@@ -28,6 +34,7 @@ the pruned answer is checked against.
 | ✅ | Equivalent-card reduction in the move generator | patch 8 | one representative per run of legal cards contiguous in the relevant set; −18% nodes at 4 cards rising to −55% at 9, and the principal variation is unchanged |
 | ✅ | Boolean / lexicographic mode split | patch 9 | `MODE_FAST` zeroes the tie-break weights and gives the primary weight 1, so the value is the nil bidder's trick count and the window is literally `[0, 1]`; no speed change yet, by design |
 | ✅ | Nil-specialised alpha-beta / AND-OR search | patch 10 | null window `[0, 1]` in `MODE_FAST`, fail-soft, bounds in the table; −12.8x nodes at 4 cards rising to −303x at 9, and 13-card hands answer in a median 150 ms. `MODE_FULL` searches between unreachable sentinels and is unchanged node for node |
+| ✅ | Nil-safe and nil-set static bounds | patch 11 | two proofs at a trick boundary, `MODE_FAST` only: −28.5% nodes on the corpus, −3% to −12% at 13 cards. Wall time −6.5% to −10.7% at 13 cards; throughput unmoved. `MODE_FULL` unchanged node for node |
 
 Patch 7 measured against the 560-position corpus:
 
@@ -125,6 +132,23 @@ throughput because the sort runs at every node. Net wall time came out *worse*.
 It also carries a live tie-break hazard, since the move order is suit-major and
 a move read back under a permuted labelling can be the other equally good card.
 Not worth revisiting unless the key computation gets much cheaper.
+
+**The safe-nil proof run mid-trick.** Unlike the set proof, the safe proof is
+sound at every ply, not only at a trick boundary — `relevant_cards` already
+carries the one played card that can still decide anything, and the induction
+goes through with one extra condition (the nil bidder must not already be
+winning the trick in progress, which is one `trick_winner` call). It is also
+attractive on paper: the nil bidder's own awkward middling card leaving its hand
+is the commonest way for the proof to *become* true, and catching that at the
+ply it happens skips the rest of the trick and everything under it.
+
+Built and measured, best of three, twenty deals at 13 cards, seed 3: 49,803,320
+nodes against 50,241,863 for the boundary-only version — 0.87% fewer — bought at
+5.9% of wall time, because the extra `trick_winner` and `trick_best_card` land on
+every node rather than one in four. Net wall time came out *worse*, which is the
+same verdict and the same shape as side-suit canonicalization above. Worth
+re-measuring only if move ordering (item 6) changes the node mix enough that the
+proof starts firing on a different population.
 
 ---
 
@@ -243,43 +267,92 @@ rank-compression transforms need no reference answer, so they are the only
 verification the boolean search has up there. It holds at 12 cards. An
 `invariants_fast` ctest runs a small version of it on every build.
 
-### 4. ~~Nil-set~~ and nil-safe static bounds — ⭐⭐⭐⭐⭐ — **half done, patch 10**
+### 4. ~~Nil-set and nil-safe static bounds~~ — ⭐⭐⭐⭐⭐ — **done, patch 11**
 
-**Now the top of the list, and now aimed at the tail rather than the median.**
+Landed. Two proofs, checked at a trick boundary before the transposition probe,
+that settle a position without searching it. They are Chang's quick-trick check
+asked in the shape the nil question wants: he skips the search when a SIDE can
+win a trick, and the question here is whether a trick can be forced onto a SEAT,
+so what carries over is the idea rather than either of his tests. See
+`src/nil/bounds.hpp`, which carries both arguments in full.
 
-Two domain-specific terminal tests that cut whole subtrees without searching:
+- ~~**Nil already set.**~~ Shipped in patch 10, out of the window arithmetic.
+- **Nil provably safe.** The nil bidder holds no spades; in every suit it holds,
+  every card is below every outstanding card of that suit, or nobody else holds
+  that suit at all; and it is not on lead. Then it wins no trick down any line,
+  and the subtree's value is zero *exactly* rather than by a bound.
+- **Nil provably set.** Rank the outstanding spades with 1 highest. Holding the
+  1st, or the 2nd and 3rd, or the 3rd through 5th, or the 4th through 7th — a
+  block of k starting at rank k — forces a trick, because only k-1 higher spades
+  exist outside the block and each can bury at most one of it. The general form
+  the code tests is `∃j : r(j) ≤ 2j - 1`, which also catches slack blocks like
+  {2nd, 3rd, 9th}.
 
-- ~~**Nil already set.**~~ **Shipped in patch 10.** The moment the nil bidder
-  takes a trick the primary is decided in fast mode, and the search returns
-  without playing the hand out. It arrived as part of item 3 rather than here
-  because it fell out of the window arithmetic — `gained >= beta` with a
-  non-negative objective — rather than needing any rule about nil. It was not
-  optional there either: without it the subtree below a taken trick gets a
-  window that cuts at max nodes and never at min nodes, and item 3's
-  measurement would have understated itself badly. It does turn the fast-mode
-  value into a lower bound rather than an exact count, exactly as predicted,
-  which is why patch 9 withheld the count from callers.
-- **Nil provably safe.** If the nil bidder holds no card that can win against
-  what is still outstanding — in every suit held, every card is below every
-  outstanding card, and no forced-lead position can arise — the nil cannot be
-  broken. Return immediately. **This is the whole of what is left here, and it
-  is now the most valuable single thing on the list.**
+**What it bought, and the part that did not go to plan.**
 
-This is the nil-shaped version of quick-trick analysis and does most of what
-item 8 would do, because it answers the question actually being asked. The nil
-bidder typically holds low cards, so the safe-nil proof fires often.
+| workload | with | without | change |
+|---|---:|---:|---:|
+| corpus, 4 cards | 16,418 | 25,314 | −35.1% |
+| corpus, 5 cards | 19,082 | 24,888 | −23.3% |
+| corpus, 6 cards | 15,482 | 21,074 | −26.5% |
+| corpus, all 560 | 50,982 | 71,276 | −28.5% |
+| random, 7 cards, seed 1 | 1,342 | 1,762 | −23.8% |
+| random, 8 cards, seed 1 | 7,888 | 8,360 | −5.6% |
+| random, 9 cards, seed 1 | 43,544 | 46,153 | −5.7% |
 
-*Why it matters more than the star rating suggests.* Patch 10 left a tail: at 13
-cards nineteen of twenty deals came in between 120 ms and 1.1 s and the
-twentieth took 8.6 s. A safe-nil proof is precisely a cut on the branch of the
-tree where the nil side is grinding out a proof that nothing can be forced,
-which is what an expensive deal is spending its time on. Measure against the
-slow deals specifically — `nil_bench --slowest` names them — rather than against
-a mean that one deal already dominates.
+Both columns are the same binary, `--no-static` being the only difference, so
+this is a differential rather than a comparison across builds.
 
-*Note:* "outstanding" here is the same relevant set item 1 already computes —
-live hand cards plus the winning card of the trick in progress. Reuse
-`relevant_cards` rather than deriving it a second way, or the two will drift.
+**This item was written for the tail, and the tail is where it did least.**
+Twenty deals at 13 cards, best of three, both arms on the same binary:
+
+| seed | nodes with | without | nodes | wall time |
+|---|---:|---:|---:|---:|
+| 3 | 50,241,863 | 53,798,662 | −6.6% | 10.0 s → 11.2 s (−10.7%) |
+| 11 | 141,136,295 | 160,102,734 | −11.8% | 30.8 s → 33.3 s (−7.5%) |
+| 42 | 160,744,139 | 165,550,184 | −2.9% | 34.2 s → 36.6 s (−6.5%) |
+
+Consistently positive, never negative, and modest: call it 7-11% of wall time at
+13 cards against 28% of nodes on the corpus. Throughput is flat to slightly up
+(4.6-5.0M nodes/sec in both arms), so nothing is being paid for this — the
+proofs run at one node in four and the first thing either asks is a single mask
+AND, and the nodes they remove were not the cheap ones.
+
+**Why the tail resisted, measured rather than guessed.** Instrumenting the
+twenty seed-3 deals: 12,274,325 trick-boundary nodes, of which the safe proof
+settled 2.87% and the set proof 1.67%. The gate is not the spade condition —
+the nil bidder holds no spade at 76.5% of those nodes — it is condition 2. Deep
+in a contested 13-card deal the nil bidder holds a scatter of middling cards,
+and one card ranked above one outstanding card is enough to stop the proof. An
+expensive deal is expensive precisely because the nil is genuinely borderline,
+which is the case in which neither proof has anything to say.
+
+That is worth stating plainly because the previous version of this entry
+predicted the opposite. The safe-nil proof does fire often — it is the single
+most-fired cutoff added since patch 10 — but the deals where it fires early are
+the deals that were already cheap.
+
+*Note:* "outstanding" is the same relevant set item 1 computes, and
+`nil_cannot_be_forced` calls `relevant_cards` rather than re-deriving it, so the
+two cannot drift.
+
+*What checks it.* The proofs are one-sided — each proves its answer when it
+fires and says nothing when it does not — so switching them on may only remove
+work and can never change a boolean. `--no-static` and `NIL_FLAG_NO_STATIC_BOUNDS`
+are the control arm, on the `--no-collapse` model, and the `corpus_static` ctest
+runs the whole corpus with the proofs off against the oracle's recorded answers
+while `corpus_modes` runs it with them on. Beyond that: static-on against
+static-off over random deals at 8 (60), 10 (40), 11 (20) and 13 (11) cards, zero
+disagreements; invariance transforms at 10, 12 and 13 cards; 200 crosscheck
+cases at 5 cards agreeing with `nil_oracle.py` card for card.
+
+*And the thing that had to stay true.* `MODE_FULL` never takes a static cutoff,
+and not because a flag says so. The gate is `value_is_nil_tricks`, read off the
+weights — primary 1, secondary 0, tertiary 0 — which is `MODE_FAST`'s objective
+and no full-mode weighting, including K = 1 where the primary is also 1 but the
+secondary is not zero. Each proof settles the nil bidder's own trick count and
+says nothing about the pair's total or the split between the two partners, so it
+cannot settle the full objective. The corpus still comes in at 2,647,731 nodes.
 
 ### 5. Transposition-table move ordering — ⭐⭐⭐⭐
 
@@ -343,7 +416,11 @@ run in bulk. `--no-collapse` already exists as a separate switch for the one
 question it answers — whether the reduction itself is sound — and is not part of
 this mode.
 
-### 8. Quick-trick / forced-trick analysis — ⭐⭐⭐
+### 8. Quick-trick / forced-trick analysis — ⭐⭐
+
+**Downgraded: item 4 took the part of this that applies.** The nil-set proof is
+forced-trick analysis for the one seat the question is about, and the safe-nil
+proof is its complement; what is left here is the general side-level version.
 
 Weaker here than in a trick-maximizing double-dummy solver. Quick tricks bound
 "how many tricks can this side take"; the nil question is "can one trick be
@@ -358,6 +435,13 @@ ordinary trick maximization and the standard analysis applies directly.
 Tracking who is void in what, and which suits are exhausted, feeds the move
 ordering in item 6 and the safe-nil proof in item 4. Useful, but it mostly folds
 into those rather than standing alone as a separate win.
+
+Patch 11 gave this a specific target. The safe-nil proof fails at roughly
+three-quarters of trick-boundary nodes on a hard 13-card deal, and it fails on
+condition 2 — one card of the nil bidder's ranked above one outstanding card.
+A void map would not rescue those directly, but knowing which suits can still be
+*led* is the ingredient a weaker-and-still-sound condition 2 would need, and
+that is the one place a stronger safe proof is likely to come from.
 
 ### 10. Killer and history heuristics — ⭐⭐
 
@@ -416,7 +500,7 @@ landed and the growth curve is known.
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 → 5 → (6 + 7 together) → 8 → 9 → 10 → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 → (6 + 7 together) → 9 → 8 → 10 → measure → 11..14
 ```
 
 Item 1 went first because it was the last PV-preserving win, and it is banked.
@@ -427,9 +511,18 @@ and 7 together, because shipping move ordering without a verification fallback
 trades away the solver's best evidence for speed.
 
 The sequence below item 3 is unchanged but its purpose is not. It was a plan for
-reaching 13 cards; 13 cards is reached. Read items 4, 5 and 6 as work on the
-tail — the deals that still take seconds — and judge them on the slowest
-positions rather than on an average that one bad deal already owns.
+reaching 13 cards; 13 cards is reached. Read items 5 and 6 as work on the tail —
+the deals that still take seconds — and judge them on the slowest positions
+rather than on an average that one bad deal already owns.
+
+Item 4 was judged that way and came back with 7-11%, against a prediction of
+much more. That is worth carrying forward as a caution about the rest of the
+list rather than only as a result: a hard deal is hard because the nil is
+genuinely contested, and a static proof is by construction silent exactly there.
+Items 5 and 6 do not have that problem — a cutoff taken sooner is a cutoff on
+the contested line itself — which is the reason they are next and the reason to
+expect more from them. Items 8 and 9 have swapped, because what is left of 8 is
+the part item 4 did not take, and 9 now has a concrete target.
 
 ---
 
@@ -466,16 +559,19 @@ Fast-mode rows stopped being comparable to them the moment patch 10 landed,
 which is what the `+fast` suffix on the memo column has been for. Its own
 baseline, recorded after patch 10 at 32 MiB, single core:
 
-| workload | nodes/position | ms/position |
-|---|---:|---:|
-| corpus, all 430 searched | 166 | — |
-| random, 7 cards (10, seed 1) | 1,762 | ~4 |
-| random, 8 cards (10, seed 1) | 8,360 | ~3 |
-| random, 9 cards (5, seed 1) | 77,595 | ~19 |
-| random, 10 cards (5, seed 1) | 23,820 | ~13 |
-| random, 11 cards (5, seed 1) | 331,920 | ~83 |
-| random, 12 cards (5, seed 1) | 1,249,375 | ~274 |
-| random, 13 cards (20, seed 3) | 2,689,933 | ~609 |
+| workload | patch 10 | patch 11 | ms/position |
+|---|---:|---:|---:|
+| corpus, all 560 rows | 127 | 91 | — |
+| random, 7 cards (10, seed 1) | 1,762 | 1,342 | ~4 |
+| random, 8 cards (10, seed 1) | 8,360 | 7,888 | ~3 |
+| random, 9 cards (10, seed 1) | 46,153 | 43,544 | ~12 |
+| random, 13 cards (20, seed 3) | 2,689,933 | 2,512,093 | 501 |
+| random, 13 cards (20, seed 11) | 8,005,136 | 7,056,814 | 1,542 |
+| random, 13 cards (20, seed 42) | 8,277,509 | 8,037,206 | 1,709 |
+
+The three 13-card seeds are there because one is not a sample: seed 3 is 80%
+one deal, and quoting it alone would have made patch 11 look either better or
+worse than it is depending on which deal moved.
 
 Two warnings about reading that table. The node counts are no longer monotone in
 hand size — 10 cards comes in below 9 — because with pruning the cost of a
@@ -491,4 +587,7 @@ history file's `memo` column and `bench_history.py` groups on that column, so
 runs at different sizes are never compared as regressions. Keep the size fixed
 across a comparison. `--no-collapse` now appends `+nocollapse` to that same
 column for the same reason: it multiplies the node count, and it must not read
-as a regression against a normal run.
+as a regression against a normal run. `--no-static` appends `+nostatic` on the
+same grounds, and only on fast rows, since the proofs are inert elsewhere and
+the suffix would split the full-mode history into two groups holding identical
+numbers.

@@ -148,6 +148,21 @@ struct SearchOptions {
     // something disagrees.
     bool collapse_equivalents = true;
 
+    // Answer a position outright when it can be proved without searching: the
+    // nil bidder holds nothing that can be forced to win, or holds spades that
+    // cannot all be buried.  See nil/bounds.hpp for both proofs.
+    //
+    // Inert outside MODE_FAST.  Each proof settles the nil bidder's own trick
+    // count and says nothing about the pair's total or about which of the two
+    // partners holds it, so it settles the whole value only when the value is
+    // that count -- which is MODE_FAST's objective and no other.
+    //
+    // On by default, and like collapse_equivalents the flag exists to be turned
+    // off: a fast search with the proofs disabled reaches the same booleans by
+    // searching for them, and is what to compare against when one of them is
+    // suspected of lying.
+    bool use_static_bounds = true;
+
     // Look positions up in a transposition table.  The search is a pure
     // function of the position, so the table changes neither the value nor the
     // principal variation -- it is memoisation, not alpha-beta or any other

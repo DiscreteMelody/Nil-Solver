@@ -511,6 +511,16 @@ off and enumerates every legal card. It is much slower and must produce
 byte-identical output; a divergence between the two says the reduction has
 started collapsing cards that are not actually equivalent.
 
+`--no-static` is the same idea for the two static bounds. In fast mode the
+solver answers a position outright when the nil bidder provably cannot be forced
+to take a trick, or provably must take one (see `src/nil/bounds.hpp`); this flag
+makes it search for the answer instead. Both must give the same `nil_fails`, and
+the proofs are one-sided, so turning them on may only remove nodes and never
+add one. `ctest` runs both arms over the whole corpus — `corpus_modes` with them
+on, `corpus_static` with them off — and both are checked against the oracle's
+recorded answers. The flag is inert outside fast mode, which is the only mode
+the proofs apply to.
+
 The harness generates random positions — random leader, random nil seat, random
 broken flag, and roughly a third of them resumed mid-trick — and compares three
 things: the bool, the exact trick count, and the **principal variation, card for

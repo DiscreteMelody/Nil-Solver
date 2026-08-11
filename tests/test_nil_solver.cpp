@@ -15,6 +15,7 @@
 #include <type_traits>
 #include <vector>
 
+#include "nil/bounds.hpp"
 #include "nil/position.hpp"
 #include "nil/rules.hpp"
 #include "nil/search.hpp"
@@ -754,6 +755,228 @@ int main(int argc, char** argv) {
         }
         check("modes agree at six cards", disagreed, 0);
         check("and that sweep actually ran", checked, 64);
+    }
+
+    std::cout << "Nil-safe and nil-set static bounds\n";
+    {
+        // THE SAFE PROOF, condition by condition.  `hands` here is always a
+        // legal trick-boundary layout, since that is the only shape either
+        // proof is defined on.
+
+        // The worked example: the nil bidder holds C3 C2, H5 with H2 H3 H4
+        // already gone, and DJ as the last diamond in the deal.  Nothing it
+        // holds can be forced to win, and the jack is safe for the third
+        // reason rather than the second -- nobody else has a diamond, so
+        // nobody can lead one and it can only ever fall as a discard.
+        {
+            const Hand hands[4] = {H({"C3", "C2", "H5", "DJ"}),    // N, the nil bidder
+                                   H({"C7", "C6", "H8", "HK"}),
+                                   H({"CA", "CT", "H9", "HQ"}),
+                                   H({"CK", "CJ", "H7", "HT"})};
+            check("worked example: the nil is safe", nil::nil_cannot_be_forced(hands, 0, false),
+                  true);
+            // ...but not while it is the one on lead: three discards on a
+            // diamond lead and the jack wins.
+            check("worked example: on lead the lone diamond is a trick",
+                  nil::nil_cannot_be_forced(hands, 0, true), false);
+        }
+        {
+            // Same layout with one club moved so the nil bidder holds C8 over
+            // somebody's C6.  Condition 2 fails in clubs and the proof stops.
+            const Hand hands[4] = {H({"C8", "C2", "H5", "DJ"}),
+                                   H({"C7", "C6", "H8", "HK"}),
+                                   H({"CA", "CT", "H9", "HQ"}),
+                                   H({"CK", "CJ", "H7", "HT"})};
+            check("a card above an outstanding one breaks the proof",
+                  nil::nil_cannot_be_forced(hands, 0, false), false);
+        }
+        {
+            // The deuce of spades is still a spade.  Every other suit is as
+            // low as it gets, and the proof must still refuse: hearts run out,
+            // the nil bidder ruffs, and the lowest trump in the deck wins.
+            const Hand hands[4] = {H({"S2", "H2", "H3"}), H({"SA", "H8", "HK"}),
+                                   H({"SK", "H9", "HQ"}), H({"SQ", "H7", "HT"})};
+            check("any spade at all defeats the safe proof",
+                  nil::nil_cannot_be_forced(hands, 0, false), false);
+        }
+        {
+            // Nobody else holds the suit AND the nil bidder is not on lead:
+            // condition 2's second form, which is what makes the worked
+            // example's diamond safe.  Checked on its own so the two forms
+            // cannot both regress behind one test.
+            const Hand hands[4] = {H({"D5", "D4"}), H({"H8", "HK"}), H({"H9", "HQ"}),
+                                   H({"H7", "HT"})};
+            check("a suit nobody else holds is safe off lead",
+                  nil::nil_cannot_be_forced(hands, 0, false), true);
+            check("and is a trick on lead", nil::nil_cannot_be_forced(hands, 0, true), false);
+        }
+
+        // THE SET PROOF.  The pattern from the roadmap, one row at a time, each
+        // in a deal where the ranks named are the ranks outstanding.
+        {
+            // 1st highest.
+            const Hand a[4] = {H({"SA"}), H({"SK"}), H({"SQ"}), H({"SJ"})};
+            check("holding the top spade is a trick", nil::nil_must_take_a_trick(a, 0), true);
+            // 2nd and 3rd.
+            const Hand b[4] = {H({"SK", "SQ"}), H({"SA", "S2"}), H({"SJ", "S3"}),
+                               H({"ST", "S4"})};
+            check("2nd and 3rd highest is a trick", nil::nil_must_take_a_trick(b, 0), true);
+            // 3rd, 4th and 5th.
+            const Hand c[4] = {H({"SQ", "SJ", "ST"}), H({"SA", "S2", "S3"}),
+                               H({"SK", "S4", "S5"}), H({"S9", "S6", "S7"})};
+            check("3rd through 5th highest is a trick", nil::nil_must_take_a_trick(c, 0), true);
+            // 4th, 5th, 6th and 7th.
+            const Hand d[4] = {H({"SJ", "ST", "S9", "S8"}), H({"SA", "SK", "S2", "S3"}),
+                               H({"SQ", "S4", "S5", "S6"}), H({"S7", "H2", "H3", "H4"})};
+            check("4th through 7th highest is a trick", nil::nil_must_take_a_trick(d, 0), true);
+        }
+        {
+            // The gaps in the pattern.  One below the block and the covers are
+            // enough: the ace buries the king, the queen buries the jack.
+            const Hand a[4] = {H({"SK", "SJ"}), H({"SA", "S2"}), H({"SQ", "S3"}),
+                               H({"ST", "S4"})};
+            check("2nd and 4th highest is escapable", nil::nil_must_take_a_trick(a, 0), false);
+            const Hand b[4] = {H({"SK"}), H({"SA"}), H({"SQ"}), H({"SJ"})};
+            check("the 2nd highest alone is escapable", nil::nil_must_take_a_trick(b, 0), false);
+            const Hand c[4] = {H({"H2"}), H({"SA"}), H({"SQ"}), H({"SJ"})};
+            check("no spades at all is not a forced trick",
+                  nil::nil_must_take_a_trick(c, 0), false);
+        }
+        {
+            // The general form catches slack blocks too, not just the tight
+            // r(j) = 2j - 1 rows above: 2nd, 3rd and 9th is set on the 3rd,
+            // and the 9th never enters into it.
+            const Hand a[4] = {H({"SK", "SQ", "S5"}), H({"SA", "S2", "S3"}),
+                               H({"SJ", "ST", "S4"}), H({"S9", "S8", "S7"})};
+            check("a slack block is caught on its tight prefix",
+                  nil::nil_must_take_a_trick(a, 0), true);
+        }
+        {
+            // The two proofs are complementary on the spade test, which is the
+            // property the search relies on to ask it once.
+            const Hand hands[4] = {H({"S2", "H2"}), H({"SA", "H8"}), H({"SK", "H9"}),
+                                   H({"SQ", "H7"})};
+            check("no position satisfies both proofs",
+                  nil::nil_cannot_be_forced(hands, 0, false) &&
+                      nil::nil_must_take_a_trick(hands, 0),
+                  false);
+        }
+
+        // END TO END.  A proof that fires must reach the answer the search
+        // reaches without it, and must not reach it by searching.
+        {
+            SearchOptions on;
+            on.mode = nil::MODE_FAST;
+            SearchOptions off = on;
+            off.use_static_bounds = false;
+
+            // Safe: the nil bidder holds the two lowest clubs and nothing else,
+            // and E is on lead.
+            const Position safe = make_position("N:...32 ...AK ...QJ ...T9", "E", true);
+            check("safe proof: same answer", must_solve(safe, "N", on).nil_fails,
+                  must_solve(safe, "N", off).nil_fails);
+            check("safe proof: and it is 'makes'", must_solve(safe, "N", on).nil_fails, false);
+            check("safe proof: settled at the root", must_solve(safe, "N", on).nodes, 1ull);
+            check("safe proof: which the search had to work for",
+                  must_solve(safe, "N", off).nodes > 1ull, true);
+
+            // Set: the nil bidder holds SK SQ with the ace outstanding.
+            const Position set = make_position("N:KQ... A2... J3... T4...", "E", true);
+            check("set proof: same answer", must_solve(set, "N", on).nil_fails,
+                  must_solve(set, "N", off).nil_fails);
+            check("set proof: and it is 'fails'", must_solve(set, "N", on).nil_fails, true);
+            check("set proof: settled at the root", must_solve(set, "N", on).nodes, 1ull);
+            check("set proof: which the search had to work for",
+                  must_solve(set, "N", off).nodes > 1ull, true);
+        }
+        {
+            // MODE_FULL must not see the bounds at all.  It owes its caller the
+            // pair's trick total and the split between the two partners, and
+            // neither proof says anything about either -- so the flag that
+            // gates them is read off the weights and comes out false for every
+            // full-mode weighting.  Node counts identical is the strongest way
+            // to say it.
+            const char* layouts[] = {
+                "N:...32 ...AK ...QJ ...T9",
+                "N:KQ... A2... J3... T4...",
+                "N:A2.K3.. .A4.K5. Q6..J8. T9.T9..",
+            };
+            for (const char* pbn : layouts) {
+                const Position pos = make_position(pbn, "E", true);
+                for (int seat = 0; seat < 4; ++seat) {
+                    for (int variant = 0; variant < 4; ++variant) {
+                        SearchOptions on;
+                        on.minimise_own_tricks = (variant & 1) != 0;
+                        on.nil_already_set = (variant & 2) != 0;
+                        SearchOptions off = on;
+                        off.use_static_bounds = false;
+                        const Solution a = must_solve(pos, SEAT_NAMES[seat], on);
+                        const Solution b = must_solve(pos, SEAT_NAMES[seat], off);
+                        if (a.nodes == b.nodes && a.value == b.value &&
+                            nil::format_pv_compact(a) == nil::format_pv_compact(b))
+                            continue;
+                        const std::string tag = std::string(pbn).substr(2, 8) + " nil " +
+                                                SEAT_NAMES[seat] + " v" + std::to_string(variant);
+                        check("full mode does not see the static bounds, " + tag, a.nodes,
+                              b.nodes);
+                        check("full mode value unmoved, " + tag, a.value, b.value);
+                    }
+                }
+            }
+        }
+        {
+            // THE DIFFERENTIAL.  The proofs are one-sided, so switching them on
+            // may only remove work -- never change a boolean, and never add a
+            // node.  Deals nobody chose, at a size where they fire often, with
+            // a fixed seed so a failure is reproducible.  This is what
+            // corpus_static runs on the oracle-verified corpus; here it runs
+            // deeper than the corpus reaches.
+            Rng rng;
+            int checked = 0;
+            int disagreed = 0;
+            long long with = 0;
+            long long without = 0;
+            for (int deal = 0; deal < 12; ++deal) {
+                const Position pos = random_deal(rng, 6);
+                for (const char* seat : SEAT_NAMES) {
+                    SearchOptions on;
+                    on.mode = nil::MODE_FAST;
+                    SearchOptions off = on;
+                    off.use_static_bounds = false;
+                    const Solution a = must_solve(pos, seat, on);
+                    const Solution b = must_solve(pos, seat, off);
+                    ++checked;
+                    if (a.nil_fails != b.nil_fails) ++disagreed;
+                    with += static_cast<long long>(a.nodes);
+                    without += static_cast<long long>(b.nodes);
+                }
+            }
+            check("static bounds never change the boolean", disagreed, 0);
+            check("and that sweep actually ran", checked, 48);
+            check("static bounds never cost nodes", with <= without, true);
+            check("and they save some", with < without, true);
+        }
+        {
+            // The C ABI carries the off switch too, and the boolean is the same
+            // through it.
+            char err[256] = {0};
+            nil_result on;
+            nil_result off;
+            const uint32_t base = NIL_FLAG_SPADES_BROKEN | NIL_FLAG_FAST_MODE;
+            check("ABI: static bounds on",
+                  static_cast<long long>(nil_solve("N:KQ... A2... J3... T4...", NIL_SEAT_EAST, "",
+                                                   NIL_SEAT_NORTH, base, &on, err, sizeof(err))),
+                  0LL);
+            check("ABI: static bounds off",
+                  static_cast<long long>(nil_solve("N:KQ... A2... J3... T4...", NIL_SEAT_EAST, "",
+                                                   NIL_SEAT_NORTH,
+                                                   base | NIL_FLAG_NO_STATIC_BOUNDS, &off, err,
+                                                   sizeof(err))),
+                  0LL);
+            check("ABI: the switch does not move the answer",
+                  static_cast<long long>(on.nil_fails), static_cast<long long>(off.nil_fails));
+            check("ABI: and the answer is 'fails'", static_cast<long long>(on.nil_fails), 1LL);
+        }
     }
 
     std::cout << "Compact state key\n";

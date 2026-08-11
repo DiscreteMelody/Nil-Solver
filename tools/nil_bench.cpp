@@ -362,6 +362,7 @@ void usage(const char* argv0) {
               << "  --tt-mb <n>       transposition table size in MiB         [32]\n"
               << "  --no-memo         no transposition table at all\n"
               << "  --no-collapse     generate every legal card rather than one per class\n"
+              << "  --no-static       do not settle positions by proof (fast mode only)\n"
               << "                    of rank-equivalent ones (same answer, many more nodes)\n"
               << "  --quiet           only print the summary and any failures\n"
               << "\n"
@@ -381,6 +382,10 @@ std::string memo_label(const nil::SearchOptions& opts) {
     // fast row next to a full row in the history would read as a win that never
     // happened.
     if (opts.mode == nil::MODE_FAST) suffix += "+fast";
+    // And again for the static bounds.  They only bite in fast mode, so the
+    // suffix would be noise on a full row; there it is left off rather than
+    // splitting the history into two groups that hold identical numbers.
+    if (!opts.use_static_bounds && opts.mode == nil::MODE_FAST) suffix += "+nostatic";
     if (!opts.use_memo || opts.tt_megabytes == 0) return "off" + suffix;
     return std::to_string(opts.tt_megabytes) + "mb" + suffix;
 }
@@ -447,6 +452,8 @@ int main(int argc, char** argv) {
             opts.use_memo = false;
         } else if (arg == "--no-collapse") {
             opts.collapse_equivalents = false;
+        } else if (arg == "--no-static") {
+            opts.use_static_bounds = false;
         } else if (arg == "--mode" && has_next) {
             const std::string mode = argv[++i];
             if (mode == "full") {
