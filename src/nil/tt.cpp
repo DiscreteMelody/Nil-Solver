@@ -42,22 +42,35 @@ void TranspositionTable::new_search() {
     ++generation_;
 }
 
-const TTEntry* TranspositionTable::probe(const StateKey& key, std::uint64_t hash) {
+const TTEntry* TranspositionTable::probe(const StateKey& key, std::uint64_t hash, std::uint8_t tag,
+                                         int alpha, int beta) {
     if (!buckets_) return nullptr;
     ++stats_.probes;
     const TTEntry* bucket = &table_[(hash & mask_) * WAYS];
     for (int i = 0; i < WAYS; ++i) {
         const TTEntry& e = bucket[i];
-        if (e.generation == generation_ && e.lo == key.lo && e.hi == key.hi) {
-            ++stats_.hits;
-            return &e;
+        if (e.generation != generation_ || e.tag != tag || e.lo != key.lo || e.hi != key.hi) {
+            continue;
         }
+        // An exact value answers any window.  A bound answers only the windows
+        // it already falls outside: knowing the value is at least X settles a
+        // search whose beta is at or below X, and nothing narrower.
+        const int value = e.value;
+        const bool answers = e.bound == BOUND_EXACT ||
+                             (e.bound == BOUND_LOWER && value >= beta) ||
+                             (e.bound == BOUND_UPPER && value <= alpha);
+        if (!answers) {
+            ++stats_.partial;
+            return nullptr;
+        }
+        ++stats_.hits;
+        return &e;
     }
     return nullptr;
 }
 
 void TranspositionTable::store(const StateKey& key, std::uint64_t hash, int value, RelMove move,
-                               int depth, std::uint8_t bound) {
+                               int depth, std::uint8_t bound, std::uint8_t tag) {
     if (!buckets_) return;
     TTEntry* bucket = &table_[(hash & mask_) * WAYS];
 
@@ -93,7 +106,7 @@ void TranspositionTable::store(const StateKey& key, std::uint64_t hash, int valu
     victim->move = move;
     victim->depth = static_cast<std::uint8_t>(depth < 0 ? 0 : (depth > 255 ? 255 : depth));
     victim->bound = bound;
-    victim->reserved = 0;
+    victim->tag = tag;
 }
 
 }  // namespace nil

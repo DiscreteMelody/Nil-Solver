@@ -67,7 +67,14 @@
  * fast mode drops those levels and searches the count on its own, and the
  * levels below could never have moved the level above.  What fast mode buys is
  * that a boolean objective can be pruned hard and a thousand-wide lexicographic
- * one cannot -- so as pruning lands, fast mode is where it lands.
+ * one cannot -- and the pruning has landed, so that is no longer a promise.
+ * Fast mode searches an alpha-beta window of [0, 1], which makes it an AND-OR
+ * search: the opponents need one line that forces a trick onto the nil bidder,
+ * the nil side needs every opponent line to fail, and the first answer either
+ * way ends the node.  It visits somewhere between a tenth and a five-hundredth
+ * of the nodes full mode does, and the gap widens with the size of the hand.
+ * Full mode is deliberately left exhaustive: it is the answer that carries its
+ * own evidence, and it is what the boolean answer is checked against.
  *
  * Which to call, from a game client:
  *

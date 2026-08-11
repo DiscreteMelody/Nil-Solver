@@ -182,10 +182,17 @@ int main(int argc, char** argv) {
         return 2;
     }
     if (pos.cards_per_hand() > NIL_CLI_CARD_LIMIT && !force) {
-        std::cerr << "error: " << pos.cards_per_hand()
-                  << " cards per hand; the search is still exhaustive (the transposition "
-                     "table collapses repeated positions but prunes nothing) and this will "
-                     "take a very long time. Use --force to insist.\n";
+        std::cerr << "error: " << pos.cards_per_hand() << " cards per hand; ";
+        if (opts.mode == nil::MODE_FAST) {
+            std::cerr << "the boolean search does prune, and a full thirteen is usually "
+                         "well under a second, but the spread is wide and an awkward "
+                         "layout can still take several. Use --force to insist.\n";
+        } else {
+            std::cerr << "the full search is exhaustive (the transposition table collapses "
+                         "repeated positions but prunes nothing) and this will take a very "
+                         "long time. --mode fast prunes hard and answers the nil question "
+                         "alone; use --force to insist on this one.\n";
+        }
         return 2;
     }
 

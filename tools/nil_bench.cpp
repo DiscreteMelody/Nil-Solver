@@ -33,6 +33,12 @@
 // twice and requires the two to agree -- fast mode has no principal variation
 // to replay against itself, so this is what stands in for full mode's internal
 // self-check.  The timed and recorded rows in --mode both are the fast ones.
+//
+// Since alpha-beta landed the two modes no longer visit the same nodes, so
+// --mode both is no longer nearly free, and it is no longer nearly a tautology
+// either: it holds a pruned answer against an unpruned one that nil_oracle.py
+// has already checked.  It also prints the node ratio between them, which is
+// the measurement the pruning work is judged on.
 #include <algorithm>
 #include <chrono>
 #include <ctime>
@@ -715,9 +721,15 @@ int main(int argc, char** argv) {
                       << commas(cmp_full_nodes) << "  fast " << commas(cmp_fast_nodes) << "   "
                       << std::fixed << std::setprecision(2) << ratio << "x\n";
             if (cmp_full_nodes == cmp_fast_nodes) {
-                std::cout << "    (identical, as expected: zeroing the tie-break levels changes\n"
-                          << "     what the value means, not which nodes get visited. The two\n"
-                          << "     part company when alpha-beta lands.)\n";
+                // Before alpha-beta this was the expected result and the line
+                // below said so.  Now it means the boolean search cut nothing
+                // anywhere, which at any real hand size is a broken window
+                // rather than a hard corpus.
+                std::cout << "    (identical -- the boolean search cut nothing at all, which is\n"
+                          << "     worth looking into unless every position here is trivial.)\n";
+            } else {
+                std::cout << "    (the two no longer walk the same tree, so this agreement is a\n"
+                          << "     pruned answer held against an unpruned, oracle-checked one.)\n";
             }
         }
     }

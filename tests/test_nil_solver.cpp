@@ -606,6 +606,156 @@ int main(int argc, char** argv) {
         }
     }
 
+    std::cout << "Nil-specialised alpha-beta\n";
+    {
+        // The claim of the whole item, stated as a test so it cannot quietly
+        // stop being true: the boolean search visits strictly fewer nodes than
+        // the exhaustive one on a position with room to cut.
+        const Position pos = make_position("N:A2.K3.. .A4.K5. Q6..J8. T9.T9..", "N", true);
+        SearchOptions full;
+        SearchOptions fast;
+        fast.mode = nil::MODE_FAST;
+        const Solution slow = must_solve(pos, "N", full);
+        const Solution quick = must_solve(pos, "N", fast);
+        check("alpha-beta agrees with the exhaustive search", quick.nil_fails, slow.nil_fails);
+        check("alpha-beta visits fewer nodes", quick.nodes < slow.nodes, true);
+
+        // MODE_FULL searches between sentinels no value can reach, so it has no
+        // window to cut against.  If that ever stops being true this is what
+        // says so, and it says so before the PV and the oracle check do.
+        SearchOptions full_again = full;
+        full_again.tt_megabytes = 4;  // a different table, so nothing is inherited
+        check("full mode is unchanged by the presence of a window",
+              must_solve(pos, "N", full_again).value, slow.value);
+        check("full mode still stores nothing but exact values", slow.tt_partial, 0ull);
+
+        // Alpha-beta cost the table nothing, and this is what says so.  Every
+        // node of a fast search is asked about the same window: the only gain
+        // that could shift one is the nil bidder winning a trick, and that is
+        // exactly the case the "already past beta" cutoff answers without
+        // recursing.  So every stored bound is on the same window as every
+        // probe, and a bound that matches the position always settles it.
+        // Should a later item vary the window, this stops being zero, which is
+        // the honest signal that the table has started losing hits.
+        check("no bound is ever recorded against a window it cannot answer",
+              quick.tt_partial, 0ull);
+    }
+    {
+        // A bound is only worth what the window it was recorded against is
+        // worth.  Storing "the value is at least 5" must answer a search asking
+        // about anything up to 5 and nothing beyond it; symmetrically for an
+        // upper bound.  This is the one piece of new table logic, so it gets
+        // tested directly rather than only through the search.
+        nil::TranspositionTable table;
+        table.resize(1);
+        nil::StateKey key;
+        key.lo = 0x0123456789ABCDEFull;
+        key.hi = 0x00000000000000FFull;
+        const std::uint64_t hash = nil::mix_key(key);
+
+        table.store(key, hash, 5, 3, 8, nil::BOUND_LOWER, nil::TAG_FAST);
+        check("a lower bound answers a window it sits above",
+              table.probe(key, hash, nil::TAG_FAST, 4, 5) != nullptr, true);
+        check("a lower bound does not answer a window above it",
+              table.probe(key, hash, nil::TAG_FAST, 5, 6) != nullptr, false);
+
+        table.store(key, hash, 5, 3, 8, nil::BOUND_UPPER, nil::TAG_FAST);
+        check("an upper bound answers a window it sits below",
+              table.probe(key, hash, nil::TAG_FAST, 5, 6) != nullptr, true);
+        check("an upper bound does not answer a window below it",
+              table.probe(key, hash, nil::TAG_FAST, 3, 4) != nullptr, false);
+
+        table.store(key, hash, 5, 3, 8, nil::BOUND_EXACT, nil::TAG_FAST);
+        check("an exact value answers any window",
+              table.probe(key, hash, nil::TAG_FAST, 0, 1) != nullptr, true);
+
+        // The second lock on the door between the two objectives.  A fast-mode
+        // 1 and a full-mode 1 are different numbers; what normally keeps them
+        // apart is that every solve bumps the generation, and this is what
+        // catches a future change that lets two objectives share one.
+        check("an entry is invisible to the other objective",
+              table.probe(key, hash, nil::TAG_FULL, 0, 1) != nullptr, false);
+    }
+    {
+        // The boolean search now has a self-check that does not go through full
+        // mode at all: pruning is what the table's bounds are for, so a search
+        // with no table must reach the same answer as one with a table it is
+        // constantly evicting from.
+        Rng rng;
+        int checked = 0;
+        int disagreed = 0;
+        for (int deal = 0; deal < 12; ++deal) {
+            const Position pos = random_deal(rng, 5);
+            for (const char* seat : SEAT_NAMES) {
+                SearchOptions memo;
+                memo.mode = nil::MODE_FAST;
+                SearchOptions none = memo;
+                none.use_memo = false;
+                SearchOptions tiny = memo;
+                tiny.tt_megabytes = 1;
+                const bool a = must_solve(pos, seat, memo).nil_fails;
+                ++checked;
+                if (must_solve(pos, seat, none).nil_fails != a) ++disagreed;
+                if (must_solve(pos, seat, tiny).nil_fails != a) ++disagreed;
+            }
+        }
+        check("bounded entries do not change the boolean", disagreed, 0);
+        check("and that sweep actually ran", checked, 48);
+    }
+    {
+        // Both modes on one position, in both orders, on one shared table.
+        // Alternating them is the case where a bound written for one objective
+        // could be read as a value for the other -- which would be a wrong
+        // answer rather than a slow one, and would show up nowhere else.
+        Rng rng;
+        int disagreed = 0;
+        for (int deal = 0; deal < 10; ++deal) {
+            const Position pos = random_deal(rng, 5);
+            for (const char* seat : SEAT_NAMES) {
+                SearchOptions full;
+                SearchOptions fast;
+                fast.mode = nil::MODE_FAST;
+                const bool fast_first = must_solve(pos, seat, fast).nil_fails;
+                const Solution then_full = must_solve(pos, seat, full);
+                const bool fast_after = must_solve(pos, seat, fast).nil_fails;
+                if (fast_first != then_full.nil_fails) ++disagreed;
+                if (fast_after != then_full.nil_fails) ++disagreed;
+                // The interleaved full solve must also still be internally
+                // consistent, which solve() checks by replaying its own PV --
+                // must_solve would have exited if it were not.
+                if (then_full.nil_tricks < 0) ++disagreed;
+            }
+        }
+        check("interleaving the two modes on one table changes neither", disagreed, 0);
+    }
+    {
+        // A deeper differential sweep than the corpus reaches.  Six cards is
+        // 40 positions in the corpus and every one of them is oracle-checked;
+        // this adds deals the corpus has never seen, at a size where the
+        // pruning is doing real work.
+        Rng rng;
+        int checked = 0;
+        int disagreed = 0;
+        for (int deal = 0; deal < 8; ++deal) {
+            const Position pos = random_deal(rng, 6);
+            for (const char* seat : SEAT_NAMES) {
+                for (int variant = 0; variant < 2; ++variant) {
+                    SearchOptions a;
+                    a.minimise_own_tricks = variant != 0;
+                    SearchOptions b = a;
+                    b.mode = nil::MODE_FAST;
+                    ++checked;
+                    if (must_solve(pos, seat, a).nil_fails !=
+                        must_solve(pos, seat, b).nil_fails) {
+                        ++disagreed;
+                    }
+                }
+            }
+        }
+        check("modes agree at six cards", disagreed, 0);
+        check("and that sweep actually ran", checked, 64);
+    }
+
     std::cout << "Compact state key\n";
     {
         // Absolute ranks do not matter, only the order the four hands hold

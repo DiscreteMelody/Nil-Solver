@@ -50,10 +50,21 @@
 // the window worth searching is [0, 1].  It answers `nil_fails` and nothing
 // else: no trick counts, no principal variation.
 //
-// Nothing prunes yet, so today the two modes visit the same nodes and MODE_FAST
-// is not actually faster.  What it is is the shape the pruning needs, settled
-// before there is an alpha-beta window and a shipped C ABI to retrofit it
-// around.
+// That window is what MODE_FAST spends.  A window of width one has no integers
+// strictly inside it, so every node in a fast search either reaches beta or
+// falls to alpha, and the first move that does it ends the node -- the opponents
+// need ONE line that forces a trick onto the nil bidder, the nil side needs
+// EVERY opponent line to fail.  The search is an AND-OR search wearing
+// alpha-beta's clothes, and it is where the speed comes from.
+//
+// MODE_FULL does not prune at all.  It is not that it may not: it searches
+// between sentinels no value can reach, so there is no window to cut against,
+// and its node counts, its move choices and its principal variation are the
+// same ones it produced before alpha-beta existed.  That is deliberate.  Full
+// mode's answer is checked by replaying its own PV, and tools/crosscheck.py
+// checks that PV against nil_oracle.py card for card; a bound-valued search
+// has neither.  Full mode stays the reference, and MODE_FAST is the mode that
+// goes fast.
 //
 // WHAT CHECKS FAST MODE
 // ---------------------
@@ -62,8 +73,13 @@
 // replay, so it has no such internal witness; what stands in for it is that the
 // two modes must agree on `nil_fails` for every position.  `nil_bench --mode
 // both` runs a whole corpus that way and the `corpus_modes` test does it on
-// every build.  Keep that honest as items 3 and 4 land: it is the only thing
-// standing between a pruning bug and a confidently wrong boolean.
+// every build.
+//
+// That agreement has now started doing real work.  The two modes no longer walk
+// the same tree -- fast mode cuts and full mode does not -- so agreement is no
+// longer a near-tautology about two weightings of one enumeration.  It is a
+// pruned answer being held against an unpruned one that the oracle has checked,
+// which is exactly the differential test a pruning bug would have to survive.
 //
 // RELATION TO nil_oracle.py
 // -------------------------
@@ -186,8 +202,15 @@ struct Solution {
     // nodes answered from the table; `tt_evictions` counts stores that threw
     // away a different live position, which is the signal that the table is too
     // small for the depth being attempted.
+    //
+    // `tt_partial` counts probes that found the position but held only a bound,
+    // and a bound too weak to settle the window being asked about.  It is zero
+    // in MODE_FULL, which stores nothing but exact values, and it is the price
+    // of pruning in MODE_FAST: work the table remembered doing and could not
+    // hand back.
     std::uint64_t tt_probes = 0;
     std::uint64_t tt_hits = 0;
+    std::uint64_t tt_partial = 0;
     std::uint64_t tt_stores = 0;
     std::uint64_t tt_evictions = 0;
 };

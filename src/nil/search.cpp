@@ -30,6 +30,15 @@ TranspositionTable& shared_table() {
     return table;
 }
 
+// Stand-ins for "no window at all", used by MODE_FULL.  No value the objective
+// can produce comes within several orders of magnitude of either, so every
+// cutoff test in search() is dead on that path: full mode is still exhaustive
+// minimax, and it is exhaustive by construction rather than by a flag anyone
+// could forget to set.  Halved from INT_MAX so that shifting a window by one
+// trick's gain cannot overflow.
+constexpr int WINDOW_MIN = -(1 << 29);
+constexpr int WINDOW_MAX = 1 << 29;
+
 struct Ctx {
     int nil_seat = 0;
     int primary_weight = 0;    // K*K, or 0 when the nil is already set
@@ -37,24 +46,56 @@ struct Ctx {
     int tertiary_weight = 0;   // 1 when the cover partner's share is what counts
     bool break_forced = false;
     bool collapse = true;      // one move per class of rank-equivalent cards
+    // True when no remaining trick can lower the value, i.e. every weight is
+    // non-negative.  That makes what is already banked a lower bound on the
+    // whole subtree, which is the one fact the "already past beta" cutoff in
+    // search() rests on.  Always true in MODE_FAST, where the weights are
+    // (1, 0, 0) and the value is a count.
+    bool gains_nonnegative = false;
+    std::uint8_t tt_tag = TAG_NONE;  // which objective this solve's values are on
     std::uint64_t nodes = 0;
     TranspositionTable* tt = nullptr;  // null when the caller turned it off
 };
 
-// Returns the packed objective value from `st` onwards (see objective_weights),
-// and the canonically chosen best move for the seat to play.  The nil side
-// minimises the value; the opponents maximise it.
+// Returns the objective value from `st` onwards (see objective_weights), and
+// the best move found for the seat to play.  The nil side minimises the value;
+// the opponents maximise it.
 //
-// No alpha-beta, no move ordering, no quick tricks.  Candidate moves are
-// enumerated in canonical order and replace the incumbent only on a STRICT
-// improvement, so among equal-valued moves the canonically lowest card wins and
-// the PV is reproducible.  This is the same tie-break nil_oracle.py uses.
+// FAIL-SOFT ALPHA-BETA.  The return is exact when it lands strictly inside
+// [alpha, beta]; at or below alpha it is an upper bound on the true value, at
+// or above beta a lower bound.  MODE_FULL passes [WINDOW_MIN, WINDOW_MAX],
+// which no value can reach, so its returns are always exact and its node count,
+// its move choices and its principal variation are exactly what they were
+// before alpha-beta existed.  MODE_FAST passes [0, 1].
+//
+// WHY THE WINDOW IS NEVER NARROWED.  The usual `alpha = max(alpha, best)` is
+// missing on purpose, and nothing is lost by it.  MODE_FAST's window is null --
+// beta is alpha + 1 -- so for a max node to narrow alpha it would need a value
+// strictly between alpha and beta, and there are no integers there; it either
+// leaves alpha alone or it cuts.  The shifted windows below are null too, since
+// shifting moves both ends equally.  So every window in a fast search is
+// already minimal, and the whole search is the AND-OR / null-window search the
+// boolean question wants: the opponents need ONE line that forces a trick onto
+// the nil bidder, the nil side needs EVERY opponent line to fail, and the first
+// answer either way ends the node.
+//
+// That is also what keeps MODE_FULL exhaustive.  An infinite window still
+// prunes if it is narrowed -- alpha rises to the best value so far and the
+// children inherit it -- so leaving it alone is not an optimisation forgone,
+// it is the thing that makes "no cutoffs" true rather than merely intended.
+//
+// MOVE CHOICE.  Candidate moves are enumerated in canonical order and replace
+// the incumbent only on a STRICT improvement, so among equal-valued moves the
+// canonically lowest card wins.  Without cutoffs that makes the PV reproducible
+// and identical to nil_oracle.py's; with them, `best_move` at a node that cut
+// off is merely the move that caused the cut.  That is fine where it is used --
+// MODE_FAST reports no PV, and MODE_FULL never cuts.
 //
 // The one thing that is not a plain enumeration is the equivalent-card
 // reduction (rules.hpp), which drops candidates that are a lower candidate
-// played under a different name.  Those could never have won the tie-break, so
-// the PV is the same one the full enumeration produces.
-int search(Ctx& ctx, const State& st, CardId& best_move) {
+// played under a different name.  It is a statement about the game tree rather
+// than about the search, so it is unaffected by pruning.
+int search(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta) {
     ++ctx.nodes;
     best_move = NO_CARD;
     if (st.empty()) return 0;
@@ -75,7 +116,11 @@ int search(Ctx& ctx, const State& st, CardId& best_move) {
                                  profile);
         if (keyed) {
             hash = mix_key(key);
-            if (const TTEntry* hit = ctx.tt->probe(key, hash)) {
+            // The table hands back an entry only when it settles this window;
+            // see tt.hpp.  A bound recorded under a wider window is still a
+            // fact about the position, so it is reusable -- what changes with
+            // pruning is that not every stored fact is enough.
+            if (const TTEntry* hit = ctx.tt->probe(key, hash, ctx.tt_tag, alpha, beta)) {
                 best_move = from_relative(hit->move, profile);
                 return hit->value;
             }
@@ -116,11 +161,36 @@ int search(Ctx& ctx, const State& st, CardId& best_move) {
             int gained = 0;
             if (winner == ctx.nil_seat) gained += ctx.primary_weight + ctx.tertiary_weight;
             if (((winner ^ ctx.nil_seat) & 1) == 0) gained += ctx.secondary_weight;
-            value = gained + search(ctx, next, ignored);
+
+            if (ctx.gains_nonnegative && gained >= beta) {
+                // This trick alone has already carried the line to beta, and no
+                // later trick can take it back, so the rest of the hand cannot
+                // change which side of the window the value falls on.  `gained`
+                // is a lower bound on it, which is all a fail-high owes the
+                // caller.  Chang's `if (goal <= 0) return 1`, arrived at from
+                // the window rather than from the rules.
+                //
+                // It also has a second effect worth knowing about.  In
+                // MODE_FAST the only non-zero gain is the nil bidder taking a
+                // trick, which is worth exactly 1, and beta is exactly 1 -- so
+                // this branch intercepts every gain that could have shifted the
+                // window, and the shifted call below is never reached.  Every
+                // node of a fast search therefore sees the same window [0, 1],
+                // every entry it stores is a bound on that window, and no probe
+                // that finds an entry ever fails to be answered by it.  The
+                // pruning is free of the usual cost of bounded entries, and
+                // Solution::tt_partial staying at zero is what checks it.
+                value = gained;
+            } else {
+                // The child is asked about the value of the REST of the hand,
+                // so the window it has to beat is this one less what the trick
+                // just banked.
+                value = gained + search(ctx, next, ignored, alpha - gained, beta - gained);
+            }
         } else {
             next.trick[st.trick_len] = card;
             next.trick_len = st.trick_len + 1;
-            value = search(ctx, next, ignored);
+            value = search(ctx, next, ignored, alpha, beta);
         }
 
         if (!have_best || (maximizing ? value > best : value < best)) {
@@ -128,11 +198,24 @@ int search(Ctx& ctx, const State& st, CardId& best_move) {
             best = value;
             best_move = card;
         }
+        // Fail-soft cutoff.  A maximiser that has already reached beta cannot
+        // be talked down by its own remaining moves, and the minimising parent
+        // will never choose this node once it is this bad; symmetrically at a
+        // minimiser reaching alpha.  Either way the moves not looked at cannot
+        // change the answer the parent came for.
+        if (maximizing ? best >= beta : best <= alpha) break;
     }
 
     if (keyed) {
         const RelMove rel = best_move == NO_CARD ? REL_NO_MOVE : to_relative(best_move, profile);
-        ctx.tt->store(key, hash, best, rel, profile.total, BOUND_EXACT);
+        // Which of these three the node earned follows from where `best` landed
+        // relative to the window it was given, and the window did not move.
+        // Breaking out of the loop above implies best >= beta > alpha, so a cut
+        // node can never be recorded as an upper bound.
+        const std::uint8_t bound = best <= alpha   ? BOUND_UPPER
+                                   : best >= beta  ? BOUND_LOWER
+                                                   : BOUND_EXACT;
+        ctx.tt->store(key, hash, best, rel, profile.total, bound, ctx.tt_tag);
     }
     return best;
 }
@@ -152,6 +235,12 @@ void configure(Ctx& ctx, int nil_seat, const SearchOptions& opts,
     ctx.tertiary_weight = weights.tertiary;
     ctx.break_forced = opts.break_on_forced_spade_lead;
     ctx.collapse = opts.collapse_equivalents;
+    // Read off the weights rather than off the mode, because it is a fact about
+    // the weights: with any of them negative a later trick could pull the value
+    // back down, and what is banked so far would bound nothing.
+    ctx.gains_nonnegative =
+        weights.primary >= 0 && weights.secondary >= 0 && weights.tertiary >= 0;
+    ctx.tt_tag = opts.mode == MODE_FAST ? TAG_FAST : TAG_FULL;
 
     if (opts.use_memo && opts.tt_megabytes > 0) {
         TranspositionTable& table = shared_table();
@@ -239,14 +328,23 @@ bool solve(const Position& pos, int nil_seat, const SearchOptions& opts, Solutio
         configure(fast_ctx, nil_seat, opts, weights);
         State root = state_of(pos);
         CardId root_move = NO_CARD;
-        const int fast_value = search(fast_ctx, root, root_move);
+        // The whole question is "is the nil bidder's trick count at least one",
+        // so [0, 1] is not a window onto the answer -- it IS the answer, and the
+        // search returns a bound on whichever side settles it.  There are no
+        // integers strictly inside a window of width one, so the root always
+        // fails one way or the other and never comes back exact.  That is the
+        // expected shape of a boolean search, not a loss of information.
+        const int fast_value = search(fast_ctx, root, root_move, 0, 1);
         const TTStats fast_stats = fast_ctx.tt ? fast_ctx.tt->stats() : TTStats();
 
         // No principal variation means no replay, so these two are what is left
         // of the self-check: the value has to be a trick count that the
         // position could actually produce, and a position with cards still in
-        // it has to have yielded a move.  The real check on this mode is that
-        // it agrees with full mode -- see nil_bench --mode both.
+        // it has to have yielded a move.  Pruning does not weaken the first --
+        // a bound out of this search is still assembled from real tricks, so it
+        // still lies between zero and the number of them.  The real check on
+        // this mode is that it agrees with full mode -- see nil_bench --mode
+        // both, and the corpus_modes test that runs it on every build.
         if (fast_value < 0 || fast_value > pos.tricks_remaining()) {
             std::ostringstream os;
             os << "internal inconsistency: fast mode returned " << fast_value
@@ -264,6 +362,7 @@ bool solve(const Position& pos, int nil_seat, const SearchOptions& opts, Solutio
         out.nodes = fast_ctx.nodes;
         out.tt_probes = fast_stats.probes;
         out.tt_hits = fast_stats.hits;
+        out.tt_partial = fast_stats.partial;
         out.tt_stores = fast_stats.stores;
         out.tt_evictions = fast_stats.evictions;
         return true;
@@ -274,7 +373,11 @@ bool solve(const Position& pos, int nil_seat, const SearchOptions& opts, Solutio
 
     State st = state_of(pos);
     CardId move = NO_CARD;
-    const int value = search(ctx, st, move);
+    // No window.  Full mode owes its caller trick counts, a principal variation
+    // and a value the replay can be checked against, and all three want exact
+    // numbers at every node rather than bounds.  Alpha-beta is MODE_FAST's, and
+    // MODE_FULL declines it here rather than by a flag deeper in.
+    const int value = search(ctx, st, move, WINDOW_MIN, WINDOW_MAX);
     const std::uint64_t search_nodes = ctx.nodes;
     // Snapshot before the PV walk below, which probes the table again and would
     // otherwise inflate the hit count with lookups that did no search work.
@@ -304,7 +407,7 @@ bool solve(const Position& pos, int nil_seat, const SearchOptions& opts, Solutio
         }
         st = next;
         if (st.empty()) break;
-        search(ctx, st, move);
+        search(ctx, st, move, WINDOW_MIN, WINDOW_MAX);
         if (move == NO_CARD) {
             err = "internal error: no move available at a non-terminal position";
             return false;
@@ -341,6 +444,7 @@ bool solve(const Position& pos, int nil_seat, const SearchOptions& opts, Solutio
     out.nodes = search_nodes;
     out.tt_probes = table_stats.probes;
     out.tt_hits = table_stats.hits;
+    out.tt_partial = table_stats.partial;
     out.tt_stores = table_stats.stores;
     out.tt_evictions = table_stats.evictions;
     return true;

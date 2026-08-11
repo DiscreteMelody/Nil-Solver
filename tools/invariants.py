@@ -45,9 +45,22 @@ rank compression
     principal variation must correspond card for card, because the compression
     preserves canonical order.
 
+CHECKING THE BOOLEAN SEARCH
+---------------------------
+--mode fast checks the pruned search instead of the exhaustive one.  It is a
+weaker check per position -- fast mode reports no trick counts and no principal
+variation, so only nil_fails can be compared -- but it is the check that
+reaches furthest.  Below about nine cards, agreement with full mode is a
+stronger statement and `nil_bench --mode both` already makes it on every build.
+Above that full mode cannot finish, and these transforms become the only
+verification the boolean search has at all.  An alpha-beta window is exactly
+the kind of thing that can be subtly wrong in a way that is invariant under
+nothing, so it is worth running there.
+
   tools/invariants.py --corpus tests/corpus/large.txt
   tools/invariants.py --corpus tests/corpus/positions.txt --cards 4 --limit 50
   tools/invariants.py --random 20 --cards 5 --seed 1
+  tools/invariants.py --random 12 --cards 11 --mode fast --timeout 120
 """
 
 from __future__ import annotations
@@ -189,9 +202,11 @@ def unmap_pv(pv: str, info: Dict) -> str:
 # ---------------------------------------------------------------------------
 
 
-def cli_args(exe: str, spec: Dict) -> List[str]:
+def cli_args(exe: str, spec: Dict, mode: str = "full") -> List[str]:
     args = [exe, "--pbn", spec["pbn"], "--leader", spec["leader"], "--nil", spec["nil"],
             "--compact", "--force"]
+    if mode == "fast":
+        args += ["--mode", "fast"]
     if spec.get("broken") == "1":
         args.append("--spades-broken")
     if spec.get("forced") == "1":
@@ -205,10 +220,11 @@ def cli_args(exe: str, spec: Dict) -> List[str]:
     return args
 
 
-def solve(exe: str, spec: Dict, timeout: float) -> Optional[Dict[str, str]]:
+def solve(exe: str, spec: Dict, timeout: float,
+          mode: str = "full") -> Optional[Dict[str, str]]:
     try:
         proc = subprocess.run(
-            cli_args(exe, spec), capture_output=True, text=True, timeout=timeout
+            cli_args(exe, spec, mode), capture_output=True, text=True, timeout=timeout
         )
     except subprocess.TimeoutExpired:
         return None
@@ -219,9 +235,17 @@ def solve(exe: str, spec: Dict, timeout: float) -> Optional[Dict[str, str]]:
     )
 
 
-def check(exe: str, spec: Dict, timeout: float, rng: random.Random) -> Tuple[int, int, str]:
-    """Returns (checks run, failures, message)."""
-    base = solve(exe, spec, timeout)
+def check(exe: str, spec: Dict, timeout: float, rng: random.Random,
+          mode: str = "full") -> Tuple[int, int, str]:
+    """Returns (checks run, failures, message).
+
+    In fast mode the solver reports no trick counts and no principal variation,
+    so `nil_fails` is the whole of what there is to compare.  That is a weaker
+    check per position than full mode's, and it is the only one there is at
+    hand sizes full mode cannot finish -- which, now that fast mode prunes and
+    full mode does not, starts at around ten cards.
+    """
+    base = solve(exe, spec, timeout, mode)
     if base is None:
         return 0, 0, "skipped (solver did not finish in %.0fs)" % timeout
 
@@ -236,7 +260,7 @@ def check(exe: str, spec: Dict, timeout: float, rng: random.Random) -> Tuple[int
     failures = 0
     messages = []
     for transformed, info in cases:
-        result = solve(exe, transformed, timeout)
+        result = solve(exe, transformed, timeout, mode)
         if result is None:
             messages.append("  %s: solver did not finish" % info["kind"])
             continue
@@ -250,9 +274,12 @@ def check(exe: str, spec: Dict, timeout: float, rng: random.Random) -> Tuple[int
         # tertiary level when it is set and the pair is taking tricks.
         undetermined_split = (spec.get("nilset") == "1"
                               and spec.get("secondary") == "min")
-        fields = ["side_tricks", "opponent_tricks"]
-        if not (info["kind"] == "suits" and undetermined_split):
-            fields.insert(0, "tricks")
+        if mode == "fast":
+            fields = ["nil_fails"]
+        else:
+            fields = ["side_tricks", "opponent_tricks"]
+            if not (info["kind"] == "suits" and undetermined_split):
+                fields.insert(0, "tricks")
         for field in fields:
             if result[field] != base[field]:
                 failures += 1
@@ -261,7 +288,7 @@ def check(exe: str, spec: Dict, timeout: float, rng: random.Random) -> Tuple[int
         # Rotation and rank compression preserve canonical order, so the line
         # itself must survive.  Suit permutation does not: it changes which of
         # several equal-valued cards is canonically lowest.
-        if info["kind"] in ("rotate", "ranks"):
+        if mode == "full" and info["kind"] in ("rotate", "ranks"):
             mapped = unmap_pv(result["pv"], info)
             if mapped != base["pv"]:
                 failures += 1
@@ -331,6 +358,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.add_argument("--timeout", type=float, default=30.0,
                    help="per-solve wall-clock cap; positions that blow it are "
                         "skipped rather than failed [30]")
+    p.add_argument("--mode", default="full", choices=("full", "fast"),
+                   help="which search to check.  full compares trick counts and "
+                        "the principal variation; fast compares only nil_fails, "
+                        "and is the only thing that reaches the hand sizes full "
+                        "mode cannot finish [full]")
     p.add_argument("--quiet", action="store_true")
     args = p.parse_args(argv)
 
@@ -356,7 +388,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     total_failures = 0
     skipped = 0
     for spec in specs:
-        run, failures, message = check(args.exe, spec, args.timeout, rng)
+        run, failures, message = check(args.exe, spec, args.timeout, rng, args.mode)
         total_checks += run
         total_failures += failures
         if run == 0:
@@ -365,7 +397,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print("FAIL %s (%s cards)" % (spec["name"], spec["cards"]))
             print(message)
             print("  %s" % " ".join(
-                "'%s'" % a if " " in a else a for a in cli_args(args.exe, spec)))
+                "'%s'" % a if " " in a else a
+                for a in cli_args(args.exe, spec, args.mode)))
         elif not args.quiet and message:
             print("note %s: %s" % (spec["name"], message))
 

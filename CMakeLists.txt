@@ -113,8 +113,9 @@ if(NIL_SOLVER_BUILD_TESTS)
     # The boolean search has no principal variation to replay against itself,
     # so this is what stands in for full mode's internal self-check: every
     # position solved both ways, and the two required to agree on nil_fails.
-    # It is not optional cover -- once alpha-beta lands it is the only thing
-    # between a pruning bug and a confidently wrong boolean.
+    # It is not optional cover.  Now that fast mode prunes and full mode does
+    # not, the two walk different trees, and this is the only thing between a
+    # pruning bug and a confidently wrong boolean.
     add_test(NAME corpus_modes
              COMMAND nil_bench --corpus "${NIL_CORPUS}" --mode both --quiet --slowest 0)
     set_tests_properties(corpus_modes PROPERTIES TIMEOUT 900)
@@ -141,6 +142,20 @@ if(NIL_SOLVER_BUILD_TESTS)
               --corpus "${NIL_CORPUS}" --cards 4 --limit 40 --quiet
     )
     set_tests_properties(invariants PROPERTIES TIMEOUT 600)
+
+    # The same transforms against the pruned search.  Below nine cards this is
+    # weaker than corpus_modes, which compares the boolean against an unpruned
+    # oracle-checked answer -- but it is the check that scales, and it is the
+    # only verification the boolean search has at the hand sizes where full
+    # mode no longer finishes.  Running it small here keeps it honest; run it
+    # by hand at 11 or 12 cards when the search changes.
+    add_test(NAME invariants_fast
+      COMMAND ${Python3_EXECUTABLE}
+              "${CMAKE_CURRENT_SOURCE_DIR}/tools/invariants.py"
+              --exe $<TARGET_FILE:nil_cli>
+              --corpus "${NIL_CORPUS}" --cards 6 --limit 40 --mode fast --quiet
+    )
+    set_tests_properties(invariants_fast PROPERTIES TIMEOUT 600)
   endif()
 
   if(Python3_FOUND AND NIL_SOLVER_BUILD_CLI)

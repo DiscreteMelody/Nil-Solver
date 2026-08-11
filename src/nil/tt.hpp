@@ -27,13 +27,32 @@
 // matters when the caller is nil_bench and there are 560 positions to get
 // through.  The counter is only allowed to wrap onto a real clear().
 //
-// ROOM LEFT FOR ALPHA-BETA
-// ------------------------
-// Every entry written today is exact, because the search is still exhaustive.
-// `bound` is stored anyway so that adding alpha-beta later is a change to the
-// search and not to the table format: a fail-high stores BOUND_LOWER, a
-// fail-low BOUND_UPPER, and the probe learns to compare against the window
-// rather than returning unconditionally.
+// BOUNDS
+// ------
+// An entry no longer necessarily holds a value.  A search that cut off knows
+// only which side of its window the value lies on, so `bound` says which:
+// BOUND_LOWER for a fail-high, BOUND_UPPER for a fail-low, BOUND_EXACT for a
+// node that looked at everything.  probe() therefore needs the window it is
+// being asked about -- an entry answers it only when the entry is exact, or
+// when the bound already falls outside it.  An entry that matches the position
+// but merely narrows the window is counted as `partial` and reported as a miss,
+// so that `hits` keeps meaning "nodes answered from the table".
+//
+// (Roadmap item 5 wants the stored MOVE off those partial entries for ordering,
+// which is a good reason to hand them back rather than swallow them.  It is not
+// wanted yet, and returning an entry the caller must not read the value of is
+// the kind of thing that gets read anyway.)
+//
+// TAGS
+// ----
+// A value is only meaningful against the objective weights that produced it: a
+// fast-mode 1 and a full-mode 1 are different numbers, and a fast-mode
+// BOUND_LOWER read by a full-mode search is a wrong answer rather than a slow
+// one.  What actually keeps the two apart is that every solve bumps the
+// generation, so no solve ever sees another's entries at all.  `tag` is a
+// second lock on the same door: probe() requires it to match, so a future
+// change that lets two objectives share a generation gets misses instead of
+// nonsense.  Zero is reserved for "never written" and matches nothing.
 #ifndef NIL_TT_HPP
 #define NIL_TT_HPP
 
@@ -46,9 +65,17 @@
 namespace nil {
 
 enum Bound : std::uint8_t {
-    BOUND_EXACT = 0,
-    BOUND_LOWER = 1,  // reserved for alpha-beta: value is at least this
-    BOUND_UPPER = 2,  // reserved for alpha-beta: value is at most this
+    BOUND_EXACT = 0,  // the node looked at every move: this is the value
+    BOUND_LOWER = 1,  // the node cut off high: the value is at least this
+    BOUND_UPPER = 2,  // the node cut off low: the value is at most this
+};
+
+// Which objective an entry's value is on the scale of.  Zero is what a
+// never-written entry holds, so it deliberately names no objective.
+enum ValueTag : std::uint8_t {
+    TAG_NONE = 0,
+    TAG_FULL = 1,  // the packed lexicographic value
+    TAG_FAST = 2,  // the nil bidder's trick count
 };
 
 // 24 bytes, no padding on any sane ABI.
@@ -60,12 +87,13 @@ struct TTEntry {
     std::uint8_t move = REL_NO_MOVE;
     std::uint8_t depth = 0;  // cards still in hands; the replacement priority
     std::uint8_t bound = BOUND_EXACT;
-    std::uint8_t reserved = 0;
+    std::uint8_t tag = TAG_NONE;
 };
 
 struct TTStats {
     std::uint64_t probes = 0;
-    std::uint64_t hits = 0;
+    std::uint64_t hits = 0;    // probes the table answered
+    std::uint64_t partial = 0; // probes that matched but only narrowed the window
     std::uint64_t stores = 0;
     std::uint64_t evictions = 0;  // stores that displaced a different live position
 };
@@ -85,11 +113,15 @@ public:
     std::size_t buckets() const { return buckets_; }
     std::size_t bytes() const { return table_.size() * sizeof(TTEntry); }
 
-    // Returns null on a miss.  The pointer is valid until the next store().
-    const TTEntry* probe(const StateKey& key, std::uint64_t hash);
+    // Returns null unless a live entry for `key` with this `tag` settles the
+    // question "where does the value sit relative to [alpha, beta)?".  A match
+    // that only narrows the window counts as `partial` and returns null too.
+    // The pointer is valid until the next store().
+    const TTEntry* probe(const StateKey& key, std::uint64_t hash, std::uint8_t tag, int alpha,
+                         int beta);
 
     void store(const StateKey& key, std::uint64_t hash, int value, RelMove move, int depth,
-               std::uint8_t bound);
+               std::uint8_t bound, std::uint8_t tag);
 
     const TTStats& stats() const { return stats_; }
     void reset_stats() { stats_ = TTStats(); }
