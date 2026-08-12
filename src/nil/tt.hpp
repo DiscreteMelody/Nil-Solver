@@ -38,10 +38,16 @@
 // but merely narrows the window is counted as `partial` and reported as a miss,
 // so that `hits` keeps meaning "nodes answered from the table".
 //
-// (Roadmap item 5 wants the stored MOVE off those partial entries for ordering,
-// which is a good reason to hand them back rather than swallow them.  It is not
-// wanted yet, and returning an entry the caller must not read the value of is
-// the kind of thing that gets read anyway.)
+// (Roadmap item 5 wanted the stored MOVE off those partial entries for
+// ordering, and this comment used to say probe() should be widened to hand them
+// back.  It should not be: there are no partial entries to widen onto.  In
+// MODE_FAST every node is asked about [0, 1] and every stored value is either
+// BOUND_UPPER at 0 or BOUND_LOWER at 1, so an entry that matches the position
+// always settles the window -- a node that finds an entry returns without
+// searching, and a node that searches never found one.  `partial` is therefore
+// identically zero there, which is the population item 5 would have ordered.
+// Patch 12 closes the item on that argument; see ROADMAP.md.  If a later item
+// varies the window, `partial` goes non-zero and the item comes back.)
 //
 // TAGS
 // ----

@@ -642,6 +642,43 @@ int main(int argc, char** argv) {
               quick.tt_partial, 0ull);
     }
     {
+        // The same claim, swept rather than observed once, because patch 12
+        // made something depend on it.  Roadmap item 5 -- try the table's
+        // stored move first at a node with a table hit -- is closed on the
+        // argument that no such node exists: a probe that matches the position
+        // always settles the window, so a node either returns from the table
+        // without searching or searches without having found anything.  The
+        // set of nodes item 5 wanted is exactly the set counted by tt_partial.
+        //
+        // So this is not a curiosity about table bookkeeping any more.  It is
+        // the premise of a closed roadmap item, and if a later item varies the
+        // window -- aspiration, a non-null window, a second goal -- this is
+        // what says so, and item 5 becomes live again in the same breath.
+        Rng rng;
+        int checked = 0;
+        std::uint64_t partial = 0;
+        std::uint64_t searched_nodes = 0;
+        for (int deal = 0; deal < 20; ++deal) {
+            for (int cards = 4; cards <= 6; ++cards) {
+                const Position pos = random_deal(rng, cards);
+                for (const char* seat : SEAT_NAMES) {
+                    for (int variant = 0; variant < 2; ++variant) {
+                        SearchOptions opts;
+                        opts.mode = variant == 0 ? nil::MODE_FAST : nil::MODE_FULL;
+                        const Solution sol = must_solve(pos, seat, opts);
+                        partial += sol.tt_partial;
+                        searched_nodes += sol.nodes;
+                        ++checked;
+                    }
+                }
+            }
+        }
+        check("no node anywhere holds a stored move and still has moves to search",
+              partial, 0ull);
+        check("and the sweep did real work", searched_nodes > 100000ull, true);
+        check("and it ran the whole cross product", checked, 480);
+    }
+    {
         // A bound is only worth what the window it was recorded against is
         // worth.  Storing "the value is at least 5" must answer a search asking
         // about anything up to 5 and nothing beyond it; symmetrically for an

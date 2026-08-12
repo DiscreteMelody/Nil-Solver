@@ -55,6 +55,7 @@ void usage(const char* argv0) {
         << "                          the answer instead (same answer, more nodes;\n"
         << "                          fast mode only)\n"
         << "  --tt-mb <n>             transposition table size in MiB          [32]\n"
+        << "  --tt-stats              also report transposition table behaviour\n"
         << "  --compact               print only the machine-readable result\n"
         << "  --force                 allow more than 9 cards per hand (very slow)\n"
         << "  --help                  this message\n";
@@ -79,6 +80,7 @@ int main(int argc, char** argv) {
     bool spades_broken = false;
     bool compact = false;
     bool force = false;
+    bool tt_stats = false;
     nil::SearchOptions opts;
 
     for (int i = 1; i < argc; ++i) {
@@ -138,6 +140,8 @@ int main(int argc, char** argv) {
                 return 2;
             }
             opts.tt_megabytes = static_cast<std::size_t>(value);
+        } else if (arg == "--tt-stats") {
+            tt_stats = true;
         } else if (arg == "--compact") {
             compact = true;
         } else if (arg == "--force") {
@@ -219,8 +223,33 @@ int main(int argc, char** argv) {
                   << "nil_fails=" << (sol.nil_fails ? 1 : 0) << "\n"
                   << "nodes=" << sol.nodes << "\n"
                   << "pv=" << nil::format_pv_compact(sol) << "\n";
+        // Extra keys, and only on request: the scripts that parse this build a
+        // dictionary and would not mind them, but a diagnostic that appears
+        // unasked in a machine-readable stream is how a parser starts depending
+        // on it.
+        if (tt_stats) {
+            std::cout << "tt_probes=" << sol.tt_probes << "\n"
+                      << "tt_hits=" << sol.tt_hits << "\n"
+                      << "tt_partial=" << sol.tt_partial << "\n"
+                      << "tt_stores=" << sol.tt_stores << "\n"
+                      << "tt_evictions=" << sol.tt_evictions << "\n";
+        }
     } else {
         std::cout << nil::format_solution(pos, sol, opts) << "\n";
+        if (tt_stats) {
+            // `partial` is the one to read.  It counts probes that found the
+            // position but held a bound too weak to settle the window being
+            // asked about, which is exactly the set of nodes that could hold a
+            // stored move and still have moves to search.  It is zero in both
+            // modes today -- that is what closed roadmap item 5 -- and a
+            // non-zero value here means the window has started varying.
+            std::cout << "\nTransposition table\n"
+                      << "  probes       " << sol.tt_probes << "\n"
+                      << "  hits         " << sol.tt_hits << "\n"
+                      << "  partial      " << sol.tt_partial << "\n"
+                      << "  stores       " << sol.tt_stores << "\n"
+                      << "  evictions    " << sol.tt_evictions << "\n";
+        }
     }
     return 0;
 }

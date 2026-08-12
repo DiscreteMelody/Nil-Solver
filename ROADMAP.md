@@ -35,6 +35,7 @@ is what the pruned answer is checked against.
 | ✅ | Boolean / lexicographic mode split | patch 9 | `MODE_FAST` zeroes the tie-break weights and gives the primary weight 1, so the value is the nil bidder's trick count and the window is literally `[0, 1]`; no speed change yet, by design |
 | ✅ | Nil-specialised alpha-beta / AND-OR search | patch 10 | null window `[0, 1]` in `MODE_FAST`, fail-soft, bounds in the table; −12.8x nodes at 4 cards rising to −303x at 9, and 13-card hands answer in a median 150 ms. `MODE_FULL` searches between unreachable sentinels and is unchanged node for node |
 | ✅ | Nil-safe and nil-set static bounds | patch 11 | two proofs at a trick boundary, `MODE_FAST` only: −28.5% nodes on the corpus, −3% to −12% at 13 cards. Wall time −6.5% to −10.7% at 13 cards; throughput unmoved. `MODE_FULL` unchanged node for node |
+| ✅ | Transposition-table move ordering | patch 12 | **closed as refuted, not implemented.** The population is empty and provably so: `tt_partial` ≡ 0, so no node ever holds a stored move and still has moves to search. Zero nodes changed. Shipped instead: `--tt-stats` on both tools, and the premise pinned by a swept selftest |
 
 Patch 7 measured against the 560-position corpus:
 
@@ -149,6 +150,40 @@ every node rather than one in four. Net wall time came out *worse*, which is the
 same verdict and the same shape as side-suit canonicalization above. Worth
 re-measuring only if move ordering (item 6) changes the node mix enough that the
 proof starts firing on a different population.
+
+**Chang's depth guard on table replacement.** Measured while closing item 5,
+because `--tt-stats` made the eviction rate visible for the first time and it is
+alarming: 87.9% of stores displace a live position at 13 cards and **98.5% at
+11**. The obvious fix is in the paper. Chang replaces a stored state only when
+its `tricks_left` is not greater than the current state's — he declines to
+overwrite a deeper entry with a shallower one — and `store()` has no such guard,
+so a depth-2 entry can and does evict a depth-20 one.
+
+It is a disaster here. Four policies against the incumbent, 13 cards, seed 3:
+
+| replacement policy | nodes (5 deals) | vs incumbent |
+|---|---:|---:|
+| **incumbent: evict shallowest live** | **5,526,575** | — |
+| Chang's guard: decline to replace deeper | 49,856,325 | **+802%** |
+| evict *deepest* live | 12,879,939 | +133% |
+| always-replace, one fixed way | 93,781,764 | +1597% |
+
+The guard ossifies a bucket: four deep entries land early, nothing shallower may
+displace them, and the bucket is dead for the rest of the search. Chang has an
+escape hatch for exactly this — he also replaces once a certain number of hash
+collisions has occurred in the entry — and this solver has no collision counter
+to hang one on.
+
+**But the deeper reason it fails is a difference in the question being asked,
+and it is worth carrying forward.** Chang's top level bisects on `goal` and
+calls `ddsearch` three or four times on the same deal, so a deep entry near the
+root is paid for again on the next iteration. This solver asks one boolean once.
+There is no second pass, the working set is the shallow frontier the search is
+currently grinding through, and preferring depth keeps the cold entries while
+evicting the hot ones. **Read the paper's table advice as conditioned on its
+iterative top level.** The same caution applies to item 12.
+
+*One variant did survive, and it is not rejected — it is item 15 below.*
 
 ---
 
@@ -354,25 +389,64 @@ secondary is not zero. Each proof settles the nil bidder's own trick count and
 says nothing about the pair's total or the split between the two partners, so it
 cannot settle the full objective. The corpus still comes in at 2,647,731 nodes.
 
-### 5. Transposition-table move ordering — ⭐⭐⭐⭐
+### 5. ~~Transposition-table move ordering~~ — ⭐⭐⭐⭐ — **closed, patch 12: no population**
 
-**Unblocked by patch 10, and now worth something. Nearly free.**
+Not implemented, and not because it was measured and found weak. It has nothing
+to act on, and that is a theorem rather than a measurement.
 
-The best move is already stored in each entry and already survives the
-relabelling. Try it first at every node with a table hit. In alpha-beta this is
-usually the single most effective ordering heuristic and costs one array read.
+The item wanted the stored move off entries that `probe` counts as `partial` —
+a match holding a bound too weak to settle the window — and the previous version
+of this entry said to widen `probe` to hand them back. There are none to hand
+back. Patch 10's third bullet already contains the argument, read from the other
+side: in `MODE_FAST` every node is asked about `[0, 1]`, and a stored value is
+either `BOUND_UPPER` at 0 (≤ alpha) or `BOUND_LOWER` at ≥ 1 (≥ beta), with no
+integers in between. So **every entry that matches the position settles the
+window**, and therefore:
 
-*Watch for:* the stored move must still be a member of the reduced move set. It
-is today, because the reduction is a function of the key and the stored move is
-the representative that reduction chose — but it is an invariant now, not an
-accident, and it should be asserted rather than assumed.
+- a node that finds an entry returns from it and never looks at a move;
+- a node that searches its moves never found an entry.
 
-*And one thing patch 10 changed here.* `probe` now returns an entry only when it
-settles the window being asked about; a match it cannot answer is counted as
-`partial` and reported as a miss. That is the right call while nothing wants the
-move, and it is the wrong call for this item, which wants the move off exactly
-those entries. Widen `probe` when this lands — the comment in `tt.hpp` says so —
-rather than reading the value off an entry that does not settle anything.
+There is no node that holds a stored move *and* has moves left to order. The
+population this item wanted is exactly the set counted by `tt_partial`, and
+`tt_partial` is identically zero. `MODE_FULL` is worse off still: it stores only
+exact values, so a hit there is total, and its move choice is an output that
+item 7 exists to protect.
+
+Measured anyway, because a theorem about a search is worth one run against the
+search:
+
+| workload | nodes | tt hits | **tt_partial** |
+|---|---:|---:|---:|
+| corpus, all 560, fast | 50,982 | 6,616 | **0** |
+| random, 9 cards (20, seed 1) | 732,753 | 191,825 | **0** |
+| random, 13 cards (20, seed 3) | 50,241,863 | 15,922,929 | **0** |
+| random, 11 cards (10, seed 3) | 135,880,493 | 43,367,835 | **0** |
+
+Forty-three million table hits at 11 cards and not one of them left a node with
+work to do.
+
+*What shipped instead.* Reading `tt_partial` required writing a throwaway
+program, because neither tool could print table statistics — which is a poor
+state for a list that judges everything on measurement. `--tt-stats` now exists
+on `nil_bench` and `nil_cli`, reporting probes, hits, partials, stores and
+evictions, and calling out both an all-zero `partial` and an eviction rate over
+90%. No search code changed: the corpus is 50,982 nodes in fast mode and
+2,647,731 in full, unmoved.
+
+*What would revive it.* `tt_partial` going non-zero, which happens the moment
+some item varies the window between nodes — aspiration windows, a second goal,
+a non-null window in fast mode. A swept selftest now pins it at zero across 480
+solves in both modes, so that change announces itself rather than being noticed
+later; `--tt-stats` says the same thing in one line on any workload. **If that
+number ever moves, re-open this item first** — the move is still stored in every
+entry, still survives the relabelling, and would still be free.
+
+*The one invariant that was never tested, and now never needs to be.* The item
+warned that a stored move must still be a member of the reduced move set.
+It is — the reduction is a function of the key and the stored move is the
+representative the reduction chose — but nothing reads a stored move for
+ordering, so the invariant has no load on it. It acquires load the moment this
+item re-opens, and it should be asserted then.
 
 ### 6. General move ordering — ⭐⭐⭐⭐⭐
 
@@ -386,13 +460,66 @@ never will. That is a useful narrowing: none of the heuristics below have to be
 safe for the principal variation, only for the boolean.
 
 For the nil question specifically, the orderings that matter are not the usual
-trick-maximizing ones:
+trick-maximizing ones.
 
-- Opponents leading: prefer suits where the nil bidder is short or holds a
+**Order by seat, not by side.** An earlier version of this entry had a bullet
+headed "nil side" that lumped the nil bidder together with its partner and told
+both to prefer the lowest card that cannot win. That is right for the partner
+and exactly backwards for the nil bidder, whose whole problem is getting rid of
+high cards. The two are separate entities with opposite preferences, and there
+are three roles here, not two:
+
+- **Opponents leading.** Prefer suits where the nil bidder is short or holds a
   card that can be trapped.
-- Nil side: prefer the lowest card that cannot win; prefer discarding
-  dangerous high cards from the nil bidder's hand.
-- Cover partner: prefer plays that take the trick over the nil bidder's head.
+
+- **The nil bidder.** Prefer *the highest card that can still lose*. That one
+  rule covers every situation it can be in:
+
+  - *Following, with a card on the trick it cannot beat.* The highest card
+    below the current best is a guaranteed-safe shed — it loses this trick
+    whatever happens after it — and it sheds more danger than anything lower.
+    Try it first, then the cards ranked **above** it, then the low ones.
+  - *Why the cards above it, when they win the trick as things stand.* Because
+    as things stand is not how the trick ends. A card above the current best
+    still loses if a later seat overtakes it or ruffs, and if it does lose, it
+    is a bigger shed than the safe one. This is the ordinary nil play of
+    dumping a high card under someone else's cover.
+  - *Leading.* There is no current best, so there is no guaranteed-safe shed;
+    the rule reduces to the highest card some later seat can still beat.
+    Leading the king into a known ace sheds the king for nothing.
+  - *Discarding.* The highest card of whichever suit is most dangerous later.
+
+  **The speculative sheds are conditional, and the condition inverts the
+  ordering when it fails.** If the nil bidder plays fourth to the trick, or no
+  seat still to play holds a higher card of the suit and none is void with a
+  spade it may legally play, then a card above the current best is a guaranteed
+  trick-taker. The nil bidder minimises against `[0, 1]` and cuts on finding a
+  zero, so a guaranteed winner returns 1 as soon as the trick completes and can
+  never cut. Those cards belong at the **back** of the order, not the front.
+  Double dummy makes the test exact and it is a few masks: does any later seat
+  hold a higher card of the suit, or is any later seat void in it and holding a
+  spade.
+
+- **The cover partner.** Prefer plays that take the trick over the nil bidder's
+  head. Failing that, shed the *lowest* card that cannot win — the opposite of
+  the nil bidder, and for the same reason read the other way round: the partner
+  needs its high cards to keep covering with.
+
+*This is ordering, not a reduction.* "Try these first" must not become "try only
+these". Dropping the low cards outright would be a claim that a lower card in
+the nil bidder's hand dominates a higher one, which is a different and much
+stronger statement than the equivalence in `rules.hpp` — that one is an
+automorphism and is exact by inspection, while domination has to survive the
+fact that which card the nil bidder retains can change who wins a later trick,
+and so the lead. If anyone wants it, it needs the `bounds.hpp` treatment and a
+proof first, it would hold only under the fast objective, and it changes the
+principal variation.
+
+*And note what the reduction has already done.* Move generation emits one
+representative per equivalence class, the canonically lowest member. Ordering
+therefore sorts class representatives, not cards. Where the safe shed and the
+high card fall in one class there is nothing to choose — they are one move under
+two names, and the reduction has already said so.
 
 Ship this together with item 7.
 
@@ -495,13 +622,59 @@ of what made GIB work. Also the hardest to keep exact, and the hardest to verify
 against an oracle. Not now, but worth revisiting once everything above has
 landed and the growth curve is known.
 
+### 15. Two-tier table replacement — ⭐⭐⭐
+
+**New, and already measured.** The one survivor of the replacement sweep above.
+Reserve the last of the four ways as an always-replace slot and confine the
+depth preference to the other three: pick the victim among ways 0..2 as now, and
+if that victim is live and strictly deeper than the entry being stored, write to
+way 3 instead of evicting it. The bucket cannot ossify, because way 3 always
+accepts, and a shallow entry can no longer throw away a deep one three times out
+of four. It is the standard two-tier scheme, and it is what Chang's guard should
+have been here.
+
+Built and measured, all three recorded 13-card seeds, twenty deals each:
+
+| workload | incumbent | two-tier | change |
+|---|---:|---:|---:|
+| random, 13 cards (20, seed 3) | 50,241,863 | 49,415,166 | −1.6% |
+| random, 13 cards (20, seed 11) | 141,136,295 | 137,889,771 | −2.3% |
+| random, 13 cards (20, seed 42) | 160,744,139 | 157,428,201 | −2.1% |
+| random, 9 cards (20, seed 1) | 732,753 | 732,783 | +0.004% |
+
+Wall time, best of three at 13 cards, seed 3: 11.73 s → 11.46 s, −2.3%. So the
+node saving is not being paid for in throughput — it tracks it — which is the
+same shape as patch 11 and unlike both entries in the rejected section.
+
+**It is small, it is consistent, and it is not free.** The table is a pure memo,
+so this changes no value and no principal variation; what it changes is which
+entries survive, and therefore how many nodes a search revisits. That includes
+`MODE_FULL`. The corpus moves from **2,647,731 to 2,647,760** — twenty-nine
+nodes, 0.001% — and the sentence in *Baseline to measure against* that calls
+full mode's node count a fixed point stops being true as written.
+
+That is the whole cost, and it is a real one: the fixed point is the sharpest
+regression test in this file precisely because it is exact. Anything that moves
+it must move it deliberately, once, with the new number recorded and a note
+saying which patch moved it and why — otherwise the next person to see 2,647,760
+cannot tell an optimisation from a bug. Two percent is a thin reason to spend
+that, which is why this is a separate item and not a rider on patch 12.
+
+*Sequencing.* Take it after items 6 and 7. Move ordering changes which nodes get
+stored and in what order, so this wants re-measuring on top of it anyway, and
+item 7's arrival is the natural moment to re-baseline full mode in any case.
+
 ---
 
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 → (6 + 7 together) → 9 → 8 → 10 → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → (6 + 7 together) → 15 → 9 → 8 → 10 → measure → 11..14
 ```
+
+`⊘` is item 5: closed without being built, because it has no population. See its
+entry — the argument is short and it is worth reading before item 6, since the
+two look adjacent and are not.
 
 Item 1 went first because it was the last PV-preserving win, and it is banked.
 Item 2 is banked too and bought nothing on its own, which was the plan: it is

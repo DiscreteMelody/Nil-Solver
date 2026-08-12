@@ -364,6 +364,7 @@ void usage(const char* argv0) {
               << "  --no-collapse     generate every legal card rather than one per class\n"
               << "  --no-static       do not settle positions by proof (fast mode only)\n"
               << "                    of rank-equivalent ones (same answer, many more nodes)\n"
+              << "  --tt-stats        also report transposition table behaviour\n"
               << "  --quiet           only print the summary and any failures\n"
               << "\n"
               << "--check-pv is off by default on purpose: move ordering will change\n"
@@ -402,6 +403,7 @@ int main(int argc, char** argv) {
     bool random_mode = false;
     bool quiet = false;
     bool check_pv = false;
+    bool tt_stats = false;
     // --mode both: solve every position in the other mode as well and require
     // the two to agree on nil_fails.
     bool cross_check_modes = false;
@@ -481,6 +483,8 @@ int main(int argc, char** argv) {
             opts.nil_already_set = true;
         } else if (arg == "--check-pv") {
             check_pv = true;
+        } else if (arg == "--tt-stats") {
+            tt_stats = true;
         } else if (arg == "--quiet") {
             quiet = true;
         } else {
@@ -572,6 +576,17 @@ int main(int argc, char** argv) {
     std::uint64_t cmp_full_nodes = 0;
     std::uint64_t cmp_fast_nodes = 0;
 
+    // --tt-stats bookkeeping, summed over the runs that produced the timed
+    // rows.  These are the numbers a table change has to be judged on, and
+    // until patch 12 there was no way to see them from either tool: the work
+    // that closed roadmap item 5 needed a throwaway program to read `partial`,
+    // which is exactly the sort of measurement that should not need one.
+    std::uint64_t tt_probes = 0;
+    std::uint64_t tt_hits = 0;
+    std::uint64_t tt_partial = 0;
+    std::uint64_t tt_stores = 0;
+    std::uint64_t tt_evictions = 0;
+
     for (const Item& item : items) {
         nil::Solution sol;
         bool solved = false;
@@ -659,6 +674,12 @@ int main(int argc, char** argv) {
             }
         }
 
+        tt_probes += sol.tt_probes;
+        tt_hits += sol.tt_hits;
+        tt_partial += sol.tt_partial;
+        tt_stores += sol.tt_stores;
+        tt_evictions += sol.tt_evictions;
+
         rows.push_back(Row{item.name, item.position.cards_per_hand(), sol.nil_tricks, sol.nodes,
                            best_ms});
     }
@@ -738,6 +759,45 @@ int main(int argc, char** argv) {
                 std::cout << "    (the two no longer walk the same tree, so this agreement is a\n"
                           << "     pruned answer held against an unpruned, oracle-checked one.)\n";
             }
+        }
+    }
+
+    if (tt_stats) {
+        const auto pct = [](std::uint64_t part, std::uint64_t whole) {
+            std::ostringstream os;
+            os << std::fixed << std::setprecision(1)
+               << (whole ? 100.0 * static_cast<double>(part) / static_cast<double>(whole) : 0.0)
+               << "%";
+            return os.str();
+        };
+        std::cout << "\n  transposition table, memo " << memo_label(opts) << "\n"
+                  << "    probes     " << commas(tt_probes) << "\n"
+                  << "    hits       " << commas(tt_hits) << "   " << pct(tt_hits, tt_probes)
+                  << " of probes\n"
+                  << "    partial    " << commas(tt_partial) << "   " << pct(tt_partial, tt_probes)
+                  << " of probes\n"
+                  << "    stores     " << commas(tt_stores) << "\n"
+                  << "    evictions  " << commas(tt_evictions) << "   "
+                  << pct(tt_evictions, tt_stores) << " of stores\n";
+        // `partial` is the load-bearing number here, not a curiosity.  It
+        // counts probes that found the position and held a bound too weak to
+        // settle the window -- the only nodes that could have a stored move AND
+        // moves left to search.  It is zero by construction in both modes
+        // today, which is what closed roadmap item 5; see ROADMAP.md.  A
+        // non-zero value means some item has varied the window, and item 5
+        // becomes live again at that moment.
+        if (tt_partial == 0) {
+            std::cout << "    (partial 0: every entry that matched settled the window it was\n"
+                      << "     asked about, so no node ever holds a stored move and searches.)\n";
+        } else {
+            std::cout << "    (partial is NON-ZERO: the window now varies between nodes, so\n"
+                      << "     table move ordering -- roadmap item 5 -- has a population again.)\n";
+        }
+        // An eviction rate near 100% says the table is far too small for the
+        // depth being attempted, not that the replacement policy is wrong.
+        if (tt_stores && tt_evictions * 10 > tt_stores * 9) {
+            std::cout << "    (over 90% of stores displaced a live position: the table is\n"
+                      << "     undersized for this workload -- try --tt-mb.)\n";
         }
     }
 
