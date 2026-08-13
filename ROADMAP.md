@@ -35,6 +35,7 @@ is what the pruned answer is checked against.
 | ✅ | Boolean / lexicographic mode split | patch 9 | `MODE_FAST` zeroes the tie-break weights and gives the primary weight 1, so the value is the nil bidder's trick count and the window is literally `[0, 1]`; no speed change yet, by design |
 | ✅ | Nil-specialised alpha-beta / AND-OR search | patch 10 | null window `[0, 1]` in `MODE_FAST`, fail-soft, bounds in the table; −12.8x nodes at 4 cards rising to −303x at 9, and 13-card hands answer in a median 150 ms. `MODE_FULL` searches between unreachable sentinels and is unchanged node for node |
 | ✅ | Nil-safe and nil-set static bounds | patch 11 | two proofs at a trick boundary, `MODE_FAST` only: −28.5% nodes on the corpus, −3% to −12% at 13 cards. Wall time −6.5% to −10.7% at 13 cards; throughput unmoved. `MODE_FULL` unchanged node for node |
+| ⊘ | Two-tier table replacement (item 15) | patch 20 | **evaluated and rejected, reversing patch 12's provisional result.** −1.7% nodes across the three 13-card seeds but +0.3% wall, and it spends `MODE_FULL`'s node-count fixed point. Item 6 is what changed the answer |
 | ✅ | Move ordering: the nil bidder off-suit (6d) | patch 19 | discard the highest card that still loses, from the suit closest to running out of covers. −13.5% nodes on top of 6a + 6b across the three 13-card seeds, −32.1% at 11, −15.2% on the corpus. The *leading* half was measured and dropped |
 | ⊘ | Move ordering: the cover partner (6c) | patch 18 | **evaluated and rejected.** Covering over the nil bidder's head is a no-op (−16 nodes on 13 million); taking the trick before it plays helps at ≤11 cards and is +18% to +108% worse on all three 13-card seeds. Nothing shipped |
 | ✅ | Move ordering: the opponents on lead (6b) | patch 17 | attack the suit whose holding runs short of covers soonest, lowest card. −21.5% nodes on top of 6a across the three 13-card seeds, and it **repairs 6a's seed-11 regression** — every recorded workload is now at or better than canonical. Throughput unmoved |
@@ -940,9 +941,9 @@ of what made GIB work. Also the hardest to keep exact, and the hardest to verify
 against an oracle. Not now, but worth revisiting once everything above has
 landed and the growth curve is known.
 
-### 15. Two-tier table replacement — ⭐⭐⭐
+### 15. ~~Two-tier table replacement~~ — ⊘ **built, measured, rejected in patch 20**
 
-**New, and already measured.** The one survivor of the replacement sweep above.
+**Provisionally measured at patch 12, and the answer did not survive item 6.** The one survivor of the replacement sweep above.
 Reserve the last of the four ways as an always-replace slot and confine the
 depth preference to the other three: pick the victim among ways 0..2 as now, and
 if that victim is live and strictly deeper than the entry being stored, write to
@@ -984,10 +985,56 @@ item 7's arrival is the natural moment to re-baseline full mode in any case.
 
 ---
 
+**REJECTED, patch 20 — and the sequencing note above is the reason it was
+caught.** Re-measured on top of 6a, 6b and 6d, one binary, both arms:
+
+| workload | incumbent | two-tier | nodes | wall |
+|---|---:|---:|---:|---:|
+| corpus, 560, full | 2,647,731 | 2,647,760 | +0.001% | — |
+| corpus, 560, fast | 40,595 | 40,595 | 0 | — |
+| random, 9c (20, seed 1) | 556,220 | 556,227 | +7 nodes | — |
+| random, 11c (10, seed 3) | 32,069,478 | 31,293,455 | −2.4% | −1.0% |
+| random, 13c (20, seed 3) | 12,637,804 | 12,730,737 | +0.7% | +0.9% |
+| random, 13c (20, seed 11) | 108,022,631 | 105,534,145 | −2.3% | −1.0% |
+| random, 13c (20, seed 42) | 59,534,175 | 58,801,394 | −1.2% | +2.6% |
+
+Across the three 13-card seeds, 180,194,610 → 177,066,276, −1.74% — and 42,088 ms
+→ 42,233 ms, **+0.34%**. The nodes still go the right way and the clock does not
+follow them. (Seed 3 and 11 cards are best of three; seeds 11 and 42 are single
+runs, being a minute apart.) The store path pays for it: even written as a
+single pass over the bucket, exactly like the incumbent, it carries the extra
+depth test and the redirect, and that is charged at every store while the node
+saving is only collected where the table was actually thrashing.
+
+**Patch 12 measured −2.1% nodes AND −2.3% wall, and was not wrong.** It was
+measured on a tree twice the size. Item 6 removed half the search and reshaped
+what is left, so the table is under far less pressure than it was — there is
+much less for a better replacement policy to recover, while the cost per store
+is unchanged. A 2% win became a 0.3% loss without a line of the policy changing.
+
+That is the whole argument for having deferred it, and it is worth stating as a
+rule rather than an anecdote: **a measurement is only valid against the tree it
+was taken on, and anything that changes the shape of the search invalidates every
+banked result underneath it.** Two entries above this one were rejected on wall
+time and remain rejected; this one was provisionally accepted and had to be
+re-tried. The sequencing note is the only reason it was re-tried rather than
+shipped on a stale number.
+
+*And the cost it no longer buys anything for.* It still moves `MODE_FULL`'s
+corpus from 2,647,731 to 2,647,760. Twenty-nine nodes, for −0.3% of wall time,
+against the sharpest exact regression test in this file. Not close.
+
+*If anyone revisits it.* The case would be a workload where the table genuinely
+thrashes again — deeper than 13 cards, or a much smaller `--tt-mb`. `--tt-stats`
+reports the eviction rate, and the 90%-plus warning it prints is the signal that
+this item is worth another look.
+
+---
+
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 → 9 → 8 → 10 → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 9 → 8 → 10 → measure → 11..14
 ```
 
 `⊘` is item 5: closed without being built, because it has no population. See its
