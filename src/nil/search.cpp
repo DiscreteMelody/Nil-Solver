@@ -233,6 +233,55 @@ CardId opponent_attack_lead(const State& st, int nil_seat, Hand moves) {
     return lowest_card(moves & suit_mask(best_suit));
 }
 
+
+// ROADMAP ITEM 6d: THE NIL BIDDER, OFF SUIT.
+//
+// 6a handles the nil bidder when it must follow, where "the highest card that
+// can still lose" is a bit scan against the card currently winning.  These two
+// handle the cases where it may play anything, and there the same rule needs a
+// comparison ACROSS suits -- which of two losing cards sheds more danger is not
+// a question about rank.
+//
+// DANGER IS DUCKING SUPPLY, NOT RANK, and cover_deficit_depth in bounds.hpp is
+// the measure: how many of the nil bidder's own cards sit below the point where
+// its holding runs short of covers, and so how many times the suit must be led
+// before it is stranded.  Small is dangerous.  A card nobody can beat scores 0
+// whatever its rank; an ace behind three small ones scores 3.
+
+// Discarding: void in the led suit, so anything is legal.  Shed the highest
+// card that still loses, from whichever suit is closest to running out of
+// covers.
+//
+// The losing filter is not decoration.  With a void the hand includes trumps,
+// and a spade thrown on a side-suit lead RUFFS -- it takes the trick, which is
+// the one outcome the nil bidder is trying to avoid.  Filtering to cards that
+// cannot win the trick as it stands keeps that out, and costs one pass.
+CardId nil_bidder_discard(const State& st, int nil_seat, Hand moves) {
+    const CardId best = trick_best_card(st.trick, st.trick_len);
+    Hand losing = 0;
+    for (Hand rest = moves; rest;) {
+        const CardId c = take_lowest(rest);
+        if (!beats(c, best)) losing |= card_bit(c);
+    }
+    if (!losing) return NO_CARD;  // everything wins; nothing to be done here
+
+    const Hand nil_hand = st.hands[nil_seat];
+    const Hand outstanding = relevant_cards(st.hands, NO_CARD) & ~nil_hand;
+    int best_suit = -1;
+    int best_depth = SUIT_COVERED + 1;
+    for (int suit = 0; suit < 4; ++suit) {
+        if (!(losing & suit_mask(suit))) continue;
+        const int depth =
+            cover_deficit_depth(nil_hand & suit_mask(suit), outstanding & suit_mask(suit), suit);
+        if (depth < best_depth) {
+            best_depth = depth;
+            best_suit = suit;
+        }
+    }
+    if (best_suit < 0) return NO_CARD;
+    return highest_card(losing & suit_mask(best_suit));
+}
+
 int search(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta) {
     ++ctx.nodes;
     best_move = NO_CARD;
@@ -326,7 +375,13 @@ int search(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta) {
         if (seat == ctx.nil_seat) {
             // 6a.  Off-suit is 6d and is not written yet, so a discarding nil
             // bidder keeps the canonical order.
-            if (st.trick_len > 0) promoted = nil_bidder_shed(st, moves);
+            // On lead the canonical order stands: leading was built and
+            // measured with the rest of 6d and does nothing.  See ROADMAP.md.
+            if (st.trick_len > 0) {
+                promoted = (moves & ~suit_mask(card_suit(st.trick[0])))
+                               ? nil_bidder_discard(st, ctx.nil_seat, moves)  // 6d
+                               : nil_bidder_shed(st, moves);                  // 6a
+            }
         } else if (maximizing && st.trick_len == 0) {
             // 6b.  `maximizing` is the test for an opponent, so the covering
             // partner falls through to the canonical order until 6c.

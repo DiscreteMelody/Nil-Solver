@@ -35,6 +35,7 @@ is what the pruned answer is checked against.
 | ✅ | Boolean / lexicographic mode split | patch 9 | `MODE_FAST` zeroes the tie-break weights and gives the primary weight 1, so the value is the nil bidder's trick count and the window is literally `[0, 1]`; no speed change yet, by design |
 | ✅ | Nil-specialised alpha-beta / AND-OR search | patch 10 | null window `[0, 1]` in `MODE_FAST`, fail-soft, bounds in the table; −12.8x nodes at 4 cards rising to −303x at 9, and 13-card hands answer in a median 150 ms. `MODE_FULL` searches between unreachable sentinels and is unchanged node for node |
 | ✅ | Nil-safe and nil-set static bounds | patch 11 | two proofs at a trick boundary, `MODE_FAST` only: −28.5% nodes on the corpus, −3% to −12% at 13 cards. Wall time −6.5% to −10.7% at 13 cards; throughput unmoved. `MODE_FULL` unchanged node for node |
+| ✅ | Move ordering: the nil bidder off-suit (6d) | patch 19 | discard the highest card that still loses, from the suit closest to running out of covers. −13.5% nodes on top of 6a + 6b across the three 13-card seeds, −32.1% at 11, −15.2% on the corpus. The *leading* half was measured and dropped |
 | ⊘ | Move ordering: the cover partner (6c) | patch 18 | **evaluated and rejected.** Covering over the nil bidder's head is a no-op (−16 nodes on 13 million); taking the trick before it plays helps at ≤11 cards and is +18% to +108% worse on all three 13-card seeds. Nothing shipped |
 | ✅ | Move ordering: the opponents on lead (6b) | patch 17 | attack the suit whose holding runs short of covers soonest, lowest card. −21.5% nodes on top of 6a across the three 13-card seeds, and it **repairs 6a's seed-11 regression** — every recorded workload is now at or better than canonical. Throughput unmoved |
 | ✅ | Move ordering: the nil bidder following suit (6a) | patch 16 | promote the highest card that loses to the current best. −45.7% and −40.8% nodes at 13 cards on two of three seeds, **+1.3% on the third**, −65.2% at 11 cards. Throughput flat, so wall time tracks. `MODE_FULL` unchanged node for node |
@@ -514,7 +515,7 @@ them one at a time:
 | **6a** | ✅ patch 16 | the nil bidder **following suit** |
 | **6b** | ✅ patch 17 | the opponents on lead |
 | **6c** | ⊘ patch 18 | the cover partner — *measured, rejected, nothing shipped* |
-| **6d** | next | the nil bidder **off-suit** — discarding, and choosing a suit to lead |
+| **6d** | ✅ patch 19 | the nil bidder **off-suit** — discarding ships; *leading measured and dropped* |
 
 6a and 6d split the nil bidder in two because they need different machinery.
 Following suit, "the highest card that can still lose" is a bit scan against the
@@ -582,7 +583,11 @@ are three roles here, not two:
   - *Leading.* There is no current best, so there is no guaranteed-safe shed;
     the rule reduces to the highest card some later seat can still beat.
     Leading the king into a known ace sheds the king for nothing.
-  - *Discarding.* The highest card of whichever suit is most dangerous later.
+  - *Discarding.* ✅ *patch 19.* The highest card that still loses, from
+    whichever suit is closest to running out of covers. The losing filter is
+    not decoration: with a void the hand includes trumps, and a spade thrown on
+    a side-suit lead ruffs and takes the trick.
+  - *Leading.* ⊘ *measured and dropped, patch 19.* See below.
 
   **The speculative sheds are conditional, and the condition inverts the
   ordering when it fails.** If the nil bidder plays fourth to the trick, or no
@@ -670,6 +675,35 @@ seed on this list.
 million). Not investigated. 6a already took that workload down by 65%, and a
 heuristic that finds nothing left to promote is the expected shape once another
 has already collapsed the tree.
+
+  **What 6d bought, measured on one binary against 6a + 6b.** Four arms, because
+  the entry named two plays and 6c had just shown what bundling two plays hides:
+
+  | workload | 6a + 6b | + discard | + lead | + both |
+  |---|---:|---:|---:|---:|
+  | corpus, 560, fast | 47,877 | 40,595 (−15.2%) | 47,707 | 40,417 |
+  | random, 9c (20, seed 1) | 564,756 | 556,220 (−1.5%) | 564,756 | 556,220 |
+  | random, 11c (10, seed 3) | 47,219,449 | 32,069,478 (**−32.1%**) | — | — |
+  | random, 13c (20, seed 3) | 12,952,377 | 12,637,804 (−2.4%) | 13,047,545 | 12,752,975 |
+  | random, 13c (20, seed 11) | 124,650,866 | 108,022,631 (−13.3%) | — | 108,022,631 |
+  | random, 13c (20, seed 42) | 70,710,823 | 59,534,175 (−15.8%) | — | — |
+
+  Across the three 13-card seeds, 208,314,066 → 180,194,610, −13.5%. Wall time
+  tracks and throughput is if anything up — 5.61M against 5.47M nodes/sec at
+  seed 11 — because the cost lands only at discard nodes: seed 11 is 22.8 s →
+  19.2 s, seed 42 13.0 s → 11.2 s, 11 cards 9.0 s → 6.3 s.
+
+  **Leading was dropped.** −0.36% on the corpus, exactly nothing at 9 cards,
+  *+0.7%* at 13 cards seed 3, and at seed 11 the combined arm equals the discard
+  arm node for node. It is not a win and it is not clearly a loss; it is
+  nothing, and nothing still costs a bit walk per suit at every nil lead. The
+  entry above once suggested leading a king into a known ace to shed it for
+  free, and that is the likely reason: it is a fine play against a human and
+  worth nothing here, because the opponents are maximising the nil bidder's
+  tricks and will simply duck and let the king win unless they are *forced* to
+  cover. Note this is the same trap that kept speculative sheds out of 6a — the
+  second time on this list that a sound-looking play has failed for the reason
+  that double-dummy opponents decline to help.
 
 - ~~**The cover partner (6c).**~~ ⊘ *measured and rejected, patch 18.* Prefer
   plays that take the trick over the nil bidder's head; failing that, shed the
@@ -953,7 +987,7 @@ item 7's arrival is the natural moment to re-baseline full mode in any case.
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d → 15 → 9 → 8 → 10 → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 → 9 → 8 → 10 → measure → 11..14
 ```
 
 `⊘` is item 5: closed without being built, because it has no population. See its
