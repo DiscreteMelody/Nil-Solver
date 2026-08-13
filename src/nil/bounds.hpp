@@ -122,6 +122,59 @@ inline bool nil_cannot_be_forced(const Hand hands[4], int nil_seat, bool nil_on_
 }
 
 // ---------------------------------------------------------------------------
+// HOW SHORT OF COVERS IS A HOLDING
+// ---------------------------------------------------------------------------
+// Shared by the proof below and by move ordering (ROADMAP items 6b and 6d),
+// which is the whole reason it is a function rather than a loop inside
+// nil_must_take_a_trick.  There is one definition in this solver of "can this
+// holding be covered", and this is it.
+//
+// `mine` and `theirs` are one suit's worth of cards: the holder's, and
+// everybody else's still live.  Number the holder's cards from the top,
+// j = 1, 2, ..., m, and let above_j be how many of `theirs` sit strictly above
+// the j-th.  The holder can duck its way out of the suit only if every one of
+// its top j cards can be matched to a distinct higher card outside -- Hall's
+// condition, above_j >= j for all j.  Where that fails, one card gets through
+// and wins a trick.
+//
+// Returns how many of the holder's OWN cards sit below the first failure, which
+// is how many times the suit must be led before the trouble is reached:
+//
+//     depth = min { m - j : above_j < j }
+//
+// and SUIT_COVERED when there is no failure at all.  Smaller is worse for the
+// holder.  A singleton nobody can beat returns 0 -- trouble on the very next
+// lead of the suit.  An ace held behind three small ones returns 3, because the
+// suit has to be led four times before the ace is stranded.
+//
+// EXACT IN SPADES, CONSERVATIVE ELSEWHERE.  The argument needs every card to be
+// played and a card to lose only to a higher card of the same suit.  Both hold
+// for trumps.  In a side suit a card can be ruffed, and the suit may simply
+// never be led often enough to reach the failure, so a holding this call marks
+// as short may never actually cost a trick.  Both escapes help the holder, so
+// off-trump this OVERSTATES the trouble -- which is why nil_must_take_a_trick
+// asks it only about spades, and why the ordering heuristics may ask it about
+// anything: a heuristic that overstates can misorder, and cannot miscount.
+constexpr int SUIT_COVERED = 64;
+
+inline int cover_deficit_depth(Hand mine, Hand theirs, int suit) {
+    if (!mine) return SUIT_COVERED;
+    const int m = count_cards(mine);
+    const Hand top = card_bit(make_card(suit, 14));
+    const Hand bottom = card_bit(make_card(suit, 2));
+    int held = 0;   // j
+    int above = 0;  // above_j, once the j-th has been reached
+    for (Hand bit = top; bit >= bottom; bit >>= 1) {
+        if (mine & bit) {
+            if (++held > above) return m - held;
+        } else if (theirs & bit) {
+            ++above;
+        }
+    }
+    return SUIT_COVERED;
+}
+
+// ---------------------------------------------------------------------------
 // NIL PROVABLY SET
 // ---------------------------------------------------------------------------
 // True when the nil bidder is guaranteed at least one more trick, whatever all
@@ -164,19 +217,11 @@ inline bool nil_must_take_a_trick(const Hand hands[4], int nil_seat) {
     // The overwhelmingly common case for a nil bidder, and one mask test.
     if (!mine) return false;
     const Hand theirs = relevant_cards(hands, NO_CARD) & suit_mask(SUIT_SPADES) & ~mine;
-
-    int held = 0;   // j: the nil bidder's spades at or above the current rank
-    int above = 0;  // r(j) - j: everyone else's, strictly above the j-th
-    // Spades are suit 0, so they occupy bits 0 (the deuce) to 12 (the ace) and
-    // walking a single bit down from the ace stays inside the suit.
-    for (Hand bit = card_bit(make_card(SUIT_SPADES, 14)); bit; bit >>= 1) {
-        if (mine & bit) {
-            if (++held > above) return true;
-        } else if (theirs & bit) {
-            ++above;
-        }
-    }
-    return false;
+    // Exactly the walk this function used to do inline.  It is shared now
+    // because move ordering wants the same count off-trump; the predicate is
+    // "the holding runs short of covers somewhere", and where is what the
+    // ordering wants and this does not.
+    return cover_deficit_depth(mine, theirs, SUIT_SPADES) != SUIT_COVERED;
 }
 
 }  // namespace nil

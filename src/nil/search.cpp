@@ -188,6 +188,51 @@ CardId nil_bidder_shed(const State& st, Hand moves) {
 // reduction (rules.hpp), which drops candidates that are a lower candidate
 // played under a different name.  It is a statement about the game tree rather
 // than about the search, so it is unaffected by pruning.
+// ROADMAP ITEM 6b: THE OPPONENTS, ON LEAD.
+//
+// Returns the card to try before the canonical enumeration, or NO_CARD.
+//
+// An opponent on lead is maximising against `[0, 1]` and cuts the moment a
+// line comes back with the nil bidder taking a trick, so the lead to ask about
+// first is the one most likely to force one.
+//
+// WHICH SUIT.  Not one the nil bidder is void in -- that is the lead it most
+// wants, because a void is a free discard of whatever it is most afraid of.
+// The suit to attack is the one whose holding runs short of covers soonest,
+// which is what cover_deficit_depth measures: the number of the nil bidder's
+// own cards below the point where Hall's condition fails, and so the number of
+// times the suit must be led before it is stranded.  Depth 0 means the very
+// next lead of that suit strands it.
+//
+// Where no suit is short of covers, decline rather than guess.  There is no
+// ranking to be had in that case, and a promotion no better than the canonical
+// order costs a branch and buys nothing.
+//
+// WHICH CARD.  The lowest of the chosen suit.  The point is to leave the nil
+// bidder's card the one that wins; a high lead does its ducking for it.
+//
+// The deficit is read off the four hands, which makes it a trick-boundary
+// measure -- and a lead is a trick boundary, so there is nothing to guard here.
+CardId opponent_attack_lead(const State& st, int nil_seat, Hand moves) {
+    const Hand nil_hand = st.hands[nil_seat];
+    const Hand outstanding = relevant_cards(st.hands, NO_CARD) & ~nil_hand;
+
+    int best_suit = -1;
+    int best_depth = SUIT_COVERED;
+    for (int suit = 0; suit < 4; ++suit) {
+        const Hand mine = nil_hand & suit_mask(suit);
+        if (!mine) continue;  // void: leading here hands it a free discard
+        if (!(moves & suit_mask(suit))) continue;  // cannot legally lead this suit
+        const int depth = cover_deficit_depth(mine, outstanding & suit_mask(suit), suit);
+        if (depth < best_depth) {
+            best_depth = depth;
+            best_suit = suit;
+        }
+    }
+    if (best_suit < 0) return NO_CARD;
+    return lowest_card(moves & suit_mask(best_suit));
+}
+
 int search(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta) {
     ++ctx.nodes;
     best_move = NO_CARD;
@@ -277,8 +322,16 @@ int search(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta) {
     // costs a `take_lowest` per move today, and both optimisations this project
     // has rejected lost on throughput rather than on nodes.
     CardId promoted = NO_CARD;
-    if (ctx.order_moves && seat == ctx.nil_seat && st.trick_len > 0) {
-        promoted = nil_bidder_shed(st, moves);
+    if (ctx.order_moves) {
+        if (seat == ctx.nil_seat) {
+            // 6a.  Off-suit is 6d and is not written yet, so a discarding nil
+            // bidder keeps the canonical order.
+            if (st.trick_len > 0) promoted = nil_bidder_shed(st, moves);
+        } else if (maximizing && st.trick_len == 0) {
+            // 6b.  `maximizing` is the test for an opponent, so the covering
+            // partner falls through to the canonical order until 6c.
+            promoted = opponent_attack_lead(st, ctx.nil_seat, moves);
+        }
         if (promoted != NO_CARD) moves &= ~card_bit(promoted);
     }
 

@@ -35,6 +35,7 @@ is what the pruned answer is checked against.
 | ✅ | Boolean / lexicographic mode split | patch 9 | `MODE_FAST` zeroes the tie-break weights and gives the primary weight 1, so the value is the nil bidder's trick count and the window is literally `[0, 1]`; no speed change yet, by design |
 | ✅ | Nil-specialised alpha-beta / AND-OR search | patch 10 | null window `[0, 1]` in `MODE_FAST`, fail-soft, bounds in the table; −12.8x nodes at 4 cards rising to −303x at 9, and 13-card hands answer in a median 150 ms. `MODE_FULL` searches between unreachable sentinels and is unchanged node for node |
 | ✅ | Nil-safe and nil-set static bounds | patch 11 | two proofs at a trick boundary, `MODE_FAST` only: −28.5% nodes on the corpus, −3% to −12% at 13 cards. Wall time −6.5% to −10.7% at 13 cards; throughput unmoved. `MODE_FULL` unchanged node for node |
+| ✅ | Move ordering: the opponents on lead (6b) | patch 17 | attack the suit whose holding runs short of covers soonest, lowest card. −21.5% nodes on top of 6a across the three 13-card seeds, and it **repairs 6a's seed-11 regression** — every recorded workload is now at or better than canonical. Throughput unmoved |
 | ✅ | Move ordering: the nil bidder following suit (6a) | patch 16 | promote the highest card that loses to the current best. −45.7% and −40.8% nodes at 13 cards on two of three seeds, **+1.3% on the third**, −65.2% at 11 cards. Throughput flat, so wall time tracks. `MODE_FULL` unchanged node for node |
 | ✅ | A `--no-ordering` control arm | patch 15 | `SearchOptions::order_moves`, `NIL_FLAG_NO_ORDERING`, `--no-ordering` on both tools, `+noordering` on fast rows, and a `corpus_ordering` ctest. Inert by design — the switch, the ABI bit and the differential all land before 6a has anywhere to hide. Zero nodes changed |
 | ✅ | Transposition-table move ordering | patch 12 | **closed as refuted, not implemented.** The population is empty and provably so: `tt_partial` ≡ 0, so no node ever holds a stored move and still has moves to search. Zero nodes changed. Shipped instead: `--tt-stats` on both tools, and the premise pinned by a swept selftest |
@@ -469,8 +470,8 @@ them one at a time:
 | | patch | what it orders |
 |---|---|---|
 | **6a** | ✅ patch 16 | the nil bidder **following suit** |
-| **6b** | next | the opponents on lead |
-| **6c** | after that | the cover partner |
+| **6b** | ✅ patch 17 | the opponents on lead |
+| **6c** | next | the cover partner |
 | **6d** | last | the nil bidder **off-suit** — discarding, and choosing a suit to lead |
 
 6a and 6d split the nil bidder in two because they need different machinery.
@@ -507,8 +508,22 @@ and exactly backwards for the nil bidder, whose whole problem is getting rid of
 high cards. The two are separate entities with opposite preferences, and there
 are three roles here, not two:
 
-- **The opponents on lead (6b).** Prefer suits where the nil bidder is short or
-  holds a card that can be trapped.
+- **The opponents on lead (6b).** ✅ *patch 17.* Attack the suit whose holding
+  runs short of covers soonest — `cover_deficit_depth`, the same measure 6d
+  wants — and lead its lowest card.
+
+  **Not the suit the nil bidder is short in, and certainly not one it is void
+  in.** This entry used to say "short", and short is a proxy for the thing that
+  matters rather than the thing itself. A void is the lead the nil bidder most
+  *wants*: it discards whatever frightens it most, for free. What the opponents
+  want is a suit the nil bidder must follow to and cannot duck in, which is
+  where Hall's condition fails soonest — depth 0 meaning the very next lead of
+  that suit strands it. Lead low, so the nil bidder's card is the one left
+  winning; a high lead does its ducking for it.
+
+  Where no suit is short of covers, 6b declines rather than guessing. There is
+  no ranking to be had in that case, and a promotion no better than the
+  canonical order costs a branch and buys nothing.
 
 - **The nil bidder (6a following suit, 6d off-suit).** Prefer *the highest card that can still lose*. That one
   rule covers every situation it can be in:
@@ -576,6 +591,43 @@ are three roles here, not two:
   trouble to be reached. Both escapes help the nil bidder, so the count
   **overstates** danger off-trump — the right direction of error for an
   ordering heuristic, which can then only misorder and never miscount.
+
+**What 6b bought, measured against `--no-ordering` on the same binary.** The 6a
+column is patch 16's, restated so the incremental is visible:
+
+| workload | canonical | 6a | 6a + 6b | 6b alone | total |
+|---|---:|---:|---:|---:|---:|
+| corpus, 560, fast | 50,982 | 48,730 | 47,877 | −1.8% | −6.1% |
+| random, 9c (20, seed 1) | 732,753 | 678,757 | 564,756 | −16.8% | −22.9% |
+| random, 11c (10, seed 3) | 135,880,493 | 47,215,409 | 47,219,449 | +0.009% | −65.2% |
+| random, 13c (20, seed 3) | 50,241,863 | 27,303,533 | 12,952,377 | −52.6% | −74.2% |
+| random, 13c (20, seed 11) | 141,136,295 | 142,923,616 | 124,650,866 | −12.8% | **−11.7%** |
+| random, 13c (20, seed 42) | 160,744,139 | 95,228,547 | 70,710,823 | −25.7% | −56.0% |
+
+Across the three 13-card seeds, 352,122,297 → 208,314,066: −21.5% on top of 6a
+and −40.8% against canonical. Wall time, both arms on the same binary: seed 3
+11.9 s → 3.2 s, seed 11 34.5 s → 31.3 s, seed 42 38.2 s → 17.6 s. Throughput is
+unmoved — 4.08M against 4.22M nodes/sec at seed 3, 3.98M against 4.09M at seed
+11, 4.03M against 4.20M at seed 42 — so the per-node cost of up to four bit
+walks at an opponent's lead is inside the noise, and it is paid at one node in
+eight rather than at every node.
+
+**The result to read is seed 11.** 6a made it 1.3% *worse* and this list
+recorded that as the first change on it that could cost a particular deal work.
+6b more than repairs it: −12.8% on top of 6a and −11.7% against canonical, and
+with it **every recorded workload is now at or better than canonical**. That is
+not luck. 6a promotes the nil bidder's best defence and 6b promotes the attack
+that defeats it, and a search that only knows how to defend spends its time
+proving the defence works down lines that were never the threat. The pairing is
+the reason these two were sequenced together rather than either being judged on
+its own — and it is also a caution: a phase that measures badly alone is not
+therefore wrong, and 6a would have looked much worse had seed 11 been the only
+seed on this list.
+
+11 cards is the one place 6b does nothing (+0.009%, four thousand nodes on 47
+million). Not investigated. 6a already took that workload down by 65%, and a
+heuristic that finds nothing left to promote is the expected shape once another
+has already collapsed the tree.
 
 - **The cover partner (6c).** Prefer plays that take the trick over the nil bidder's
   head. Failing that, shed the *lowest* card that cannot win — the opposite of
@@ -855,7 +907,7 @@ item 7's arrival is the natural moment to re-baseline full mode in any case.
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b → 6c → 6d → 15 → 9 → 8 → 10 → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c → 6d → 15 → 9 → 8 → 10 → measure → 11..14
 ```
 
 `⊘` is item 5: closed without being built, because it has no population. See its
