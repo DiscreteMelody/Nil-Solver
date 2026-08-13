@@ -163,6 +163,25 @@ struct SearchOptions {
     // suspected of lying.
     bool use_static_bounds = true;
 
+    // Try promising moves before the canonical enumeration order.  See
+    // ROADMAP.md item 6: the orderings that help the nil question are not the
+    // usual trick-maximising ones, and they differ by seat -- the nil bidder
+    // wants to shed its highest card that can still lose, its covering partner
+    // wants to keep high cards to cover with, and the opponents want to attack
+    // the suits the nil bidder is short in.
+    //
+    // Inert outside MODE_FAST, and that is a harder rule than it looks.
+    // MODE_FULL searches between sentinels, so it never cuts, so no ordering
+    // can save it a single node -- and its move choice is an OUTPUT, checked
+    // card for card against nil_oracle.py.  Reordering there would cost the
+    // solver its strongest evidence and buy nothing at all.
+    //
+    // On by default, and like collapse_equivalents and use_static_bounds the
+    // flag exists to be turned off: ordering must be answer-neutral, and the
+    // way that gets shown here is a differential on one binary with this flag
+    // as the only difference between the two columns.
+    bool order_moves = true;
+
     // Look positions up in a transposition table.  The search is a pure
     // function of the position, so the table changes neither the value nor the
     // principal variation -- it is memoisation, not alpha-beta or any other

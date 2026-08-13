@@ -134,6 +134,23 @@ if(NIL_SOLVER_BUILD_TESTS)
              COMMAND nil_bench --corpus "${NIL_CORPUS}" --mode fast --no-static --quiet
                      --slowest 0)
     set_tests_properties(corpus_static PROPERTIES TIMEOUT 900)
+
+    # The control arm for move ordering, on exactly the corpus_static model and
+    # for exactly the same reason.  corpus_modes exercises ordering ON -- fast
+    # mode takes it by default -- and this is the same corpus with it OFF, so
+    # the pair is a differential: both must land on the oracle's answers, and a
+    # heuristic that has started changing answers can only agree with both by
+    # being unreachable.
+    #
+    # It is inert as it stands, because patch 15 shipped the flag before the
+    # first heuristic (roadmap item 6a).  That is the point: corpus_modes was
+    # added the same way, one patch ahead of the pruning it was there to check,
+    # and it is cheaper to have the test already running than to remember to
+    # write it in the patch that needs it.
+    add_test(NAME corpus_ordering
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --mode fast --no-ordering --quiet
+                     --slowest 0)
+    set_tests_properties(corpus_ordering PROPERTIES TIMEOUT 900)
   endif()
 
   set(NIL_LARGE_CORPUS "${CMAKE_CURRENT_SOURCE_DIR}/tests/corpus/large.txt")

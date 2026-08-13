@@ -82,6 +82,29 @@ inline int lowest_card(Hand h) {
 #endif
 }
 
+// Index of the highest set bit; h must be non-zero.  The mirror of
+// lowest_card, and wanted for the same reason: the nil bidder's ordering
+// (ROADMAP item 6a) asks for the TOP of a set of candidate cards, where every
+// other consumer of a hand mask walks from the bottom.
+inline int highest_card(Hand h) {
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_ARM64))
+    unsigned long idx;
+    _BitScanReverse64(&idx, h);
+    return static_cast<int>(idx);
+#elif defined(_MSC_VER)
+    unsigned long idx;
+    if (_BitScanReverse(&idx, static_cast<unsigned long>(h >> 32))) return static_cast<int>(idx) + 32;
+    _BitScanReverse(&idx, static_cast<unsigned long>(h));
+    return static_cast<int>(idx);
+#elif defined(__GNUC__) || defined(__clang__)
+    return 63 - __builtin_clzll(h);
+#else
+    int i = 63;
+    while (!((h >> i) & 1ull)) --i;
+    return i;
+#endif
+}
+
 // Pop and return the canonically lowest card of `h`.
 inline CardId take_lowest(Hand& h) {
     const int b = lowest_card(h);

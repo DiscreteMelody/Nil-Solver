@@ -63,6 +63,22 @@ struct Ctx {
     // like gains_nonnegative, because it is a fact about the weights.
     bool value_is_nil_tricks = false;
     bool static_bounds = true;  // the proofs in bounds.hpp; off is the control arm
+    // True when the search may try moves in an order other than the canonical
+    // one.  Item 6 reads this; nothing does yet, and patch 15 landed it inert
+    // on purpose so that the flag, the ABI bit and the control-arm test all
+    // exist before the first heuristic has anywhere to hide.
+    //
+    // NOTE ON THE GATE, because it departs from what gains_nonnegative and
+    // value_is_nil_tricks do.  Those two are read off the WEIGHTS, deliberately,
+    // so that no flag anyone could forget to set stands between MODE_FULL and
+    // its guarantees.  This one is read off the MODE, and there is no honest
+    // way to do otherwise: what makes reordering unsafe is not a property of
+    // the objective but the fact that MODE_FULL's chosen move is an output the
+    // oracle checks card for card, and MODE_FAST has no principal variation to
+    // report.  That is a fact about which mode owes its caller what, so the
+    // mode is the right thing to read.  Recorded rather than glossed, because
+    // the pattern elsewhere in this file is the opposite one.
+    bool order_moves = false;
     std::uint8_t tt_tag = TAG_NONE;  // which objective this solve's values are on
     std::uint64_t nodes = 0;
     TranspositionTable* tt = nullptr;  // null when the caller turned it off
@@ -81,9 +97,62 @@ CardId first_legal_move(const State& st) {
     return moves ? lowest_card(moves) : NO_CARD;
 }
 
-// Returns the objective value from `st` onwards (see objective_weights), and
-// the best move found for the seat to play.  The nil side minimises the value;
-// the opponents maximise it.
+// ROADMAP ITEM 6a: THE NIL BIDDER, FOLLOWING SUIT.
+//
+// Returns the move to try before the canonical enumeration, or NO_CARD to leave
+// the order alone.
+//
+// The rule is the nil bidder's whole strategy in one line: play *the highest
+// card that can still lose*.  A card below the current best loses this trick
+// whatever anyone does afterwards, so the highest such card is a shed that is
+// free -- it sheds more danger than anything under it and costs nothing this
+// trick.  The nil bidder minimises against `[0, 1]` and cuts the moment a move
+// comes back zero, so the move most likely to come back zero is the one to ask
+// about first.
+//
+// WHY THIS IS THE WHOLE OF 6a, and what it deliberately leaves out.
+//
+//   - *Only when following.* Void in the led suit the nil bidder is
+//     discarding, and "most dangerous" is then a comparison ACROSS suits that
+//     needs a per-suit count rather than a bit scan.  That is item 6d, and
+//     folding it in here would mean this patch's number covered two heuristics.
+//   - *Only losing cards.* A card ABOVE the current best sheds more still, and
+//     loses if a later seat covers it -- but a later OPPONENT will decline to
+//     cover, because letting the nil bidder win is the opponent's whole
+//     objective.  So the speculative shed is only good when the covering
+//     partner is still to play, which is a lookahead this does not do.  Left
+//     out on purpose; see the entry in ROADMAP.md.
+//   - *No demotion.* Cards that certainly win want to be searched last, and
+//     already are: they are the high cards of the suit, and the canonical
+//     order is ascending, so it puts them at the back for free.
+//
+// `moves` is the REDUCED move set, so the card returned is a class
+// representative and is a legal move by construction -- which is what keeps
+// this compatible with the equivalent-card reduction rather than fighting it.
+CardId nil_bidder_shed(const State& st, Hand moves) {
+    const CardId best = trick_best_card(st.trick, st.trick_len);
+    if (best == NO_CARD) return NO_CARD;  // on lead: no trick to lose to yet
+    const int led = card_suit(st.trick[0]);
+    // Following suit means every legal move is in the led suit; being void
+    // means the whole hand is legal, and that is 6d's case rather than this
+    // one.  Testing the mask is cheaper than testing the hand.
+    if (moves & ~suit_mask(led)) return NO_CARD;
+
+    Hand losing;
+    if (card_suit(best) != led) {
+        // A ruff is already on the trick and the nil bidder is following the
+        // led suit, so nothing it can play beats anything: every move loses.
+        losing = moves;
+    } else {
+        // Same suit, so bit order is rank order and everything below the
+        // winning card loses to it.
+        losing = moves & (card_bit(best) - 1);
+    }
+    if (!losing) return NO_CARD;  // every legal card wins the trick as it stands
+    return highest_card(losing);
+}
+
+
 //
 // FAIL-SOFT ALPHA-BETA.  The return is exact when it lands strictly inside
 // [alpha, beta]; at or below alpha it is an upper bound on the true value, at
@@ -202,8 +271,25 @@ int search(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta) {
     int best = 0;
     bool have_best = false;
 
-    while (moves) {
-        const CardId card = take_lowest(moves);
+    // ORDERING (item 6a).  One card lifted out of the mask and searched first;
+    // everything else keeps the canonical ascending order it always had.  That
+    // is the whole mechanism, and it is deliberately not a sort: the loop below
+    // costs a `take_lowest` per move today, and both optimisations this project
+    // has rejected lost on throughput rather than on nodes.
+    CardId promoted = NO_CARD;
+    if (ctx.order_moves && seat == ctx.nil_seat && st.trick_len > 0) {
+        promoted = nil_bidder_shed(st, moves);
+        if (promoted != NO_CARD) moves &= ~card_bit(promoted);
+    }
+
+    while (promoted != NO_CARD || moves) {
+        CardId card;
+        if (promoted != NO_CARD) {
+            card = promoted;
+            promoted = NO_CARD;
+        } else {
+            card = take_lowest(moves);
+        }
 
         State next = st;
         next.hands[seat] &= ~card_bit(card);
@@ -307,6 +393,11 @@ void configure(Ctx& ctx, int nil_seat, const SearchOptions& opts,
     ctx.value_is_nil_tricks =
         weights.primary == 1 && weights.secondary == 0 && weights.tertiary == 0;
     ctx.static_bounds = opts.use_static_bounds;
+    // Both halves matter.  MODE_FULL never reorders whatever the caller asked
+    // for, because it cannot gain from it and would lose the oracle check by
+    // doing it; and within MODE_FAST the caller can still switch ordering off
+    // to get the control arm.
+    ctx.order_moves = opts.order_moves && opts.mode == MODE_FAST;
     ctx.tt_tag = opts.mode == MODE_FAST ? TAG_FAST : TAG_FULL;
 
     if (opts.use_memo && opts.tt_megabytes > 0) {

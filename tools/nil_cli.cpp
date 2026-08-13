@@ -54,6 +54,9 @@ void usage(const char* argv0) {
         << "  --no-static             do not settle a position by proof; search for\n"
         << "                          the answer instead (same answer, more nodes;\n"
         << "                          fast mode only)\n"
+        << "  --no-ordering           try moves in canonical order rather than a\n"
+        << "                          promising-first one (same answer, more nodes;\n"
+        << "                          fast mode only)\n"
         << "  --tt-mb <n>             transposition table size in MiB          [32]\n"
         << "  --tt-stats              also report transposition table behaviour\n"
         << "  --compact               print only the machine-readable result\n"
@@ -131,6 +134,8 @@ int main(int argc, char** argv) {
             opts.collapse_equivalents = false;
         } else if (arg == "--no-static") {
             opts.use_static_bounds = false;
+        } else if (arg == "--no-ordering") {
+            opts.order_moves = false;
         } else if (arg == "--tt-mb") {
             std::string mb;
             if (!need_value(argc, argv, i, "--tt-mb", mb)) return 2;

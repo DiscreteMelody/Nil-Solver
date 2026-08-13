@@ -160,6 +160,16 @@ extern "C" {
  * is a diagnostic, and it is slower.  Inert without NIL_FLAG_FAST_MODE, which
  * is the only mode the proofs apply to. */
 #define NIL_FLAG_NO_STATIC_BOUNDS 0x100u
+/* Try moves in the canonical enumeration order rather than a promising-first
+ * one.  Under NIL_FLAG_FAST_MODE the solver orders moves by what the nil
+ * question rewards -- shedding the nil bidder's dangerous cards, attacking the
+ * suits it is short in -- and this flag turns that off.  Same answer either
+ * way: ordering changes which cutoff the search finds first and nothing else.
+ * It is a diagnostic and a control arm, and it is slower.  Inert without
+ * NIL_FLAG_FAST_MODE, which is the only mode that orders: full mode searches
+ * between sentinels, never cuts, and so has nothing to gain and a principal
+ * variation to lose. */
+#define NIL_FLAG_NO_ORDERING 0x200u
 
 /* Cards per hand the solver will attempt without NIL_FLAG_FORCE_LARGE. */
 #define NIL_CARD_LIMIT 9

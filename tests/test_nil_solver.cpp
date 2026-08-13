@@ -1016,6 +1016,86 @@ int main(int argc, char** argv) {
         }
     }
 
+    std::cout << "Move ordering control arm\n";
+    {
+        // Patch 15 ships the switch, not the heuristics.  Everything below
+        // therefore pins the shape rather than a speed-up, which is the same
+        // thing patch 9 did for the mode split one patch ahead of alpha-beta:
+        // settle the flag, the ABI bit and the differential while they are
+        // still cheap to settle, so that item 6a has nowhere to hide.
+        //
+        // When 6a lands, the two "identical" checks below become "the boolean
+        // is identical and the node count is not", and THAT is the differential
+        // this section exists for.  Until then they say the flag is plumbed all
+        // the way through and changes nothing, which is exactly true.
+        Rng rng;
+        int checked = 0;
+        int disagreed = 0;
+        long long ordered_nodes = 0;
+        long long canonical_nodes = 0;
+        for (int deal = 0; deal < 12; ++deal) {
+            const Position pos = random_deal(rng, 6);
+            for (const char* seat : SEAT_NAMES) {
+                SearchOptions on;
+                on.mode = nil::MODE_FAST;
+                SearchOptions off = on;
+                off.order_moves = false;
+                const Solution a = must_solve(pos, seat, on);
+                const Solution b = must_solve(pos, seat, off);
+                ++checked;
+                if (a.nil_fails != b.nil_fails) ++disagreed;
+                ordered_nodes += static_cast<long long>(a.nodes);
+                canonical_nodes += static_cast<long long>(b.nodes);
+            }
+        }
+        check("move ordering never changes the boolean", disagreed, 0);
+        check("and that sweep actually ran", checked, 48);
+        // Ordering may only ever remove work.  It reorders the moves a node
+        // looks at; it never removes one, so a cutoff it fails to find sooner
+        // is a cutoff the canonical order would not have found either.
+        check("move ordering never costs nodes", ordered_nodes <= canonical_nodes, true);
+        // Patch 15 shipped the arm inert and this line read "and today it saves
+        // none, because 6a has not landed".  6a landed; this is what it became.
+        check("and 6a saves some", ordered_nodes < canonical_nodes, true);
+
+        {
+            // MODE_FULL must ignore the request entirely -- not because the
+            // caller is expected to leave the flag alone, but because
+            // configure() ands it with the mode.  Full mode's node count is a
+            // fixed point and its move choice is checked against the oracle;
+            // neither may move because someone passed a fast-mode switch.
+            const Position pos = make_position("N:A2.K3.. .A4.K5. Q6..J8. T9.T9..", "N", true);
+            SearchOptions on;
+            SearchOptions off = on;
+            off.order_moves = false;
+            const Solution a = must_solve(pos, "N", on);
+            const Solution b = must_solve(pos, "N", off);
+            check("full mode ignores the ordering switch: value", a.value, b.value);
+            check("full mode ignores the ordering switch: nodes", a.nodes, b.nodes);
+            check("full mode ignores the ordering switch: PV",
+                  nil::format_pv_compact(a) == nil::format_pv_compact(b), true);
+        }
+        {
+            // The C ABI carries the off switch too, on the NO_COLLAPSE and
+            // NO_STATIC_BOUNDS model, and the boolean is the same through it.
+            char err[256] = {0};
+            nil_result on;
+            nil_result off;
+            const uint32_t base = NIL_FLAG_SPADES_BROKEN | NIL_FLAG_FAST_MODE;
+            check("ABI: ordering on",
+                  static_cast<long long>(nil_solve("N:KQ... A2... J3... T4...", NIL_SEAT_EAST, "",
+                                                   NIL_SEAT_NORTH, base, &on, err, sizeof(err))),
+                  0LL);
+            check("ABI: ordering off",
+                  static_cast<long long>(nil_solve("N:KQ... A2... J3... T4...", NIL_SEAT_EAST, "",
+                                                   NIL_SEAT_NORTH, base | NIL_FLAG_NO_ORDERING,
+                                                   &off, err, sizeof(err))),
+                  0LL);
+            check("ABI: the switch does not move the answer",
+                  static_cast<long long>(on.nil_fails), static_cast<long long>(off.nil_fails));
+        }
+    }
+
     std::cout << "Compact state key\n";
     {
         // Absolute ranks do not matter, only the order the four hands hold

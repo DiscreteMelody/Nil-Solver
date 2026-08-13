@@ -364,6 +364,8 @@ void usage(const char* argv0) {
               << "  --no-collapse     generate every legal card rather than one per class\n"
               << "  --no-static       do not settle positions by proof (fast mode only)\n"
               << "                    of rank-equivalent ones (same answer, many more nodes)\n"
+              << "  --no-ordering     try moves in canonical order rather than a\n"
+              << "                    promising-first one (fast mode only)\n"
               << "  --tt-stats        also report transposition table behaviour\n"
               << "  --quiet           only print the summary and any failures\n"
               << "\n"
@@ -389,6 +391,10 @@ std::string memo_label(const nil::SearchOptions& opts) {
     // suffix would be noise on a full row; there it is left off rather than
     // splitting the history into two groups that hold identical numbers.
     if (!opts.use_static_bounds && opts.mode == nil::MODE_FAST) suffix += "+nostatic";
+    // And again for move ordering, on the same grounds and with the same
+    // fast-mode guard: ordering is inert in full mode, so the suffix there
+    // would split the history into two groups holding identical numbers.
+    if (!opts.order_moves && opts.mode == nil::MODE_FAST) suffix += "+noordering";
     if (!opts.use_memo || opts.tt_megabytes == 0) return "off" + suffix;
     return std::to_string(opts.tt_megabytes) + "mb" + suffix;
 }
@@ -458,6 +464,8 @@ int main(int argc, char** argv) {
             opts.collapse_equivalents = false;
         } else if (arg == "--no-static") {
             opts.use_static_bounds = false;
+        } else if (arg == "--no-ordering") {
+            opts.order_moves = false;
         } else if (arg == "--mode" && has_next) {
             const std::string mode = argv[++i];
             if (mode == "full") {

@@ -35,6 +35,8 @@ is what the pruned answer is checked against.
 | ✅ | Boolean / lexicographic mode split | patch 9 | `MODE_FAST` zeroes the tie-break weights and gives the primary weight 1, so the value is the nil bidder's trick count and the window is literally `[0, 1]`; no speed change yet, by design |
 | ✅ | Nil-specialised alpha-beta / AND-OR search | patch 10 | null window `[0, 1]` in `MODE_FAST`, fail-soft, bounds in the table; −12.8x nodes at 4 cards rising to −303x at 9, and 13-card hands answer in a median 150 ms. `MODE_FULL` searches between unreachable sentinels and is unchanged node for node |
 | ✅ | Nil-safe and nil-set static bounds | patch 11 | two proofs at a trick boundary, `MODE_FAST` only: −28.5% nodes on the corpus, −3% to −12% at 13 cards. Wall time −6.5% to −10.7% at 13 cards; throughput unmoved. `MODE_FULL` unchanged node for node |
+| ✅ | Move ordering: the nil bidder following suit (6a) | patch 16 | promote the highest card that loses to the current best. −45.7% and −40.8% nodes at 13 cards on two of three seeds, **+1.3% on the third**, −65.2% at 11 cards. Throughput flat, so wall time tracks. `MODE_FULL` unchanged node for node |
+| ✅ | A `--no-ordering` control arm | patch 15 | `SearchOptions::order_moves`, `NIL_FLAG_NO_ORDERING`, `--no-ordering` on both tools, `+noordering` on fast rows, and a `corpus_ordering` ctest. Inert by design — the switch, the ABI bit and the differential all land before 6a has anywhere to hide. Zero nodes changed |
 | ✅ | Transposition-table move ordering | patch 12 | **closed as refuted, not implemented.** The population is empty and provably so: `tt_partial` ≡ 0, so no node ever holds a stored move and still has moves to search. Zero nodes changed. Shipped instead: `--tt-stats` on both tools, and the premise pinned by a swept selftest |
 
 Patch 7 measured against the 560-position corpus:
@@ -466,9 +468,15 @@ them one at a time:
 
 | | patch | what it orders |
 |---|---|---|
-| **6a** | first, with item 7's control arm | the nil bidder |
-| **6b** | second | the opponents on lead |
-| **6c** | third | the cover partner |
+| **6a** | ✅ patch 16 | the nil bidder **following suit** |
+| **6b** | next | the opponents on lead |
+| **6c** | after that | the cover partner |
+| **6d** | last | the nil bidder **off-suit** — discarding, and choosing a suit to lead |
+
+6a and 6d split the nil bidder in two because they need different machinery.
+Following suit, "the highest card that can still lose" is a bit scan against the
+card currently winning. Off-suit it is a comparison ACROSS suits, and that needs
+a measure of how dangerous a holding is — see 6d.
 
 Shipped together, a 20% win and a 20% loss cancel and the entry records
 "roughly nothing" about three separate ideas. That is not a hypothetical worry
@@ -502,7 +510,7 @@ are three roles here, not two:
 - **The opponents on lead (6b).** Prefer suits where the nil bidder is short or
   holds a card that can be trapped.
 
-- **The nil bidder (6a).** Prefer *the highest card that can still lose*. That one
+- **The nil bidder (6a following suit, 6d off-suit).** Prefer *the highest card that can still lose*. That one
   rule covers every situation it can be in:
 
   - *Following, with a card on the trick it cannot beat.* The highest card
@@ -530,6 +538,45 @@ are three roles here, not two:
   hold a higher card of the suit, or is any later seat void in it and holding a
   spade.
 
+- **The nil bidder off-suit (6d).** Void in the led suit it discards; on lead it
+  picks a suit. Both want the same thing the other way up — discard from the
+  most dangerous suit, lead from the safest — so both need one measure of how
+  dangerous a holding is, and rank is not it.
+
+  **Danger is ducking supply, not rank.** The 4♥ with only the 2♥ and 3♥
+  outstanding is lethal: nothing sits above it, so it wins the moment hearts are
+  led. The A♥ held with the 2♥, 4♥ and 6♥ is comparatively mild: hearts must be
+  led four times before the ace is ever reached.
+
+  **The measure is already in the codebase.** `nil_must_take_a_trick` walks down
+  from the ace keeping `held` (the nil bidder's cards at or above the current
+  rank, call it *j*) and `above` (everyone else's strictly above the *j*-th),
+  and fires when `held > above`. That is Hall's condition: the nil bidder
+  escapes a suit only if each of its top *j* cards can be matched to a distinct
+  higher outstanding card, so it is safe exactly when `above_j ≥ j` for every
+  *j*. Danger is the slack in that inequality, and the count of cards below the
+  first deficit is how many leads it takes to reach the trouble:
+
+  ```
+  danger(suit) = min { m - j : above_j < j }        // no deficit => safe
+  ```
+
+  with *m* the nil bidder's cards in the suit and *j* indexing from the top.
+  Smaller is worse. The 4♥ gives `1 - 1 = 0`, maximal. The ace gives `4 - 1 = 3`,
+  three leads of ducking supply first. One downward bit walk per suit, and it is
+  the walk `bounds.hpp` already does — **share it rather than reimplement it**,
+  on the same grounds as the note that `nil_cannot_be_forced` calls
+  `relevant_cards` instead of re-deriving the union. One definition of "how
+  covered is this holding", not two that can drift.
+
+  *One caveat to label rather than discover.* The Hall count is a proof in
+  spades and only a heuristic in a side suit, because the proof rests on every
+  card being played and a spade losing only to a higher spade. In a side suit a
+  card can be ruffed, and the suit may simply never be led enough times for the
+  trouble to be reached. Both escapes help the nil bidder, so the count
+  **overstates** danger off-trump — the right direction of error for an
+  ordering heuristic, which can then only misorder and never miscount.
+
 - **The cover partner (6c).** Prefer plays that take the trick over the nil bidder's
   head. Failing that, shed the *lowest* card that cannot win — the opposite of
   the nil bidder, and for the same reason read the other way round: the partner
@@ -551,11 +598,67 @@ therefore sorts class representatives, not cards. Where the safe shed and the
 high card fall in one class there is nothing to choose — they are one move under
 two names, and the reduction has already said so.
 
-Item 7's control arm ships with 6a.
+Item 7's control arm shipped ahead of 6a, in patch 15.
 
-### 7. A `--no-ordering` control arm — ⭐⭐⭐⭐
+**What 6a bought, and the part that is not a clean win.** Both columns are the
+same binary with `--no-ordering` as the only difference, so this is a
+differential rather than a comparison across builds.
 
-**Re-scoped, and much smaller than it was. Ship it before 6a, not with it.**
+| workload | canonical | 6a | change |
+|---|---:|---:|---:|
+| corpus, all 560, fast | 50,982 | 48,730 | −4.4% |
+| random, 9 cards (20, seed 1) | 732,753 | 678,757 | −7.4% |
+| random, 11 cards (10, seed 3) | 135,880,493 | 47,215,409 | **−65.2%** |
+| random, 13 cards (20, seed 3) | 50,241,863 | 27,303,533 | −45.7% |
+| random, 13 cards (20, seed 11) | 141,136,295 | 142,923,616 | **+1.3%** |
+| random, 13 cards (20, seed 42) | 160,744,139 | 95,228,547 | −40.8% |
+
+Across the three 13-card seeds together, 352,122,297 → 265,455,696, −24.6%.
+Throughput is flat — 3.50M against 3.54M nodes/sec at seed 3, 3.43M against
+3.48M at seed 42, a 1% cost — so the node saving converts almost entirely into
+wall time. Seed 3 went 14.2 s → 7.8 s and seed 42 46.3 s → 27.8 s.
+
+**Read seed 11 rather than the average.** It is not noise and it is not a
+measurement error; it is what a heuristic looks like. Per deal:
+
+| deal | canonical | 6a | change |
+|---|---:|---:|---:|
+| r13-0006 | 112,006,077 | 95,645,704 | −14.6% |
+| r13-0011 | 11,442,381 | 34,396,982 | **+201%** |
+| r13-0004 | 12,480,068 | 8,153,933 | −34.7% |
+| r13-0002 | 2,284,511 | 2,031,371 | −11.1% |
+
+Three of the four biggest deals improve and one triples, and the one that
+triples is large enough in absolute terms to swallow the other three. That is
+the honest shape of this optimisation: a big expected win with a real tail, and
+it is a different shape from everything above it on this list. Patches 8, 10 and
+11 could not make any position worse — the reduction was an equivalence, the
+window never narrowed, the proofs were one-sided. **6a is the first change that
+can cost a particular deal work**, because guessing which move to search first
+is a guess, and on r13-0011 it guesses wrong for long enough to matter.
+
+Nothing about that makes it unsafe. Ordering removes no move, so every answer is
+identical — `corpus_ordering` and the 48-solve selftest sweep both check exactly
+that, and `MODE_FULL` still comes in at 2,647,731 nodes. What it means is that
+this entry cannot be quoted as a single number, and that a regression on one
+deal is not by itself evidence of a bug.
+
+*Two things 6a deliberately does not do,* both left out so that its number
+covers one idea:
+
+- **No speculative sheds.** A card ABOVE the current best sheds more, and the
+  earlier version of this entry said to try those next. It is a worse bet than
+  it looks: such a card only loses if a later seat covers it, and a later
+  OPPONENT will decline to, because letting the nil bidder win is the whole of
+  what the opponent wants. The speculative shed is good only when the covering
+  partner is still to play, which is a lookahead 6a does not do. Worth
+  measuring, after 6b and 6c, as a refinement rather than as part of this.
+- **No demotion of certain winners.** They want to be last and already are: they
+  are the high cards of the suit and the canonical order is ascending.
+
+### 7. ~~A `--no-ordering` control arm~~ — ⭐⭐⭐⭐ — **done, patch 15**
+
+**Re-scoped, then landed. Shipped before 6a, not with it.**
 
 This item used to ask for a `--canonical` mode: a flag disabling every
 principal-variation-affecting heuristic and falling back to canonical
@@ -579,7 +682,7 @@ by construction rather than by a flag someone could fail to set, which is the
 property patch 10 went out of its way to buy. A `--canonical` flag would be a
 second, weaker spelling of it.
 
-*What is still wanted, and what 6a must not ship without.* A control arm, on the
+*What was still wanted, and what shipped in patch 15.* A control arm, on the
 `--no-collapse` and `--no-static` model, because ordering must be provably
 answer-neutral and the way this project shows that is a differential on one
 binary:
@@ -594,6 +697,19 @@ binary:
   mode with ordering off, against the oracle's recorded answers, while
   `corpus_modes` runs it with ordering on. A heuristic that has started changing
   answers can then only agree with both by being unreachable.
+
+All four landed, and the gate is `opts.order_moves && opts.mode == MODE_FAST`.
+That reads the MODE rather than the weights, which is a deliberate departure
+from `gains_nonnegative` and `value_is_nil_tricks` and is commented as such in
+`search.cpp`: what makes reordering unsafe is not a property of the objective
+but the fact that `MODE_FULL`'s chosen move is an output the oracle checks card
+for card. A selftest holds full mode's value, node count and PV identical across
+both settings of the flag.
+
+The arm is inert until 6a, on the patch 9 model — that patch bought no speed
+either and was the shape item 3 needed, settled while it was still cheap. The
+two selftest lines that today read "ordering saves no nodes" become the real
+differential the moment 6a lands.
 
 *What is not wanted yet.* `--canonical` itself. It becomes necessary the moment
 anything wants to order moves in **full** mode — a killer table shared across
@@ -739,7 +855,7 @@ item 7's arrival is the natural moment to re-baseline full mode in any case.
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 → 6a → 6b → 6c → 15 → 9 → 8 → 10 → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b → 6c → 6d → 15 → 9 → 8 → 10 → measure → 11..14
 ```
 
 `⊘` is item 5: closed without being built, because it has no population. See its
@@ -759,8 +875,10 @@ exist: `MODE_FULL` is the canonical mode, structurally, so what item 7 still
 owes is a control arm rather than a second mode, and a control arm is cheap
 enough to land first and have ordering measured against from its first commit.
 
-Item 6 is then three patches, one per seat, because three heuristics measured
-together are three heuristics not measured at all.
+Item 6 is then four patches, because heuristics measured together are
+heuristics not measured at all — and 6a proves the point: it is a 45% win on one
+seed, a 41% win on another and a 1% loss on a third, and bundling it with 6b
+would have made all three unreadable.
 
 The sequence below item 3 is unchanged but its purpose is not. It was a plan for
 reaching 13 cards; 13 cards is reached. Read items 5 and 6 as work on the tail —
@@ -842,4 +960,5 @@ column for the same reason: it multiplies the node count, and it must not read
 as a regression against a normal run. `--no-static` appends `+nostatic` on the
 same grounds, and only on fast rows, since the proofs are inert elsewhere and
 the suffix would split the full-mode history into two groups holding identical
-numbers.
+numbers. `--no-ordering` appends `+noordering` under exactly the same rule and
+for exactly the same reason.
