@@ -99,10 +99,14 @@ if(NIL_SOLVER_BUILD_TESTS)
   # nil_oracle.py once, and replaying them needs neither Python nor the oracle.
   set(NIL_CORPUS "${CMAKE_CURRENT_SOURCE_DIR}/tests/corpus/positions.txt")
   if(NIL_SOLVER_BUILD_BENCH AND EXISTS "${NIL_CORPUS}")
-    # --check-pv is on while the search is still exhaustive: the PV is a much
-    # stronger regression signal than the value alone.  Drop it when move
-    # ordering lands, because reordering legitimately changes which of several
-    # equal-valued cards gets picked.
+    # --check-pv is on here, and stays on.  The PV is a much stronger regression
+    # signal than the value alone, and this test runs MODE_FULL, which searches
+    # between sentinels and therefore never cuts and never reorders.  An earlier
+    # version of this comment said to drop the flag when move ordering lands;
+    # that was written before the mode split and it is wrong.  Ordering is
+    # confined to MODE_FAST (roadmap item 6), which produces no PV to check, so
+    # nothing here has to be given up for it.  Should ordering ever reach full
+    # mode, item 7's `--canonical` is what this test would move behind.
     add_test(NAME corpus
              COMMAND nil_bench --corpus "${NIL_CORPUS}" --check-pv --quiet --slowest 0)
     # Fast subset for the inner loop: ctest -R corpus_quick

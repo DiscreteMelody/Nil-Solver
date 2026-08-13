@@ -367,9 +367,11 @@ void usage(const char* argv0) {
               << "  --tt-stats        also report transposition table behaviour\n"
               << "  --quiet           only print the summary and any failures\n"
               << "\n"
-              << "--check-pv is off by default on purpose: move ordering will change\n"
-              << "which of several equal-valued cards the search picks, and that is\n"
-              << "not a regression.  Turn it on while the search is still exhaustive.\n";
+              << "--check-pv compares against the PV a corpus row recorded, so it means\n"
+              << "something only in full mode; fast mode produces no principal variation.\n"
+              << "It is off by default because most runs are not corpus runs.  Move\n"
+              << "ordering does NOT retire it: ordering is confined to --mode fast, and\n"
+              << "full mode neither cuts nor reorders.\n";
 }
 
 // Node counts are only comparable between runs that used the same table, so the

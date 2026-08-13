@@ -457,7 +457,37 @@ every cutoff the search takes is a cutoff it could have taken sooner.
 
 Note that ordering only affects `MODE_FAST`, since `MODE_FULL` does not cut and
 never will. That is a useful narrowing: none of the heuristics below have to be
-safe for the principal variation, only for the boolean.
+safe for the principal variation, only for the boolean. It is also why item 7
+turned out to be a control arm rather than a mode — see that entry.
+
+**Three roles, three patches.** The heuristics below are independent, they pull
+on different seats, and there is no reason to expect them to pay equally. Ship
+them one at a time:
+
+| | patch | what it orders |
+|---|---|---|
+| **6a** | first, with item 7's control arm | the nil bidder |
+| **6b** | second | the opponents on lead |
+| **6c** | third | the cover partner |
+
+Shipped together, a 20% win and a 20% loss cancel and the entry records
+"roughly nothing" about three separate ideas. That is not a hypothetical worry
+on this list: item 4 came in at a third of its prediction, item 5 at exactly
+zero, and both were only legible because they were measured alone. Take 6a
+first — it is the clearest rule and probably the largest, since the nil bidder's
+own card leaving its hand is what makes the safe-nil proof become true.
+
+Two constraints that apply to all three:
+
+- **A partial order, not a sort.** The move loop is a bitmask and
+  `take_lowest`, which costs nothing. Promoting one or two candidates to the
+  front keeps that shape. Building an array and sorting it at every node is how
+  this becomes the third entry in *Evaluated and rejected*: side-suit
+  canonicalization died at 12% of throughput for 5-8% of nodes, and the
+  mid-trick proof at 5.9% of wall time for 0.87%. Neither lost on nodes.
+- **The control arm ships first, not retrofitted.** Every measurement here
+  should be a differential on one binary with one flag between the two columns,
+  the way patch 11's was.
 
 For the nil question specifically, the orderings that matter are not the usual
 trick-maximizing ones.
@@ -469,10 +499,10 @@ and exactly backwards for the nil bidder, whose whole problem is getting rid of
 high cards. The two are separate entities with opposite preferences, and there
 are three roles here, not two:
 
-- **Opponents leading.** Prefer suits where the nil bidder is short or holds a
-  card that can be trapped.
+- **The opponents on lead (6b).** Prefer suits where the nil bidder is short or
+  holds a card that can be trapped.
 
-- **The nil bidder.** Prefer *the highest card that can still lose*. That one
+- **The nil bidder (6a).** Prefer *the highest card that can still lose*. That one
   rule covers every situation it can be in:
 
   - *Following, with a card on the trick it cannot beat.* The highest card
@@ -500,7 +530,7 @@ are three roles here, not two:
   hold a higher card of the suit, or is any later seat void in it and holding a
   spade.
 
-- **The cover partner.** Prefer plays that take the trick over the nil bidder's
+- **The cover partner (6c).** Prefer plays that take the trick over the nil bidder's
   head. Failing that, shed the *lowest* card that cannot win — the opposite of
   the nil bidder, and for the same reason read the other way round: the partner
   needs its high cards to keep covering with.
@@ -521,27 +551,67 @@ therefore sorts class representatives, not cards. Where the safe shed and the
 high card fall in one class there is nothing to choose — they are one move under
 two names, and the reduction has already said so.
 
-Ship this together with item 7.
+Item 7's control arm ships with 6a.
 
-### 7. A `--canonical` verification mode — ⭐⭐⭐⭐
+### 7. A `--no-ordering` control arm — ⭐⭐⭐⭐
 
-**Ship with item 6, not after it.**
+**Re-scoped, and much smaller than it was. Ship it before 6a, not with it.**
 
-Item 6 destroys the card-for-card oracle check by design, and that check is
-still the strongest evidence the solver has — patch 10 deliberately did not
-spend it, and full mode came through node for node. Add a flag that disables every
-principal-variation-affecting heuristic — move ordering, killers, history — and
-falls back to the canonical enumeration order, so `crosscheck.py` keeps running
-against a mode that is still comparable. Let the fast path diverge freely.
+This item used to ask for a `--canonical` mode: a flag disabling every
+principal-variation-affecting heuristic and falling back to canonical
+enumeration order, so `crosscheck.py` would keep running against something
+comparable. It opened by asserting that item 6 destroys the card-for-card oracle
+check by design.
 
-Without this, the differential test disappears exactly when the search becomes
-complicated enough to need it.
+**That is no longer true, and it stopped being true in patch 10.** Checked
+rather than assumed:
 
-*Note:* the equivalent-card reduction does **not** belong behind this flag. It
-preserves the PV, so canonical mode should keep it on and stay fast enough to be
-run in bulk. `--no-collapse` already exists as a separate switch for the one
-question it answers — whether the reduction itself is sound — and is not part of
-this mode.
+- `crosscheck.py` passes no `--mode`, so the oracle diff runs `MODE_FULL`.
+- The `corpus` ctest's `--check-pv` likewise runs `MODE_FULL`.
+- Item 6 is confined to `MODE_FAST`, because `MODE_FULL` searches between
+  sentinels, never cuts, and therefore gains nothing from ordering.
+- `MODE_FAST` reports no principal variation at all.
+
+So ordering confined to fast mode changes no observable output anywhere — not a
+value, not a PV, not a boolean — only node counts. The oracle check is not
+destroyed; it is not touched. **`MODE_FULL` already is the canonical mode**, and
+by construction rather than by a flag someone could fail to set, which is the
+property patch 10 went out of its way to buy. A `--canonical` flag would be a
+second, weaker spelling of it.
+
+*What is still wanted, and what 6a must not ship without.* A control arm, on the
+`--no-collapse` and `--no-static` model, because ordering must be provably
+answer-neutral and the way this project shows that is a differential on one
+binary:
+
+- `SearchOptions::order_moves`, `--no-ordering` on `nil_cli` and `nil_bench`,
+  `NIL_FLAG_NO_ORDERING` in the C ABI.
+- `+noordering` appended to `nil_bench`'s memo column, on fast rows only —
+  ordering is inert in full mode, and the suffix would otherwise split the
+  full-mode history into two groups holding identical numbers. Same reasoning
+  as `+nostatic`.
+- A `corpus_ordering` ctest, mirroring `corpus_static`: the whole corpus in fast
+  mode with ordering off, against the oracle's recorded answers, while
+  `corpus_modes` runs it with ordering on. A heuristic that has started changing
+  answers can then only agree with both by being unreachable.
+
+*What is not wanted yet.* `--canonical` itself. It becomes necessary the moment
+anything wants to order moves in **full** mode — a killer table shared across
+modes, an ordering that reads the packed value, anything that makes `MODE_FULL`
+pick a different card among equals. Nothing does today. Keep the idea; do not
+build the flag until something needs it.
+
+*Note, carried forward unchanged:* the equivalent-card reduction does **not**
+belong behind any of this. It preserves the PV, and `--no-collapse` already
+exists as a separate switch for the one question it answers — whether the
+reduction itself is sound.
+
+*Two stale comments this item leaves behind, fixed in the same patch.*
+`CMakeLists.txt` told the next reader to drop `--check-pv` when move ordering
+lands, and `nil_bench --help` said ordering would change which equal-valued card
+the search picks. Both were written before the mode split, both are now wrong,
+and the first would have retired the strongest regression test in the project
+for no reason at all.
 
 ### 8. Quick-trick / forced-trick analysis — ⭐⭐
 
@@ -669,7 +739,7 @@ item 7's arrival is the natural moment to re-baseline full mode in any case.
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → (6 + 7 together) → 15 → 9 → 8 → 10 → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 → 6a → 6b → 6c → 15 → 9 → 8 → 10 → measure → 11..14
 ```
 
 `⊘` is item 5: closed without being built, because it has no population. See its
@@ -679,9 +749,18 @@ two look adjacent and are not.
 Item 1 went first because it was the last PV-preserving win, and it is banked.
 Item 2 is banked too and bought nothing on its own, which was the plan: it is
 the shape item 3 needed, settled while it was still cheap to settle — and it
-paid for itself many times over the moment item 3 landed on top of it. Items 6
-and 7 together, because shipping move ordering without a verification fallback
-trades away the solver's best evidence for speed.
+paid for itself many times over the moment item 3 landed on top of it.
+
+Item 7 now comes *before* item 6 rather than beside it. This used to read "6 and
+7 together, because shipping move ordering without a verification fallback
+trades away the solver's best evidence for speed" — which was right about the
+principle and wrong about what it costs. The fallback turned out to already
+exist: `MODE_FULL` is the canonical mode, structurally, so what item 7 still
+owes is a control arm rather than a second mode, and a control arm is cheap
+enough to land first and have ordering measured against from its first commit.
+
+Item 6 is then three patches, one per seat, because three heuristics measured
+together are three heuristics not measured at all.
 
 The sequence below item 3 is unchanged but its purpose is not. It was a plan for
 reaching 13 cards; 13 cards is reached. Read items 5 and 6 as work on the tail —
