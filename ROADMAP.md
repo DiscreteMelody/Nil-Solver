@@ -35,6 +35,7 @@ is what the pruned answer is checked against.
 | ✅ | Boolean / lexicographic mode split | patch 9 | `MODE_FAST` zeroes the tie-break weights and gives the primary weight 1, so the value is the nil bidder's trick count and the window is literally `[0, 1]`; no speed change yet, by design |
 | ✅ | Nil-specialised alpha-beta / AND-OR search | patch 10 | null window `[0, 1]` in `MODE_FAST`, fail-soft, bounds in the table; −12.8x nodes at 4 cards rising to −303x at 9, and 13-card hands answer in a median 150 ms. `MODE_FULL` searches between unreachable sentinels and is unchanged node for node |
 | ✅ | Nil-safe and nil-set static bounds | patch 11 | two proofs at a trick boundary, `MODE_FAST` only: −28.5% nodes on the corpus, −3% to −12% at 13 cards. Wall time −6.5% to −10.7% at 13 cards; throughput unmoved. `MODE_FULL` unchanged node for node |
+| ⊘ | Move ordering: the cover partner (6c) | patch 18 | **evaluated and rejected.** Covering over the nil bidder's head is a no-op (−16 nodes on 13 million); taking the trick before it plays helps at ≤11 cards and is +18% to +108% worse on all three 13-card seeds. Nothing shipped |
 | ✅ | Move ordering: the opponents on lead (6b) | patch 17 | attack the suit whose holding runs short of covers soonest, lowest card. −21.5% nodes on top of 6a across the three 13-card seeds, and it **repairs 6a's seed-11 regression** — every recorded workload is now at or better than canonical. Throughput unmoved |
 | ✅ | Move ordering: the nil bidder following suit (6a) | patch 16 | promote the highest card that loses to the current best. −45.7% and −40.8% nodes at 13 cards on two of three seeds, **+1.3% on the third**, −65.2% at 11 cards. Throughput flat, so wall time tracks. `MODE_FULL` unchanged node for node |
 | ✅ | A `--no-ordering` control arm | patch 15 | `SearchOptions::order_moves`, `NIL_FLAG_NO_ORDERING`, `--no-ordering` on both tools, `+noordering` on fast rows, and a `corpus_ordering` ctest. Inert by design — the switch, the ABI bit and the differential all land before 6a has anywhere to hide. Zero nodes changed |
@@ -187,6 +188,47 @@ evicting the hot ones. **Read the paper's table advice as conditioned on its
 iterative top level.** The same caution applies to item 12.
 
 *One variant did survive, and it is not rejected — it is item 15 below.*
+
+**Move ordering for the cover partner (6c).** The third phase of item 6, built
+and measured against 6a + 6b, and the first thing on this list rejected on
+*nodes* rather than on throughput. Two arms, because the entry described two
+different plays and they are not the same bet:
+
+| workload | 6a + 6b | cover only | cover **and** protect |
+|---|---:|---:|---:|
+| corpus, 560, fast | 47,877 | 47,877 | 44,890 (−6.2%) |
+| random, 9c (20, seed 1) | 564,756 | 564,756 | 542,356 (−4.0%) |
+| random, 11c (10, seed 3) | 47,219,449 | — | 34,214,794 (−27.5%) |
+| random, 13c (20, seed 3) | 12,952,377 | 12,952,361 | 15,327,933 (**+18.3%**) |
+| random, 13c (20, seed 11) | 124,650,866 | — | 176,524,405 (**+41.6%**) |
+| random, 13c (20, seed 42) | 70,710,823 | — | 147,254,248 (**+108.2%**) |
+
+**Covering over the nil bidder's head does nothing.** Sixteen nodes on thirteen
+million, and byte-identical totals on the corpus and at 9 cards. The play is
+correct and it is what a human does; it is simply not *information the search
+lacked*. Two reasons, and both are the shape of a promotion that was already
+free: when the nil bidder is winning mid-trick and the partner cannot beat it
+the node fails high immediately and is never ordered at all, and when the
+partner can beat it the cheapest cover is often already the canonically first
+card. A promotion that agrees with the canonical order is a branch and a loop
+for nothing.
+
+**Taking the trick before the nil bidder plays is worth a great deal up to 11
+cards and is a disaster at 13.** −27.5% at 11 cards, and then +18%, +42% and
++108% on the three 13-card seeds — 208,314,066 → 339,106,586 across them, +62.8%.
+Not shipped, obviously; but the transition is sharp and it is not explained,
+which is worth saying plainly rather than dressing up. The plausible story is
+that the partner's high cards *are* its covering resource, so spending one early
+to take a trick the nil bidder was not going to lose is precisely wrong once
+enough tricks remain for the cover to be needed again — and at 9 to 11 cards
+there is no "again". That predicts the sign flip but not how abrupt it is, and
+nothing here tests it.
+
+*Where that leaves the partner.* Unordered, and 6a and 6b are why that is
+tolerable: between them they order the seat that is in trouble and the seat
+attacking it, and the partner's move mostly matters through what those two do
+with it. Worth revisiting only with a rule that distinguishes a cheap take from
+an expensive one, since the arm that failed spends the cover unconditionally.
 
 ---
 
@@ -471,8 +513,8 @@ them one at a time:
 |---|---|---|
 | **6a** | ✅ patch 16 | the nil bidder **following suit** |
 | **6b** | ✅ patch 17 | the opponents on lead |
-| **6c** | next | the cover partner |
-| **6d** | last | the nil bidder **off-suit** — discarding, and choosing a suit to lead |
+| **6c** | ⊘ patch 18 | the cover partner — *measured, rejected, nothing shipped* |
+| **6d** | next | the nil bidder **off-suit** — discarding, and choosing a suit to lead |
 
 6a and 6d split the nil bidder in two because they need different machinery.
 Following suit, "the highest card that can still lose" is a bit scan against the
@@ -629,10 +671,14 @@ million). Not investigated. 6a already took that workload down by 65%, and a
 heuristic that finds nothing left to promote is the expected shape once another
 has already collapsed the tree.
 
-- **The cover partner (6c).** Prefer plays that take the trick over the nil bidder's
-  head. Failing that, shed the *lowest* card that cannot win — the opposite of
-  the nil bidder, and for the same reason read the other way round: the partner
-  needs its high cards to keep covering with.
+- ~~**The cover partner (6c).**~~ ⊘ *measured and rejected, patch 18.* Prefer
+  plays that take the trick over the nil bidder's head; failing that, shed the
+  lowest card that cannot win. Both halves turned out to be worth nothing, in
+  two different ways, and the measurements are under *Evaluated and rejected*.
+  Note in passing that the second half was never a heuristic at all: the
+  canonical order is ascending, so trying the lowest card that cannot win first
+  is what the search already does — the same free-by-construction effect that
+  keeps certain winners at the back in 6a.
 
 *This is ordering, not a reduction.* "Try these first" must not become "try only
 these". Dropping the low cards outright would be a claim that a lower card in
@@ -907,7 +953,7 @@ item 7's arrival is the natural moment to re-baseline full mode in any case.
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c → 6d → 15 → 9 → 8 → 10 → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d → 15 → 9 → 8 → 10 → measure → 11..14
 ```
 
 `⊘` is item 5: closed without being built, because it has no population. See its
