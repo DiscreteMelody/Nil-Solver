@@ -1142,19 +1142,25 @@ int main(int argc, char** argv) {
         check("and 6a saves some", ordered_nodes < canonical_nodes, true);
 
         {
-            // MODE_FULL must ignore the request entirely -- not because the
-            // caller is expected to leave the flag alone, but because
-            // configure() ands it with the mode.  Full mode's node count is a
-            // fixed point and its move choice is checked against the oracle;
-            // neither may move because someone passed a fast-mode switch.
+            // MODE_FULL used to ignore the request entirely, because ordering
+            // it would have moved a principal variation the oracle checks card
+            // for card.  Since patch 25 it orders like any other mode and
+            // re-derives the reported move canonically afterwards, so what is
+            // pinned here is what was always the point: the value and the LINE
+            // do not move, while the node count now may and should.
             const Position pos = make_position("N:A2.K3.. .A4.K5. Q6..J8. T9.T9..", "N", true);
             SearchOptions on;
             SearchOptions off = on;
             off.order_moves = false;
             const Solution a = must_solve(pos, "N", on);
             const Solution b = must_solve(pos, "N", off);
-            check("full mode ignores the ordering switch: value", a.value, b.value);
-            check("full mode ignores the ordering switch: nodes", a.nodes, b.nodes);
+            check("ordering does not move full mode's value", a.value, b.value);
+            // Deliberately no node-count assertion.  At the two-card position
+            // above, ordering has nothing to save and the canonical re-derivation
+            // still costs a few lookups, so the ordered run is legitimately the
+            // dearer one.  The saving is a property of deep positions and is
+            // measured in the benchmark, where it is 1.8x at thirteen cards;
+            // pinning a direction here would pin the wrong one.
             check("full mode ignores the ordering switch: PV",
                   nil::format_pv_compact(a) == nil::format_pv_compact(b), true);
         }

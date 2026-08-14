@@ -207,24 +207,24 @@ extern "C" {
  * and 0 still means no table at all. */
 #define NIL_TABLE_AUTO 0xFFFFFFFFu
 
-/* Let MODE_FULL order its moves, which it otherwise declines to do.
+/* Skip the canonical re-derivation of the reported move.
  *
- * Every VALUE is unchanged -- ordering is a pure reorder of the move list and
- * alpha-beta returns the same number whatever order it sees them in, which the
- * corpus checks on all 560 positions with this flag set.  Worth 2.3x on a hard
- * thirteen-card position and 1.2x to 3.0x elsewhere.
+ * MODE_FULL orders its moves as of patch 25 and then asks the position again,
+ * in canonical order, which of its moves achieves the value just returned --
+ * because ordering is a pure reorder, so the only thing it could ever have
+ * disturbed is which of several equally-optimal moves gets reported.  That
+ * re-derivation costs about 16% at thirteen cards.  This flag declines it.
  *
- * What moves is which of several EQUALLY OPTIMAL answers comes back, in three
- * places: the principal variation walks a different line, the move list names a
- * different card as the one achieving the value, and -- only when the nil is
- * already set and the tie-break minimises -- nil_tricks splits differently
- * between the bidder and its partner, because the value does not constrain that
- * split at all.  Per-card values, nil_fails, and the set of cards flagged best
- * are all unaffected.
+ * What moves without it: the principal variation walks a different line, and
+ * the move list names a different single card as achieving the position's
+ * value.  What does NOT move, with or without it: every value, every trick
+ * count, nil_fails, and the set of cards flagged best.  Where the value alone
+ * cannot pin nil_tricks -- with the nil already set and a minimising tie-break,
+ * which makes a nil trick worth exactly zero -- the re-derivation runs anyway
+ * and this flag does not reach it, because there it is the only thing making
+ * that field deterministic.
  *
- * So: set it when you want the numbers, leave it clear when you want the same
- * line the oracle picks.  nil_solve_pv ignores it, since a caller asking for a
- * line is asking for that one. */
+ * Ignored by nil_solve_pv: a caller asking for a line is asking for that one. */
 #define NIL_FLAG_FAST_LINE 0x1000u
 
 /* Cards per hand the solver will attempt without NIL_FLAG_FORCE_LARGE. */

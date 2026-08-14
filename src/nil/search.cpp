@@ -85,6 +85,11 @@ struct Ctx {
     // SearchOptions::narrow_window for why, and for why fast mode is unchanged
     // node for node rather than merely unchanged in its answers.
     bool narrow_window = true;
+
+    // Re-derive the reported move canonically after the search has found the
+    // value.  Set when ordering runs in MODE_FULL, which is the only situation
+    // where the two can disagree.
+    bool canonicalise = false;
     std::uint8_t tt_tag = TAG_NONE;  // which objective this solve's values are on
     std::uint64_t nodes = 0;
     TranspositionTable* tt = nullptr;  // null when the caller turned it off
@@ -581,8 +586,25 @@ void configure(Ctx& ctx, int nil_seat, const SearchOptions& opts, int tricks_rem
     // different one.  Nothing is wrong with either answer -- but the corpus
     // pins the canonical one, so this is a field that must not be allowed to
     // move.  Reordering stays off for the combination that makes it float.
-    ctx.order_moves = opts.order_moves && (opts.mode == MODE_FAST ||
-                                           (!opts.canonical_pv && !opts.nil_already_set));
+    // Ordering is a pure reorder and never moves a value.  What it used to cost
+    // was the tie-break -- which of several equally-optimal moves gets reported
+    // -- and canonical_move_for buys that back, so MODE_FULL may now order even
+    // when the caller wants the canonical line.  The nil_already_set exclusion
+    // patch 24 needed is gone with it: that case floated because the value does
+    // not constrain how nil_side_tricks splits, and re-deriving the LINE pins
+    // the split regardless of what the value says.
+    ctx.order_moves = opts.order_moves;
+    // Canonicalise whenever the caller wants the canonical line -- and also,
+    // whether they asked or not, whenever the value cannot pin nil_tricks on its
+    // own.  That is exactly `primary + tertiary == 0`: the coefficient the value
+    // gives a nil trick.  It is zero only with nil_already_set and a minimising
+    // tie-break, and there the value reduces to secondary * nil_side_tricks and
+    // says nothing about how that total splits between the bidder and its
+    // partner.  Re-deriving the line is then the only thing that makes the split
+    // deterministic, so it is not the caller's to decline.
+    const bool value_pins_nil_tricks = (weights.primary + weights.tertiary) != 0;
+    ctx.canonicalise = ctx.order_moves && opts.mode == MODE_FULL &&
+                       (opts.canonical_pv || !value_pins_nil_tricks);
     // Unlike ordering, this one is NOT restricted to fast mode -- full mode is
     // the only mode it can do anything for.  Fast mode's window is null, so
     // every narrowing it performs is immediately followed by the cutoff that
@@ -611,6 +633,37 @@ void configure(Ctx& ctx, int nil_seat, const SearchOptions& opts, int tricks_rem
 // The window carries in from the caller so that a PV step is asked the same
 // question the root was.  Asking wide here against a table filled under a
 // narrow window is not wrong, but it is a re-search of everything.
+// The canonically lowest move achieving a value the caller already knows to be
+// exact.
+//
+// Move ordering is a pure reorder, so it cannot change what a node is worth --
+// but it does change which of several equally-worthy moves the node happens to
+// record, and that recorded move is what a principal variation is built out of.
+// This buys the tie-break back: enumerate in the order the unordered search
+// would have used and stop at the first move that matches.
+//
+// Every child here is scored against the window the PARENT was asked about, and
+// that window has WINDOW_MIN beneath it at every point a caller reaches this
+// function, so no child can fail low and every value compared is exact.  The
+// match is therefore a real tie and not two bounds that happen to coincide.
+//
+// Cost is the index of the answer, not the width of the node: the loop stops at
+// the first match, so a node whose canonical move is also its promoted one pays
+// for a single lookup, and the table is warm from the search that just ran.
+CardId canonical_move_for(Ctx& ctx, const State& st, int value, int alpha, int beta) {
+    const int seat = st.to_play();
+    Hand moves = legal_moves(st.hands[seat], st.trick_len, st.led_suit(), st.broken);
+    if (ctx.collapse && (moves & (moves - 1)) != 0) {
+        moves = distinct_moves(moves,
+                               relevant_cards(st.hands, trick_best_card(st.trick, st.trick_len)));
+    }
+    for (Hand h = moves; h;) {
+        const CardId card = take_lowest(h);
+        if (value_after(ctx, st, card, alpha, beta, nullptr) == value) return card;
+    }
+    return NO_CARD;  // caller keeps whatever the search recorded
+}
+
 bool walk_pv(Ctx& ctx, State st, CardId first, std::vector<Play>& pv_out, std::string& err,
              int pv_alpha = WINDOW_MIN, int pv_beta = WINDOW_MAX) {
     CardId move = first;
@@ -624,7 +677,11 @@ bool walk_pv(Ctx& ctx, State st, CardId first, std::vector<Play>& pv_out, std::s
         advance(ctx, st, move, next);
         st = next;
         if (st.empty()) break;
-        search(ctx, st, move, pv_alpha, pv_beta);
+        const int v = search(ctx, st, move, pv_alpha, pv_beta);
+        if (ctx.canonicalise) {
+            const CardId c = canonical_move_for(ctx, st, v, pv_alpha, pv_beta);
+            if (c != NO_CARD) move = c;
+        }
     }
     return true;
 }
@@ -836,6 +893,12 @@ bool solve(const Position& pos, int nil_seat, const SearchOptions& opts, Solutio
     // a bound -- which is what the trick counts, the principal variation and
     // the replay check below all require.
     const int value = search(ctx, st, move, root_alpha, root_beta);
+    // The root's own move is the head of the line and needs the same treatment
+    // as every step below it.
+    if (ctx.canonicalise) {
+        const CardId c = canonical_move_for(ctx, st, value, root_alpha, root_beta);
+        if (c != NO_CARD) move = c;
+    }
     const std::uint64_t search_nodes = ctx.nodes + presolve_nodes;
     // Snapshot before the PV walk below, which probes the table again and would
     // otherwise inflate the hit count with lookups that did no search work.
@@ -1064,7 +1127,13 @@ bool solve_moves(const Position& pos, int nil_seat, const SearchOptions& opts, S
         State child;
         advance(ctx, root, ms.card, child);
         CardId next_move = NO_CARD;
-        if (!child.empty()) search(ctx, child, next_move, WINDOW_MIN, WINDOW_MAX);
+        if (!child.empty()) {
+            const int cv = search(ctx, child, next_move, WINDOW_MIN, WINDOW_MAX);
+            if (ctx.canonicalise) {
+                const CardId c = canonical_move_for(ctx, child, cv, WINDOW_MIN, WINDOW_MAX);
+                if (c != NO_CARD) next_move = c;
+            }
+        }
 
         std::vector<Play> line;
         line.push_back(Play{seat, ms.card});

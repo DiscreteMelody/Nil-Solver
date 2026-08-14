@@ -28,6 +28,7 @@ is what the pruned answer is checked against.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ✅ | ~~Canonical re-derivation: move ordering for `MODE_FULL`~~ | patch 25 | ordering is a pure reorder, so only the TIE-BREAK ever moved. Re-derive the reported move canonically after the search and it stops moving: **1.82x on the 13-card interleaved deal** (263M -> 146M nodes, 104 s -> 57 s), 1.23x on random 9-card, 6.9% on the corpus. All 560 oracle-pinned values AND principal variations reproduce with ordering on, which patch 24 could not manage. Retires the `nil_already_set` exclusion |
 | ✅ | ~~Presolve-seeded root window for `MODE_FULL`~~ | patch 23 | a `MODE_FAST` presolve costs a thousandth of the full search and bounds it: nil safe puts the packed value out of reach of the range where it fails, so beta closes onto the answer. **Turns the 13-card interleaved deal from unreachable into 40 s** (110,681,989 nodes), 1.20x on nil-safe 9-card positions. Costs 3% on nil-fails positions and is gated off below 8 tricks, where it returned nothing. Same value, same PV; all 560 oracle-pinned rows reproduce |
 | ✅ | ~~Window narrowing: alpha-beta for `MODE_FULL`~~ | patch 22 | the missing half of patch 10. `alpha = max(alpha, best)` at a maximiser, `beta = min(beta, best)` at a minimiser, so full mode's cutoff becomes reachable for the first time. **68.8x fewer nodes and 62.9x less wall at 9 cards** (23,519,702 -> 342,000 nodes/position), **6.09x nodes / 5.36x wall on the corpus**. `MODE_FAST` unchanged node for node, provably. All 560 oracle-pinned values and principal variations reproduce card for card |
 | ✅ | ~~Per-card move list across the ABI~~ | patch 21 | `nil_solve_moves` scores every legal card, not just the best: one row per equivalence class with the boolean, the trick counts in full mode, DDS-shaped `equal_ranks`, and an `is_best` flag. **1.0x nodes, +0.4% wall** against the plain call — the root search warms the table and the per-card searches mostly read it back. `MODE_FULL` unchanged node for node |
@@ -1301,7 +1302,102 @@ full-mode node counts with the proofs on and off; a full solve may now contain a
 fast presolve, which does see them and does count its nodes, so the test sets
 `presolve_window = false` to keep the comparison about the thing it claims.
 
-### 22b. Move ordering for `MODE_FULL` — ⭐⭐⭐⭐ — **measured, blocked on the PV**
+### 25. ~~Canonical re-derivation~~ — ⭐⭐⭐⭐⭐ — **done, patch 25; closes 22b**
+
+22b measured the prize and could not collect it. Ordering `MODE_FULL` was worth
+2.3x and cost three outputs the corpus pins: the principal variation walked a
+different line, the move list named a different card as achieving the value, and
+`nil_tricks` split differently when `nil_already_set` left the value unable to
+constrain the split. Patch 24 shipped it as an opt-in flag and a warning.
+
+*The observation that closes it.* Ordering is a **pure reorder** -- one card
+lifted to the front of a mask, nothing added and nothing dropped, which the
+assert in this patch's development confirmed never fires. A pure reorder cannot
+change what a node is worth. It changes only which of several equally-worthy
+moves the node happens to record first. So nothing was ever lost that could not
+be recomputed: search fast with ordering, then ask the position again, in
+canonical order, which of its moves achieves the value it just returned.
+
+```
+CardId canonical_move_for(ctx, st, value, alpha, beta)   // first match wins
+```
+
+*Why the comparison is sound.* Every child is scored against the window the
+parent was asked about, and every call site has `WINDOW_MIN` beneath it, so no
+child can fail low and every value compared is exact. A match is a real tie, not
+two bounds that happen to coincide.
+
+*Why it is affordable.* The loop stops at the first match, and the answer ties by
+construction, so it never enumerates past the move the search already found. A
+node whose canonical move is also its promoted one pays for one lookup. The table
+is warm from the search that just ran, and only nodes on the line are asked.
+
+*Measured.* MODE_FULL, one binary, three arms:
+
+| workload | `--no-ordering` | ordering + canonical | ordering raw |
+|---|---:|---:|---:|
+| 13-card interleaved, `--moves` | 263,294,020 / 104 s | **146,214,395 / 57 s** | 126,274,445 / 49 s |
+| random 9-card, 25 positions | 5,551,718 | **4,515,582** | — |
+| corpus, all 560 | 434,892 | **404,836** | 387,119 |
+
+**1.82x at thirteen cards** with the canonical line intact. Canonicalisation
+itself costs 16% against raw ordering there and 4.6% on the corpus -- the price
+of the tie-break, and worth paying, since the alternative was not collecting the
+1.82x at all.
+
+*The `nil_already_set` discovery, and why the guard is now derived rather than
+flagged.* Patch 24 excluded `nil_already_set` from ordering after seven corpus
+positions came back with a different `nil_tricks`. Those seven were all
+`nilset=1, secondary=min`, and the reason is arithmetic: the value a nil trick
+carries is `primary + tertiary`, which that combination sets to zero. The value
+then reduces to `secondary * nil_side_tricks` and says nothing whatever about how
+that total splits between the bidder and its partner -- the two are
+interchangeable, exactly as this file has said since item 3.
+
+So the condition is not a flag, it is a property of the weights:
+
+```
+value_pins_nil_tricks = (weights.primary + weights.tertiary) != 0
+```
+
+and when it is false, canonicalisation is **not the caller's to decline**.
+Re-deriving the line is the only thing that makes `nil_tricks` deterministic
+there, so `NIL_FLAG_FAST_LINE` does not turn it off. That is why `corpus_ordered`
+-- the arm that runs the corpus with the flag set -- passes on all 560 including
+those seven.
+
+*What `NIL_FLAG_FAST_LINE` means now.* Narrower than in patch 24, and worth
+restating: it buys 16% at thirteen cards by skipping the re-derivation, and the
+only things that move are the principal variation's line and which single card
+the move list names as achieving the value. Every value, every trick count,
+`nil_fails`, and the set of cards flagged best are pinned regardless.
+
+*Two pinned guarantees retired, both correctly.* "Full mode ignores the ordering
+switch: nodes" was true and is not: full mode orders now. And the replacement
+deliberately asserts nothing about node counts, because the two-card position it
+runs on is one where ordering has nothing to save and the re-derivation still
+costs a few lookups -- the ordered run is legitimately the dearer one there. The
+saving is a property of deep positions and belongs in the benchmark. What the
+test pins instead is what was always the point: the value and the line do not
+move.
+
+*Verified.* All 560 corpus positions on value and principal variation, oracle-
+derived, with ordering on -- the comparison patch 24 failed 27 of. `corpus_moves`
+likewise. `corpus_ordered` on all 560 with the flag set. `crosscheck.py` at 5 and
+6 cards across `--secondary min`, `--nil-already-set` and
+`--break-on-forced-lead`. `invariants.py` in full mode at 9 cards.
+
+*Table sizing re-checked at the new node counts*, since patch 24 chose the cap
+against a slower search: 256 MiB is 71 s, 512 is 53 s, 1024 is 51 s and 2048 is
+59 s on the 13-card `--moves`. 512 is still the knee -- 1024 buys 21% fewer nodes
+and 4% of wall for twice the memory -- so the cap stands.
+
+### 22b. ~~Move ordering for `MODE_FULL`~~ — ⭐⭐⭐⭐ — **closed by patch 25**
+
+> Closed. The blocker below -- that ordering costs the canonical principal
+> variation -- was real, and item 25 removes it by re-deriving the tie-break
+> instead of trusting it. The numbers here are the ones that justified the work;
+> the ones that were collected are in item 25.
 
 Now that full mode cuts, ordering it is worth something for the first time, and
 it was measured immediately rather than assumed:
@@ -1338,7 +1434,7 @@ say so.
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 22b → 5 (re-opened) → 9 → 8 → 10 → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 (re-opened) → 9 → 8 → 10 → measure → 11..14
 ```
 
 `⊘` is item 5: closed without being built, because it had no population. **Patch
