@@ -119,6 +119,15 @@ enum SearchMode {
 // the other would read a failing nil as a made one.
 inline constexpr int TRICKS_NOT_COMPUTED = -1;
 
+// Sentinel for SearchOptions::tt_megabytes: choose the size from the position.
+constexpr std::size_t TT_AUTO = static_cast<std::size_t>(-1);
+
+// The size TT_AUTO resolves to is chosen by auto_table_megabytes in search.cpp:
+// doubling per trick above a floor, which is conservative against measured node
+// growth of 2.1x to 3.5x per card, and capped where the measurements stop
+// paying -- MODE_FULL at 512 MiB (1024 buys 5% fewer nodes and no wall time,
+// 2048 is slower), MODE_FAST at 128 MiB (512 is slower in wall time than 128
+// despite fewer nodes).
 struct SearchOptions {
     // MODE_FULL by default: the caller who has not thought about it wants the
     // answer that carries its own evidence.
@@ -262,7 +271,36 @@ struct SearchOptions {
     // depends on this number: a bigger table finds more of its own earlier work
     // and visits fewer nodes.  Benchmarks are only comparable at equal size,
     // which is why nil_bench records it in the history file.
-    std::size_t tt_megabytes = 32;
+    // TT_AUTO means "pick a size from the position", which is what a caller who
+    // has not thought about it should get.  Sizing this by hand is the setting
+    // most likely to be wrong by an order of magnitude in either direction: a
+    // 13-card MODE_FULL solve at the old flat 32 MiB spends 688 million nodes
+    // where 512 MiB spends 111 million, and a 4-card one at 512 MiB has bought
+    // half a gigabyte to hold a few thousand entries.
+    //
+    // Resolved once per solve against tricks_remaining and mode; see
+    // auto_table_megabytes.  An explicit number still wins.
+    std::size_t tt_megabytes = TT_AUTO;
+
+    // Return the canonically lowest of the equally-best lines, rather than
+    // whichever one the move ordering happened to reach first.
+    //
+    // Only the LINE is at stake, never a value and never a trick count.  Two
+    // optimal lines score the same by definition, and the trick counts are
+    // recovered from the score rather than from the walk: with a nil trick
+    // worth primary + tertiary = k*k + 1 and a side trick worth k, and
+    // gcd(k*k + 1, k) = 1, no two (nil_tricks, side_tricks) pairs in range
+    // share a value.  So a differently-ordered search yields the same numbers
+    // off a different-but-equally-optimal line.
+    //
+    // It matters for exactly one thing: the corpus compares principal
+    // variations against nil_oracle.py card for card, and that comparison is
+    // the project's strongest correctness evidence.  So the entry point that
+    // hands a caller a line asks for the canonical one and pays for it by not
+    // reordering; the entry points that do not expose a line -- nil_solve and
+    // nil_solve_moves -- turn this off and take the ordering, which is worth
+    // 2.3x on a hard thirteen.
+    bool canonical_pv = true;
 };
 
 // Who took what along a line.

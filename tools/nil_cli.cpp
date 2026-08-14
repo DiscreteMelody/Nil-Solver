@@ -151,6 +151,8 @@ int main(int argc, char** argv) {
             opts.narrow_window = false;
         } else if (arg == "--no-presolve") {
             opts.presolve_window = false;
+        } else if (arg == "--no-canonical-pv") {
+            opts.canonical_pv = false;
         } else if (arg == "--tt-mb") {
             std::string mb;
             if (!need_value(argc, argv, i, "--tt-mb", mb)) return 2;

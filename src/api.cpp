@@ -19,7 +19,9 @@ namespace {
 // Settable through nil_set_table_size; see the header.  Deliberately not part of
 // the flags word, because it is a resource knob rather than a question about
 // the position, and callers set it once rather than per solve.
-thread_local std::size_t g_table_megabytes = nil::SearchOptions().tt_megabytes;
+// TT_AUTO until a caller says otherwise, so the size follows the position.
+// nil_set_table_size pins it; nil_set_table_size(NIL_TABLE_AUTO) hands it back.
+thread_local std::size_t g_table_megabytes = nil::TT_AUTO;
 
 void copy_err(char* buf, std::int32_t len, const std::string& msg) {
     if (!buf || len <= 0) return;
@@ -120,6 +122,10 @@ std::int32_t solve_impl(const char* pbn, std::int32_t leader, const char* curren
         prepare(pbn, leader, current_trick, nil_seat, flags, pos, opts, err_buf, err_len);
     if (rc != NIL_OK) return rc;
 
+    // A caller asking for a line is asking for the canonical one, so the flag
+    // does not apply to nil_solve_pv.  Elsewhere it is the caller's choice.
+    opts.canonical_pv = pv_out != nullptr || (flags & NIL_FLAG_FAST_LINE) == 0;
+
     std::string err;
     nil::Solution sol;
     if (!nil::solve(pos, nil_seat, opts, sol, err)) {
@@ -209,6 +215,8 @@ NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve_moves(
         prepare(pbn, leader, current_trick, nil_seat, flags, pos, opts, err_buf, err_len);
     if (rc != NIL_OK) return rc;
 
+    opts.canonical_pv = (flags & NIL_FLAG_FAST_LINE) == 0;
+
     std::string err;
     nil::Solution sol;
     std::vector<nil::MoveScore> scored;
@@ -254,7 +262,8 @@ NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve_moves(
 }
 
 NIL_SOLVER_API void NIL_SOLVER_CALL nil_set_table_size(std::uint32_t megabytes) {
-    g_table_megabytes = static_cast<std::size_t>(megabytes);
+    g_table_megabytes = megabytes == NIL_TABLE_AUTO ? nil::TT_AUTO
+                                                    : static_cast<std::size_t>(megabytes);
 }
 
 NIL_SOLVER_API void NIL_SOLVER_CALL nil_release_table(void) {

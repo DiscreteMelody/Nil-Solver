@@ -534,7 +534,17 @@ int search(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta) {
 // weights differ between the modes -- a fast-mode 1 and a full-mode 1 are not
 // the same number.  new_search() on every solve is what keeps one mode's
 // entries out of the other's search, and it is not optional.
-void configure(Ctx& ctx, int nil_seat, const SearchOptions& opts,
+std::size_t auto_table_megabytes(int tricks_remaining, SearchMode mode) {
+    const int floor_tricks = mode == MODE_FAST ? 10 : 8;
+    const std::size_t cap = mode == MODE_FAST ? 128u : 512u;
+    if (tricks_remaining <= floor_tricks) return 32u;
+    const int steps = tricks_remaining - floor_tricks;
+    std::size_t mb = 32u;
+    for (int i = 0; i < steps && mb < cap; ++i) mb *= 2u;
+    return mb < cap ? mb : cap;
+}
+
+void configure(Ctx& ctx, int nil_seat, const SearchOptions& opts, int tricks_remaining,
                const ObjectiveWeights& weights) {
     ctx.nil_seat = nil_seat;
     ctx.primary_weight = weights.primary;
@@ -559,7 +569,20 @@ void configure(Ctx& ctx, int nil_seat, const SearchOptions& opts,
     // for, because it cannot gain from it and would lose the oracle check by
     // doing it; and within MODE_FAST the caller can still switch ordering off
     // to get the control arm.
-    ctx.order_moves = opts.order_moves && opts.mode == MODE_FAST;
+    // Ordering is answer-neutral in both modes.  What it costs in MODE_FULL is the
+    // canonical tie-break on the principal variation, so it runs unless a caller
+    // has asked for that line specifically.  See SearchOptions::canonical_pv.
+    // The third condition is not about speed.  With nil_already_set the primary
+    // weight is zero, and with minimise_own_tricks the tertiary is zero too, so
+    // the value reduces to secondary * nil_side_tricks and says nothing about
+    // how that total splits between the nil bidder and its partner.  The two
+    // are genuinely interchangeable there, `nil_tricks` is decided by whichever
+    // equally-optimal line the search happens to walk, and reordering picks a
+    // different one.  Nothing is wrong with either answer -- but the corpus
+    // pins the canonical one, so this is a field that must not be allowed to
+    // move.  Reordering stays off for the combination that makes it float.
+    ctx.order_moves = opts.order_moves && (opts.mode == MODE_FAST ||
+                                           (!opts.canonical_pv && !opts.nil_already_set));
     // Unlike ordering, this one is NOT restricted to fast mode -- full mode is
     // the only mode it can do anything for.  Fast mode's window is null, so
     // every narrowing it performs is immediately followed by the cutoff that
@@ -567,9 +590,12 @@ void configure(Ctx& ctx, int nil_seat, const SearchOptions& opts,
     ctx.narrow_window = opts.narrow_window;
     ctx.tt_tag = opts.mode == MODE_FAST ? TAG_FAST : TAG_FULL;
 
-    if (opts.use_memo && opts.tt_megabytes > 0) {
+    const std::size_t table_mb = opts.tt_megabytes == TT_AUTO
+                                     ? auto_table_megabytes(tricks_remaining, opts.mode)
+                                     : opts.tt_megabytes;
+    if (opts.use_memo && table_mb > 0) {
         TranspositionTable& table = shared_table();
-        table.resize(opts.tt_megabytes);  // a no-op at the size it already is
+        table.resize(table_mb);  // a no-op at the size it already is
         table.new_search();               // this solve may not see the last one's values
         ctx.tt = &table;
     }
@@ -675,6 +701,8 @@ ObjectiveWeights objective_weights(int tricks_remaining, const SearchOptions& op
 // it, which is the whole reason this is a constant rather than a policy.
 constexpr int PRESOLVE_MIN_TRICKS = 8;
 
+
+
 int max_value_if_nil_safe(int tricks_remaining, const ObjectiveWeights& w) {
     const int cover_only = w.secondary * tricks_remaining;
     return cover_only > 0 ? cover_only : 0;
@@ -709,7 +737,7 @@ bool solve(const Position& pos, int nil_seat, const SearchOptions& opts, Solutio
         }
 
         Ctx fast_ctx;
-        configure(fast_ctx, nil_seat, opts, weights);
+        configure(fast_ctx, nil_seat, opts, pos.tricks_remaining(), weights);
         State root = state_of(pos);
         CardId root_move = NO_CARD;
         // The whole question is "is the nil bidder's trick count at least one",
@@ -775,6 +803,13 @@ bool solve(const Position& pos, int nil_seat, const SearchOptions& opts, Solutio
         pos.tricks_remaining() >= PRESOLVE_MIN_TRICKS) {
         SearchOptions probe_opts = opts;
         probe_opts.mode = MODE_FAST;
+        // Pin the parent's table size on the nested solve.  Left to resolve
+        // itself it would ask for the MODE_FAST size, and a resize discards the
+        // table -- so the presolve would hand the search it is meant to help a
+        // cold table and a reallocation.
+        probe_opts.tt_megabytes = opts.tt_megabytes == TT_AUTO
+                                      ? auto_table_megabytes(pos.tricks_remaining(), opts.mode)
+                                      : opts.tt_megabytes;
         Solution probe;
         std::string probe_err;
         // A failed presolve is not a failed solve.  It is an optimisation, and
@@ -792,7 +827,7 @@ bool solve(const Position& pos, int nil_seat, const SearchOptions& opts, Solutio
     }
 
     Ctx ctx;
-    configure(ctx, nil_seat, opts, weights);
+    configure(ctx, nil_seat, opts, pos.tricks_remaining(), weights);
 
     State st = state_of(pos);
     CardId move = NO_CARD;
@@ -919,7 +954,7 @@ bool solve_moves(const Position& pos, int nil_seat, const SearchOptions& opts, S
     }
 
     Ctx ctx;
-    configure(ctx, nil_seat, opts, weights);
+    configure(ctx, nil_seat, opts, pos.tricks_remaining(), weights);
 
     std::uint64_t presolve_nodes = 0;
     const int alpha = fast ? 0 : WINDOW_MIN;
@@ -935,6 +970,13 @@ bool solve_moves(const Position& pos, int nil_seat, const SearchOptions& opts, S
         pos.tricks_remaining() >= PRESOLVE_MIN_TRICKS) {
         SearchOptions probe_opts = opts;
         probe_opts.mode = MODE_FAST;
+        // Pin the parent's table size on the nested solve.  Left to resolve
+        // itself it would ask for the MODE_FAST size, and a resize discards the
+        // table -- so the presolve would hand the search it is meant to help a
+        // cold table and a reallocation.
+        probe_opts.tt_megabytes = opts.tt_megabytes == TT_AUTO
+                                      ? auto_table_megabytes(pos.tricks_remaining(), opts.mode)
+                                      : opts.tt_megabytes;
         Solution probe;
         std::string probe_err;
         if (solve(pos, nil_seat, probe_opts, probe, probe_err) && !probe.nil_fails) {

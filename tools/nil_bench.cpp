@@ -406,6 +406,7 @@ std::string memo_label(const nil::SearchOptions& opts) {
     if (!opts.order_moves && opts.mode == nil::MODE_FAST) suffix += "+noordering";
     if (!opts.narrow_window && opts.mode == nil::MODE_FULL) suffix += "+nonarrow";
     if (!opts.presolve_window && opts.mode == nil::MODE_FULL) suffix += "+nopresolve";
+    if (!opts.canonical_pv && opts.mode == nil::MODE_FULL) suffix += "+ordered";
     if (!opts.use_memo || opts.tt_megabytes == 0) return "off" + suffix;
     return std::to_string(opts.tt_megabytes) + "mb" + suffix;
 }
@@ -482,6 +483,8 @@ int main(int argc, char** argv) {
             opts.narrow_window = false;
         } else if (arg == "--no-presolve") {
             opts.presolve_window = false;
+        } else if (arg == "--no-canonical-pv") {
+            opts.canonical_pv = false;
         } else if (arg == "--mode" && has_next) {
             const std::string mode = argv[++i];
             if (mode == "full") {

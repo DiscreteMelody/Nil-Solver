@@ -183,6 +183,16 @@ if(NIL_SOLVER_BUILD_TESTS)
                      --slowest 0)
     set_tests_properties(corpus_presolve PROPERTIES TIMEOUT 900)
 
+    # Move ordering reaching MODE_FULL (roadmap item 22b), which the ABI exposes
+    # as NIL_FLAG_FAST_LINE.  No --check-pv here, and that omission is the whole
+    # point of the arm: ordering is answer-neutral on every VALUE and is not
+    # tie-break-neutral, so this checks the thing that must not move and leaves
+    # alone the three things that may.  If a value ever differs between this arm
+    # and the default one, ordering has stopped being a pure reorder.
+    add_test(NAME corpus_ordered
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --no-canonical-pv --quiet --slowest 0)
+    set_tests_properties(corpus_ordered PROPERTIES TIMEOUT 900)
+
     # The move list against the search that produced it.  Scoring every legal
     # card is a second reading of the same position, so what it owes is
     # consistency with the first reading: same answer, same principal variation,

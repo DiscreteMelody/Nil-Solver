@@ -199,6 +199,34 @@ extern "C" {
  * is already set, where the value range has no gap in it to exploit. */
 #define NIL_FLAG_NO_PRESOLVE 0x800u
 
+/* Pass to nil_set_table_size to go back to choosing the table size from the
+ * position, which is what a process that never calls it already gets.  The
+ * size follows tricks_remaining and mode: a four-card endgame takes 32 MiB and
+ * a thirteen-card full solve takes 512, which is the difference between 111
+ * million nodes and 688 million on a hard one.  An explicit size still wins,
+ * and 0 still means no table at all. */
+#define NIL_TABLE_AUTO 0xFFFFFFFFu
+
+/* Let MODE_FULL order its moves, which it otherwise declines to do.
+ *
+ * Every VALUE is unchanged -- ordering is a pure reorder of the move list and
+ * alpha-beta returns the same number whatever order it sees them in, which the
+ * corpus checks on all 560 positions with this flag set.  Worth 2.3x on a hard
+ * thirteen-card position and 1.2x to 3.0x elsewhere.
+ *
+ * What moves is which of several EQUALLY OPTIMAL answers comes back, in three
+ * places: the principal variation walks a different line, the move list names a
+ * different card as the one achieving the value, and -- only when the nil is
+ * already set and the tie-break minimises -- nil_tricks splits differently
+ * between the bidder and its partner, because the value does not constrain that
+ * split at all.  Per-card values, nil_fails, and the set of cards flagged best
+ * are all unaffected.
+ *
+ * So: set it when you want the numbers, leave it clear when you want the same
+ * line the oracle picks.  nil_solve_pv ignores it, since a caller asking for a
+ * line is asking for that one. */
+#define NIL_FLAG_FAST_LINE 0x1000u
+
 /* Cards per hand the solver will attempt without NIL_FLAG_FORCE_LARGE. */
 #define NIL_CARD_LIMIT 9
 
