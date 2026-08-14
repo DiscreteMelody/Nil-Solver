@@ -366,6 +366,8 @@ void usage(const char* argv0) {
               << "  --no-collapse     generate every legal card rather than one per class\n"
               << "  --no-static       do not settle positions by proof (fast mode only)\n"
               << "                    of rank-equivalent ones (same answer, many more nodes)\n"
+              << "  --no-presolve     do not bound full mode's root window with a fast\n"
+              << "                    search (same answer, more nodes; full mode only)\n"
               << "  --no-narrow       do not narrow the window as moves come back\n"
               << "                    (same answer, many more nodes; full mode only)\n"
               << "  --no-ordering     try moves in canonical order rather than a\n"
@@ -403,6 +405,7 @@ std::string memo_label(const nil::SearchOptions& opts) {
     // would split the history into two groups holding identical numbers.
     if (!opts.order_moves && opts.mode == nil::MODE_FAST) suffix += "+noordering";
     if (!opts.narrow_window && opts.mode == nil::MODE_FULL) suffix += "+nonarrow";
+    if (!opts.presolve_window && opts.mode == nil::MODE_FULL) suffix += "+nopresolve";
     if (!opts.use_memo || opts.tt_megabytes == 0) return "off" + suffix;
     return std::to_string(opts.tt_megabytes) + "mb" + suffix;
 }
@@ -477,6 +480,8 @@ int main(int argc, char** argv) {
             opts.order_moves = false;
         } else if (arg == "--no-narrow") {
             opts.narrow_window = false;
+        } else if (arg == "--no-presolve") {
+            opts.presolve_window = false;
         } else if (arg == "--mode" && has_next) {
             const std::string mode = argv[++i];
             if (mode == "full") {

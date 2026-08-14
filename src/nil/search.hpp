@@ -217,6 +217,32 @@ struct SearchOptions {
     // binary rather than across two builds.
     bool narrow_window = true;
 
+    // Seed MODE_FULL's root window from a MODE_FAST presolve (roadmap item 23).
+    //
+    // The two modes answer different questions about the same position, and the
+    // cheap one bounds the expensive one.  With k = tricks + 1 the packed value
+    // is (primary + tertiary + secondary) * nil_tricks + secondary * cover, and
+    // the two halves of that do not overlap: every position where the nil
+    // bidder takes no trick scores at most `max_value_if_nil_safe` below, and
+    // every position where it takes one scores strictly above.  So a fast
+    // search -- which costs on the order of a thousandth of the full one -- buys
+    // a bound on the full one for free.
+    //
+    // Only the nil-safe direction is taken.  The other one was implemented,
+    // measured at 1.00x, 0.99x and 1.00x on three sizes, and dropped: it puts
+    // alpha under a maximising root, where narrowing was going to raise it
+    // anyway on the first child.  See the item for the numbers.
+    //
+    // Exactness survives because the bound is not a guess.  The true value is
+    // on the safe side of the threshold, so a window that ends just above the
+    // threshold still contains it, and a node whose window contains its value
+    // returns that value rather than a bound.  Per-card scoring in solve_moves
+    // is the one place a value can legitimately sit on the far side -- a card
+    // that loses the nil -- and that card is re-searched wide.
+    //
+    // On by default, off as the control arm.
+    bool presolve_window = true;
+
     // Look positions up in a transposition table.  The search is a pure
     // function of the position, so the table changes neither the value nor the
     // principal variation -- it is memoisation, not alpha-beta or any other
@@ -274,7 +300,8 @@ struct Solution {
     //
     // `tt_partial` counts probes that found the position but held only a bound,
     // and a bound too weak to settle the window being asked about.  It is zero
-    // in MODE_FULL, which stores nothing but exact values, and it is the price
+    // in MODE_FAST, whose null window every entry settles; MODE_FULL has stored
+    // bounds and produced partial hits since patch 22.  It is the price
     // of pruning in MODE_FAST: work the table remembered doing and could not
     // hand back.
     std::uint64_t tt_probes = 0;

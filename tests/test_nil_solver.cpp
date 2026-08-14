@@ -647,6 +647,55 @@ int main(int argc, char** argv) {
         check("and without it full mode stores nothing but exact values",
               exhaustive.tt_partial, 0ull);
 
+        // ---- item 23: the presolve-seeded root window ----------------------
+        //
+        // The bound is derived from the objective's weights rather than
+        // estimated, so it may not move the value or the line -- only the work.
+        SearchOptions nopre = full;
+        nopre.presolve_window = false;
+        const Solution unbounded = must_solve(pos, "N", nopre);
+        check("the presolve does not change the value", slow.value, unbounded.value);
+        bool pre_pv = slow.pv.size() == unbounded.pv.size();
+        for (std::size_t i = 0; pre_pv && i < slow.pv.size(); ++i) {
+            pre_pv = slow.pv[i].seat == unbounded.pv[i].seat &&
+                     slow.pv[i].card == unbounded.pv[i].card;
+        }
+        check("the presolve does not change the principal variation", pre_pv, true);
+
+        // And it may not hide its cost.  A presolved solve reports the fast
+        // search's nodes as its own, so the count can only be honest if it is
+        // above the fast solve's on its own.
+        SearchOptions probe = full;
+        probe.mode = nil::MODE_FAST;
+        const Solution fast_only = must_solve(pos, "N", probe);
+        check("a presolved solve counts the presolve's nodes",
+              slow.nodes > fast_only.nodes, true);
+
+        // The threshold itself, which is the whole argument.  Re-derived here
+        // from the documented weight formula rather than read back out of the
+        // solver, so that this is an independent statement of the invariant and
+        // not a restatement of the code under test.
+        bool separated = true;
+        for (int tricks = 1; tricks <= 13 && separated; ++tricks) {
+            for (int variant = 0; variant < 2 && separated; ++variant) {
+                const bool min_own = variant != 0;
+                const int k = tricks + 1;
+                const int primary = k * k;
+                const int secondary = min_own ? k : -k;
+                const int tertiary = min_own ? 0 : 1;
+                // Highest a position can score with the nil bidder taking none.
+                const int safe_hi = secondary > 0 ? secondary * tricks : 0;
+                // Lowest it can score with the nil bidder taking one: that
+                // trick, plus the cover tricks arranged to drag it down.
+                const int per_nil = primary + tertiary + secondary;
+                const int fail_lo =
+                    per_nil + (secondary < 0 ? secondary * (tricks - 1) : 0);
+                separated = fail_lo > safe_hi;
+            }
+        }
+        check("a failing nil always outscores every safe one, at every size",
+              separated, true);
+
         // Alpha-beta cost the table nothing, and this is what says so.  Every
         // node of a fast search is asked about the same window: the only gain
         // that could shift one is the nil bidder winning a trick, and that is
@@ -972,6 +1021,13 @@ int main(int argc, char** argv) {
                         SearchOptions on;
                         on.minimise_own_tricks = (variant & 1) != 0;
                         on.nil_already_set = (variant & 2) != 0;
+                        // The claim is about MODE_FULL's OWN search, which
+                        // still cannot read a proof stated in nil tricks.  As
+                        // of patch 23 a full solve may also run a MODE_FAST
+                        // presolve, and that one does see the bounds and does
+                        // count its nodes here, so the presolve is turned off
+                        // to keep the comparison about the thing being claimed.
+                        on.presolve_window = false;
                         SearchOptions off = on;
                         off.use_static_bounds = false;
                         const Solution a = must_solve(pos, SEAT_NAMES[seat], on);

@@ -173,6 +173,16 @@ if(NIL_SOLVER_BUILD_TESTS)
                      --slowest 0)
     set_tests_properties(corpus_narrow PROPERTIES TIMEOUT 900)
 
+    # The control arm for the presolve-seeded root window (roadmap item 23), on
+    # the corpus_narrow model and carrying --check-pv for the same reason: the
+    # bound is derived rather than estimated, so it owes the same value AND the
+    # same line, and a derivation that has stopped holding would show up here
+    # first.  Cheap -- it is the default run minus one fast search per position.
+    add_test(NAME corpus_presolve
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --check-pv --no-presolve --quiet
+                     --slowest 0)
+    set_tests_properties(corpus_presolve PROPERTIES TIMEOUT 900)
+
     # The move list against the search that produced it.  Scoring every legal
     # card is a second reading of the same position, so what it owes is
     # consistency with the first reading: same answer, same principal variation,

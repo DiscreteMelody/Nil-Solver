@@ -97,7 +97,16 @@ namespace NilSolver
         /// nodes on the corpus and up to seventy times at nine cards. Diagnostic and a
         /// control arm; inert under <see cref="FastMode"/>, whose window is already null.
         /// </summary>
-        NoNarrow = 0x400u
+        NoNarrow = 0x400u,
+
+        /// <summary>
+        /// Do not spend a fast-mode presolve to bound full mode's root window. The nil
+        /// question is ~1000x cheaper than the full one and its answer bounds it: a nil
+        /// that cannot be forced puts the packed value out of reach of the range where it
+        /// can. Same value and same principal variation; diagnostic and a control arm.
+        /// Inert under <see cref="FastMode"/> and when the nil is already set.
+        /// </summary>
+        NoPresolve = 0x800u
     }
 
     /// <summary>Return codes. <see cref="Ok"/> is success; everything else is negative.</summary>

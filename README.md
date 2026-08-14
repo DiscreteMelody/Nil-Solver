@@ -596,6 +596,17 @@ cards. Inert in fast mode, whose window is null — there is no integer strictly
 between alpha and alpha + 1 for a narrowed bound to land on, so a fast search is
 unchanged node for node either way.
 
+`--no-presolve` is the control arm for the presolve-seeded root window (roadmap
+item 23). A full solve of eight tricks or more first runs the same position in
+fast mode, and if the nil cannot be forced the packed value cannot reach the
+range where it can, so beta closes onto the answer instead of sitting at a
+sentinel. Same value and same principal variation — the bound comes from the
+objective's own weights rather than an estimate — so the two arms must agree on
+both, which is why `corpus_presolve` carries `--check-pv`. The presolve is paid
+whether or not it collects: it is a 3% tax on positions where the nil fails, and
+worth it because the tax is bounded by one fast search while the saving is not.
+Gated off below eight tricks, where it was measured as pure overhead.
+
 The harness generates random positions — random leader, random nil seat, random
 broken flag, and roughly a third of them resumed mid-trick — and compares three
 things: the bool, the exact trick count, and the **principal variation, card for

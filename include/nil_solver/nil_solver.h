@@ -184,6 +184,21 @@ extern "C" {
  * fast search is unchanged node for node with or without it. */
 #define NIL_FLAG_NO_NARROW 0x400u
 
+/* Do not spend a MODE_FAST presolve to bound MODE_FULL's root window.  The two
+ * modes answer different questions about one position and the cheap answer
+ * bounds the dear one: if the nil bidder cannot be forced to take a trick then
+ * the packed value cannot reach the range where it does, so a beta just below
+ * that range contains the answer and refutes every line that tries.  The
+ * presolve costs on the order of a thousandth of the search it bounds, and its
+ * nodes are counted in the result rather than hidden.
+ *
+ * Same value and same principal variation either way -- the bound is derived
+ * from the objective's own weights, not estimated -- so this flag is a control
+ * arm and a way to pay nothing on positions where the presolve will not help.
+ * Inert under NIL_FLAG_FAST_MODE, which is the presolve, and inert when the nil
+ * is already set, where the value range has no gap in it to exploit. */
+#define NIL_FLAG_NO_PRESOLVE 0x800u
+
 /* Cards per hand the solver will attempt without NIL_FLAG_FORCE_LARGE. */
 #define NIL_CARD_LIMIT 9
 

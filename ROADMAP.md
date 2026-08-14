@@ -28,6 +28,7 @@ is what the pruned answer is checked against.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ✅ | ~~Presolve-seeded root window for `MODE_FULL`~~ | patch 23 | a `MODE_FAST` presolve costs a thousandth of the full search and bounds it: nil safe puts the packed value out of reach of the range where it fails, so beta closes onto the answer. **Turns the 13-card interleaved deal from unreachable into 40 s** (110,681,989 nodes), 1.20x on nil-safe 9-card positions. Costs 3% on nil-fails positions and is gated off below 8 tricks, where it returned nothing. Same value, same PV; all 560 oracle-pinned rows reproduce |
 | ✅ | ~~Window narrowing: alpha-beta for `MODE_FULL`~~ | patch 22 | the missing half of patch 10. `alpha = max(alpha, best)` at a maximiser, `beta = min(beta, best)` at a minimiser, so full mode's cutoff becomes reachable for the first time. **68.8x fewer nodes and 62.9x less wall at 9 cards** (23,519,702 -> 342,000 nodes/position), **6.09x nodes / 5.36x wall on the corpus**. `MODE_FAST` unchanged node for node, provably. All 560 oracle-pinned values and principal variations reproduce card for card |
 | ✅ | ~~Per-card move list across the ABI~~ | patch 21 | `nil_solve_moves` scores every legal card, not just the best: one row per equivalence class with the boolean, the trick counts in full mode, DDS-shaped `equal_ranks`, and an `is_best` flag. **1.0x nodes, +0.4% wall** against the plain call — the root search warms the table and the per-card searches mostly read it back. `MODE_FULL` unchanged node for node |
 | ✅ | Bitboard state representation | patch 1 | `Hand = uint64_t`, `suit * 16 + rank`, ctz move extraction, mask-based `legal_moves` |
@@ -1205,6 +1206,101 @@ this solver. `crosscheck.py` agrees card for card at 5 and 6 cards across
 at 8, 9 and 11 cards and on the corpus. The new `--no-narrow` arm reproduces
 every corpus PV.
 
+### 23. ~~Presolve-seeded root window~~ — ⭐⭐⭐⭐⭐ — **done, patch 23**
+
+Patch 22 made full mode's cutoff reachable. It did not give the root anything to
+cut against: the first child of the root is still searched between sentinels,
+because no sibling has returned yet to raise alpha. On a position whose moves are
+close in value that first child is most of the search, and on a position whose
+moves are *equal* in value -- which is what a symmetric deal is -- alpha never
+strictly improves at all, so sibling narrowing gives the root nothing from
+beginning to end.
+
+*The bound.* The two modes answer different questions about one position, and the
+cheap answer bounds the dear one. With k = tricks + 1 the packed value is
+`(primary + tertiary + secondary) * nil_tricks + secondary * cover_tricks`, and
+the two halves do not overlap:
+
+| objective | safe scores at most | failing scores at least | gap |
+|---|---:|---:|---:|
+| `minimise_own_tricks = false` | 0 | k + 1 | 2k |
+| `minimise_own_tricks = true` | k² − k | k² + k | 2k |
+
+Neither gap depends on the deal. So a `MODE_FAST` search -- which patch 10
+measured at 12.8x to 303x cheaper -- returns one bit that closes beta onto the
+answer, and every line that tries to force a nil trick is refuted the moment it
+succeeds instead of being evaluated exactly. `max_value_if_nil_safe` computes the
+ceiling from the weights, and the selftest re-derives the separation
+independently at all thirteen sizes and both objectives.
+
+*Exactness survives* because the bound is derived, not estimated. The true value
+is on the safe side of the threshold, a window ending just above the threshold
+still contains it, and a node whose window contains its value returns the value
+rather than a bound. `walk_pv` inherits the same window -- asking wide there
+against a table filled narrow is not wrong but re-searches everything, which is
+how the first version of this was accidentally slower than no window at all.
+
+*Per-card needs one more thing.* A row owes its own exact value, and a card that
+loses the nil scores on the far side of the threshold, so the tight window would
+hand back a bound for exactly the rows a caller most wants a number on. Those
+rows and only those are re-searched against the sentinels, with the table warm.
+One re-search per losing card, not one per card.
+
+*What it did to the deal that started this.* The maximally rank-interleaved
+13-card deal, `W:AT62.K95.K95.Q84 K95.AT62.Q84.K95 Q84.J73.J73.AT62
+J73.Q84.AT62.J73`, nil on S:
+
+| | before | after |
+|---|---|---|
+| full solve | ~40 min, no result | **40 s**, 110,681,989 nodes |
+| full `--moves` | unreachable | **105 s**, 277,298,721 nodes |
+
+Answer: nil holds, S takes 0 of 13, NS 3 and EW 10 side tricks, and all nine
+legal leads are equally optimal -- which is what the deal's rotational symmetry
+predicts. Fast mode reaches the same nine verdicts through a different tree.
+
+*The honest general case, which is worse.* The presolve is paid always and
+collects only when the nil is safe:
+
+| population | `--no-presolve` | default | ratio |
+|---|---:|---:|---:|
+| random 9-card, 30 positions (2 safe, 28 fail) | 6,610,501 | 6,826,344 | **0.97x** |
+| the nil-safe 12 of them | 2,981,516 | 2,483,153 | **1.20x** |
+
+So on a random population this is a 3% tax, because random deals mostly fail the
+nil. It is worth taking anyway on the argument that the tax is bounded by one
+fast search -- the cheapest question this solver can be asked -- while the
+collection is unbounded and grows with difficulty, and that the positions which
+take minutes are disproportionately the ones where the nil holds, since proving
+a nil safe means refuting every defence. A caller who knows their population
+fails the nil should pass `--no-presolve`.
+
+*Gated below 8 tricks*, where it was measured and found to be pure overhead: on
+the 560-position corpus, presolving everything cost 5.9% more nodes and 32% more
+wall and returned nothing, because those searches finish in under a millisecond
+and there is nothing left for a tighter window to save. The corpus is byte-
+identical to `--no-presolve` with the gate in, at 434,892 nodes. Hand size is the
+only estimate of a search's cost available before running it, which is why the
+gate is a constant and not a policy.
+
+*The direction that was dropped.* When the presolve says the nil fails, the same
+argument gives `alpha = max_value_if_nil_safe` -- also sound, also free. It was
+implemented and measured at 1.00x, 0.99x and 1.00x on three sizes and removed:
+it puts alpha under a maximising root, where narrowing was going to raise it on
+the first child anyway. Recorded here so it is not rediscovered.
+
+*Verified.* All 560 corpus rows on value and principal variation, oracle-derived
+and none pinned from this solver, with the presolve on and again via the new
+`corpus_presolve` control arm. `crosscheck.py` agrees at 5 and 6 cards across
+`--secondary min`, `--nil-already-set`, `--break-on-forced-lead` and mid-trick.
+`invariants.py` holds in full mode at 9 cards. `corpus_moves` and
+`corpus_moves_fast` both clean.
+
+*One test changed premise.* "Full mode does not see the static bounds" compared
+full-mode node counts with the proofs on and off; a full solve may now contain a
+fast presolve, which does see them and does count its nodes, so the test sets
+`presolve_window = false` to keep the comparison about the thing it claims.
+
 ### 22b. Move ordering for `MODE_FULL` — ⭐⭐⭐⭐ — **measured, blocked on the PV**
 
 Now that full mode cuts, ordering it is worth something for the first time, and
@@ -1242,7 +1338,7 @@ say so.
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 22b → 5 (re-opened) → 9 → 8 → 10 → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 22b → 5 (re-opened) → 9 → 8 → 10 → measure → 11..14
 ```
 
 `⊘` is item 5: closed without being built, because it had no population. **Patch

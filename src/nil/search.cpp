@@ -582,7 +582,11 @@ void configure(Ctx& ctx, int nil_seat, const SearchOptions& opts,
 //
 // Shared by solve() and by solve_moves(), which needs one of these per root
 // move to recover that move's trick counts.
-bool walk_pv(Ctx& ctx, State st, CardId first, std::vector<Play>& pv_out, std::string& err) {
+// The window carries in from the caller so that a PV step is asked the same
+// question the root was.  Asking wide here against a table filled under a
+// narrow window is not wrong, but it is a re-search of everything.
+bool walk_pv(Ctx& ctx, State st, CardId first, std::vector<Play>& pv_out, std::string& err,
+             int pv_alpha = WINDOW_MIN, int pv_beta = WINDOW_MAX) {
     CardId move = first;
     while (!st.empty()) {
         if (move == NO_CARD) {
@@ -594,7 +598,7 @@ bool walk_pv(Ctx& ctx, State st, CardId first, std::vector<Play>& pv_out, std::s
         advance(ctx, st, move, next);
         st = next;
         if (st.empty()) break;
-        search(ctx, st, move, WINDOW_MIN, WINDOW_MAX);
+        search(ctx, st, move, pv_alpha, pv_beta);
     }
     return true;
 }
@@ -643,6 +647,37 @@ ObjectiveWeights objective_weights(int tricks_remaining, const SearchOptions& op
     w.secondary = opts.minimise_own_tricks ? k : -k;
     w.tertiary = opts.minimise_own_tricks ? 0 : 1;
     return w;
+}
+
+// The largest packed value a position can score while the nil bidder takes no
+// trick.  Item 23's bound rests on this being strictly below the smallest value
+// a position can score while it takes one, which holds for both objectives:
+//
+//   minimise_own_tricks = false   secondary = -k, so a safe position scores
+//                                 -k * cover <= 0, and a failing one scores at
+//                                 least (k*k + 1 - k) - k*(k - 2) = k + 1.
+//   minimise_own_tricks = true    secondary = +k, so a safe position scores at
+//                                 most k * (k - 1) = k*k - k, and a failing one
+//                                 at least k*k + k.
+//
+// Both gaps are 2k wide and neither depends on the deal.  Undefined when
+// nil_already_set, where primary is zero and the two halves collapse into each
+// other -- callers must not ask, and solve() does not.
+// Below this many tricks the presolve is not worth its own setup.  It is not
+// that the fast search gets relatively dearer -- it does not -- but that the
+// full search it is meant to bound is already finished in well under a
+// millisecond, so there is nothing left for a tighter window to save and the
+// per-call cost of a second solve() is all that is left.  Measured on the
+// 560-position corpus, which is four to six tricks: presolving everything cost
+// 5.9% more nodes and 32% more wall there and returned nothing.
+//
+// Hand size is the only estimate of a search's cost available before running
+// it, which is the whole reason this is a constant rather than a policy.
+constexpr int PRESOLVE_MIN_TRICKS = 8;
+
+int max_value_if_nil_safe(int tricks_remaining, const ObjectiveWeights& w) {
+    const int cover_only = w.secondary * tricks_remaining;
+    return cover_only > 0 ? cover_only : 0;
 }
 
 bool solve(const Position& pos, int nil_seat, const SearchOptions& opts, Solution& out,
@@ -717,17 +752,56 @@ bool solve(const Position& pos, int nil_seat, const SearchOptions& opts, Solutio
         return true;
     }
 
+    // ---- item 23: buy a root window with a MODE_FAST presolve --------------
+    //
+    // Full mode's root window has been [WINDOW_MIN, WINDOW_MAX] since patch 8,
+    // and patch 22 made narrowing reachable underneath it -- but the FIRST
+    // child of the root still gets a window as open as the sentinels allow,
+    // because there is no sibling yet to have raised alpha.  On a position
+    // whose moves are close in value that is most of the search.
+    //
+    // The bit that closes it is one fast search away.  If the nil bidder cannot
+    // be forced to take a trick then the value is at most
+    // max_value_if_nil_safe(), so a beta one above that contains the answer and
+    // refutes every line that tries to force a trick the moment it succeeds.
+    //
+    // Skipped when nil_already_set, where the primary weight is zero and the
+    // two halves of the value range are not separated at all.
+    int root_alpha = WINDOW_MIN;
+    int root_beta = WINDOW_MAX;
+    std::uint64_t presolve_nodes = 0;
+    TTStats presolve_stats;
+    if (opts.presolve_window && !opts.nil_already_set &&
+        pos.tricks_remaining() >= PRESOLVE_MIN_TRICKS) {
+        SearchOptions probe_opts = opts;
+        probe_opts.mode = MODE_FAST;
+        Solution probe;
+        std::string probe_err;
+        // A failed presolve is not a failed solve.  It is an optimisation, and
+        // the full search below is complete without it, so anything that goes
+        // wrong here is dropped and the sentinels stand.
+        if (solve(pos, nil_seat, probe_opts, probe, probe_err) && !probe.nil_fails) {
+            root_beta = max_value_if_nil_safe(pos.tricks_remaining(), weights) + 1;
+        }
+        presolve_nodes = probe.nodes;
+        presolve_stats.probes = probe.tt_probes;
+        presolve_stats.hits = probe.tt_hits;
+        presolve_stats.partial = probe.tt_partial;
+        presolve_stats.stores = probe.tt_stores;
+        presolve_stats.evictions = probe.tt_evictions;
+    }
+
     Ctx ctx;
     configure(ctx, nil_seat, opts, weights);
 
     State st = state_of(pos);
     CardId move = NO_CARD;
-    // No window.  Full mode owes its caller trick counts, a principal variation
-    // and a value the replay can be checked against, and all three want exact
-    // numbers at every node rather than bounds.  Alpha-beta is MODE_FAST's, and
-    // MODE_FULL declines it here rather than by a flag deeper in.
-    const int value = search(ctx, st, move, WINDOW_MIN, WINDOW_MAX);
-    const std::uint64_t search_nodes = ctx.nodes;
+    // The window is the presolve's, or the sentinels if there was none.  Either
+    // way the true value is inside it, so what comes back is exact rather than
+    // a bound -- which is what the trick counts, the principal variation and
+    // the replay check below all require.
+    const int value = search(ctx, st, move, root_alpha, root_beta);
+    const std::uint64_t search_nodes = ctx.nodes + presolve_nodes;
     // Snapshot before the PV walk below, which probes the table again and would
     // otherwise inflate the hit count with lookups that did no search work.
     const TTStats table_stats = ctx.tt ? ctx.tt->stats() : TTStats();
@@ -737,7 +811,7 @@ bool solve(const Position& pos, int nil_seat, const SearchOptions& opts, Solutio
     // strictly smaller subtree.  Either way the moves are the same ones the
     // search picked, so the PV matches the oracle's play for play.
     out.pv.clear();
-    if (!walk_pv(ctx, st, move, out.pv, err)) return false;
+    if (!walk_pv(ctx, st, move, out.pv, err, root_alpha, root_beta)) return false;
 
     // A solver that lies is worse than no solver.  Replaying recovers the trick
     // counts independently; re-packing them must land back on the search value.
@@ -766,12 +840,14 @@ bool solve(const Position& pos, int nil_seat, const SearchOptions& opts, Solutio
     out.value = value;
     out.nil_seat = nil_seat;
     out.mode = MODE_FULL;
+    // The presolve's work is this solve's work.  Reporting the full search
+    // alone would make item 23 look free, and it is not free -- it is cheap.
     out.nodes = search_nodes;
-    out.tt_probes = table_stats.probes;
-    out.tt_hits = table_stats.hits;
-    out.tt_partial = table_stats.partial;
-    out.tt_stores = table_stats.stores;
-    out.tt_evictions = table_stats.evictions;
+    out.tt_probes = table_stats.probes + presolve_stats.probes;
+    out.tt_hits = table_stats.hits + presolve_stats.hits;
+    out.tt_partial = table_stats.partial + presolve_stats.partial;
+    out.tt_stores = table_stats.stores + presolve_stats.stores;
+    out.tt_evictions = table_stats.evictions + presolve_stats.evictions;
     return true;
 }
 
@@ -845,8 +921,28 @@ bool solve_moves(const Position& pos, int nil_seat, const SearchOptions& opts, S
     Ctx ctx;
     configure(ctx, nil_seat, opts, weights);
 
+    std::uint64_t presolve_nodes = 0;
     const int alpha = fast ? 0 : WINDOW_MIN;
-    const int beta = fast ? 1 : WINDOW_MAX;
+    int beta = fast ? 1 : WINDOW_MAX;
+
+    // Item 23, per-card.  The same presolve bound the single-answer path takes,
+    // with one extra obligation: a row owes its own exact value, and a card
+    // that loses the nil scores on the far side of the threshold, so the tight
+    // window would hand back a bound for exactly the rows a caller most wants
+    // a number on.  Those rows -- and only those -- are re-searched wide below.
+    int tight_beta = beta;
+    if (!fast && opts.presolve_window && !opts.nil_already_set &&
+        pos.tricks_remaining() >= PRESOLVE_MIN_TRICKS) {
+        SearchOptions probe_opts = opts;
+        probe_opts.mode = MODE_FAST;
+        Solution probe;
+        std::string probe_err;
+        if (solve(pos, nil_seat, probe_opts, probe, probe_err) && !probe.nil_fails) {
+            tight_beta = max_value_if_nil_safe(pos.tricks_remaining(), weights) + 1;
+        }
+        presolve_nodes = probe.nodes;
+    }
+    beta = tight_beta;
 
     // The root search first, for two reasons.  It is the cheapest way to the
     // position's own answer -- ordering and cutoffs still apply to it -- and it
@@ -868,6 +964,14 @@ bool solve_moves(const Position& pos, int nil_seat, const SearchOptions& opts, S
         // answers about themselves, and a move list whose entries are not
         // comparable with each other is not a move list.
         ms.value = value_after(ctx, root, card, alpha, beta, nullptr);
+        // Fail-high means this card is on the far side of the presolve's
+        // threshold -- it loses the nil -- so the number above is a bound and
+        // not this row's answer.  Re-search it against the sentinels.  The
+        // table is warm by now, and there is one of these per losing card
+        // rather than one per card.
+        if (beta != WINDOW_MAX && ms.value >= beta) {
+            ms.value = value_after(ctx, root, card, WINDOW_MIN, WINDOW_MAX, nullptr);
+        }
         if (!have_best || (maximizing ? ms.value > best_value : ms.value < best_value)) {
             have_best = true;
             best_value = ms.value;
@@ -965,7 +1069,7 @@ bool solve_moves(const Position& pos, int nil_seat, const SearchOptions& opts, S
     out.nil_tricks = best->nil_tricks;
     out.nil_side_tricks = best->nil_side_tricks;
     out.opponent_tricks = best->opponent_tricks;
-    out.nodes = ctx.nodes;
+    out.nodes = ctx.nodes + presolve_nodes;
 
     const TTStats stats = ctx.tt ? ctx.tt->stats() : TTStats();
     out.tt_probes = stats.probes;
