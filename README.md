@@ -280,21 +280,78 @@ For the C# wrapper, that is the shape of the split: `nil_fails` for "can this
 still be broken", which is the question a game client asks on every trick, and
 `nil_solve` without the flag when the score needs the actual counts.
 
-From C# later, the shape is:
+### Every card, not just the answer
+
+`nil_solve_moves` fills in the same `nil_result` and additionally writes one
+`nil_move` row per legal card: the card, whether the nil fails after it, its
+trick counts in full mode, whether it is one of the best, and the other cards it
+stands for. Deliberately DDS-shaped, because the question is the same one and a
+caller that already unpacks `futureTricks` rows can unpack these.
+
+```
+Legal cards for N:
+  * S2  nil FAILS   N=2  side=3  opp=1
+  * SQ  nil FAILS   N=2  side=3  opp=1   = SK
+  * HA  nil FAILS   N=2  side=3  opp=1
+```
+
+`nil_cli --moves` prints exactly that, and is the fastest way to check a
+position by hand before wiring it into anything.
+
+Rows come one per equivalence class rather than one per card. Holding SK and SQ
+with the jack gone, the two are one move under two names, and the `equal_ranks`
+bitmask on the queen's row names the king. The encoding is DDS's, including the
+part that trips people up: the card's own rank is not set. A caller choosing a
+move ignores the mask entirely — the members of a class are interchangeable,
+which is the whole reason only one of them was searched.
+
+**What it costs**, because the number is better than the shape of the question
+suggests: the position is solved first and every card is then scored against the
+same transposition table, so the per-card searches spend most of their time
+reading back work the first search already did. Over twelve random thirteen-card
+deals in fast mode it came to 1.0x the nodes and +0.4% of the wall time of the
+plain call. The cases that cost anything are the ones the plain call answered by
+proof without looking at a card: there the position is free and the list is not,
+1 node against 79.
+
+## From C#
+
+`csharp/` holds a working wrapper — three files, no NuGet package, no build step
+on the C# side:
+
+| file | what it is |
+| --- | --- |
+| `NilSolverNative.cs` | the C ABI transcribed one-to-one |
+| `NilSolver.cs` | the managed face: error text, PV buffer sizing, move lists, fast and full as named methods |
+| `NilSolverPool.cs` | dedicated solver threads, so per-thread tables stay bounded on a server |
 
 ```csharp
-[StructLayout(LayoutKind.Sequential)]
-struct NilResult { public int NilFails, Tricks, TricksRemaining; public ulong Nodes; }
-
-[DllImport("nil_solver", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-static extern int nil_solve(string pbn, int leader, string currentTrick, int nilSeat,
-                            uint flags, out NilResult result,
-                            StringBuilder err, int errLen);
+var r = Nil.CanBeBroken(pbn, NilSeat.North, currentTrick: null, NilSeat.North,
+                        NilFlags.SpadesBroken | NilFlags.ForceLarge);
+if (r.Success) Console.WriteLine(r.NilFails ? "the nil is dead" : "the nil survives");
 ```
 
 The calling convention is `__cdecl` on every platform, and the export surface is
 exactly the header (visibility is hidden by default), so there is nothing to
 name-mangle around.
+
+One thing worth knowing before wiring this into a request path, because it is
+the opposite of the usual native-library caveat: **the solver needs no locking
+and no thread-id argument**, so concurrent calls are safe as they stand. What it
+does need is a bound on *how many threads ever call it*, since the transposition
+table is `thread_local` and a thread that has solved once holds 32 MiB until it
+exits. `csharp/README.md` covers that, along with deployment, the flags, and the
+three P/Invoke declarations that are easy to write wrongly.
+
+### Building the DLL in Visual Studio
+
+`Nil-Solver.slnx` builds the same library as CMake, to
+`build-vs\bin\x64\Release\nil_solver.dll`. Use **Release**: this is a search, and
+a Debug build is not marginally slower.
+
+The two trees are deliberately separate — `build\` for CMake, `build-vs\` for the
+IDE — so neither can overwrite the other's DLL and leave you guessing which one
+got loaded.
 
 ## Testing
 

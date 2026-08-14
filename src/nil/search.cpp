@@ -282,9 +282,78 @@ CardId nil_bidder_discard(const State& st, int nil_seat, Hand moves) {
     return highest_card(losing & suit_mask(best_suit));
 }
 
+int search(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta);
+
+// Apply `card` at `st`.  Returns what the trick banked -- zero unless this card
+// completed one -- and writes the child position to `next`.
+//
+// Split out of search()'s loop so that solve_moves() below runs the identical
+// transition rather than a second copy of it.  Two copies of this arithmetic is
+// how a move list would come to disagree with the search that produced it.
+int advance(const Ctx& ctx, const State& st, CardId card, State& next) {
+    const int seat = st.to_play();
+    const int led = st.led_suit();
+
+    next = st;
+    next.hands[seat] &= ~card_bit(card);
+    next.broken = spades_broken_after(st.broken, st.trick_len, led, card_suit(card),
+                                      ctx.break_forced);
+
+    if (st.trick_len < 3) {
+        next.trick[st.trick_len] = card;
+        next.trick_len = st.trick_len + 1;
+        return 0;
+    }
+
+    const CardId played[4] = {st.trick[0], st.trick[1], st.trick[2], card};
+    const int winner = trick_winner(st.leader, played, 4);
+    next.leader = winner;
+    next.trick_len = 0;
+    int gained = 0;
+    if (winner == ctx.nil_seat) gained += ctx.primary_weight + ctx.tertiary_weight;
+    if (((winner ^ ctx.nil_seat) & 1) == 0) gained += ctx.secondary_weight;
+    return gained;
+}
+
+// The value of playing `card` at `st`, against the window `st` was given.
+//
+// Mid-trick `gained` is zero, so the shifted window below is the unshifted one
+// and the two cases collapse into one line.  The early return stays guarded on
+// the trick actually completing, because that is the condition its argument is
+// written for and folding it in would rest on beta never reaching zero.
+int value_after(Ctx& ctx, const State& st, CardId card, int alpha, int beta, State* next_out) {
+    State next;
+    const int gained = advance(ctx, st, card, next);
+    if (next_out) *next_out = next;
+
+    if (st.trick_len == 3 && ctx.gains_nonnegative && gained >= beta) {
+        // This trick alone has already carried the line to beta, and no later
+        // trick can take it back, so the rest of the hand cannot change which
+        // side of the window the value falls on.  `gained` is a lower bound on
+        // it, which is all a fail-high owes the caller.  Chang's
+        // `if (goal <= 0) return 1`, arrived at from the window rather than
+        // from the rules.
+        //
+        // It also has a second effect worth knowing about.  In MODE_FAST the
+        // only non-zero gain is the nil bidder taking a trick, which is worth
+        // exactly 1, and beta is exactly 1 -- so this branch intercepts every
+        // gain that could have shifted the window, and the shifted call below
+        // never sees a non-zero shift.  Every node of a fast search therefore
+        // sees the same window [0, 1], every entry it stores is a bound on that
+        // window, and no probe that finds an entry ever fails to be answered by
+        // it.  The pruning is free of the usual cost of bounded entries, and
+        // Solution::tt_partial staying at zero is what checks it.
+        return gained;
+    }
+
+    CardId ignored;
+    // The child is asked about the value of the REST of the hand, so the window
+    // it has to beat is this one less what the trick just banked.
+    return gained + search(ctx, next, ignored, alpha - gained, beta - gained);
+}
+
 int search(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta) {
-    ++ctx.nodes;
-    best_move = NO_CARD;
+    ++ctx.nodes;    best_move = NO_CARD;
     if (st.empty()) return 0;
 
     // STATIC BOUNDS.  Two proofs that settle the position outright; see
@@ -399,52 +468,7 @@ int search(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta) {
             card = take_lowest(moves);
         }
 
-        State next = st;
-        next.hands[seat] &= ~card_bit(card);
-        next.broken = spades_broken_after(st.broken, st.trick_len, led, card_suit(card),
-                                          ctx.break_forced);
-
-        int value;
-        CardId ignored;
-        if (st.trick_len == 3) {
-            const CardId played[4] = {st.trick[0], st.trick[1], st.trick[2], card};
-            const int winner = trick_winner(st.leader, played, 4);
-            next.leader = winner;
-            next.trick_len = 0;
-            int gained = 0;
-            if (winner == ctx.nil_seat) gained += ctx.primary_weight + ctx.tertiary_weight;
-            if (((winner ^ ctx.nil_seat) & 1) == 0) gained += ctx.secondary_weight;
-
-            if (ctx.gains_nonnegative && gained >= beta) {
-                // This trick alone has already carried the line to beta, and no
-                // later trick can take it back, so the rest of the hand cannot
-                // change which side of the window the value falls on.  `gained`
-                // is a lower bound on it, which is all a fail-high owes the
-                // caller.  Chang's `if (goal <= 0) return 1`, arrived at from
-                // the window rather than from the rules.
-                //
-                // It also has a second effect worth knowing about.  In
-                // MODE_FAST the only non-zero gain is the nil bidder taking a
-                // trick, which is worth exactly 1, and beta is exactly 1 -- so
-                // this branch intercepts every gain that could have shifted the
-                // window, and the shifted call below is never reached.  Every
-                // node of a fast search therefore sees the same window [0, 1],
-                // every entry it stores is a bound on that window, and no probe
-                // that finds an entry ever fails to be answered by it.  The
-                // pruning is free of the usual cost of bounded entries, and
-                // Solution::tt_partial staying at zero is what checks it.
-                value = gained;
-            } else {
-                // The child is asked about the value of the REST of the hand,
-                // so the window it has to beat is this one less what the trick
-                // just banked.
-                value = gained + search(ctx, next, ignored, alpha - gained, beta - gained);
-            }
-        } else {
-            next.trick[st.trick_len] = card;
-            next.trick_len = st.trick_len + 1;
-            value = search(ctx, next, ignored, alpha, beta);
-        }
+        const int value = value_after(ctx, st, card, alpha, beta, nullptr);
 
         if (!have_best || (maximizing ? value > best : value < best)) {
             have_best = true;
@@ -514,6 +538,30 @@ void configure(Ctx& ctx, int nil_seat, const SearchOptions& opts,
         table.new_search();               // this solve may not see the last one's values
         ctx.tt = &table;
     }
+}
+
+// Walk the chosen moves down from `st`, starting with `first`, recovering the
+// line the search picked.  MODE_FULL only: it searches between sentinels, so
+// every node it revisits here answers exactly, and with the table on this is a
+// handful of lookups rather than a re-search.
+//
+// Shared by solve() and by solve_moves(), which needs one of these per root
+// move to recover that move's trick counts.
+bool walk_pv(Ctx& ctx, State st, CardId first, std::vector<Play>& pv_out, std::string& err) {
+    CardId move = first;
+    while (!st.empty()) {
+        if (move == NO_CARD) {
+            err = "internal error: no move available at a non-terminal position";
+            return false;
+        }
+        pv_out.push_back(Play{st.to_play(), move});
+        State next;
+        advance(ctx, st, move, next);
+        st = next;
+        if (st.empty()) break;
+        search(ctx, st, move, WINDOW_MIN, WINDOW_MAX);
+    }
+    return true;
 }
 
 State state_of(const Position& pos) {
@@ -654,31 +702,7 @@ bool solve(const Position& pos, int nil_seat, const SearchOptions& opts, Solutio
     // strictly smaller subtree.  Either way the moves are the same ones the
     // search picked, so the PV matches the oracle's play for play.
     out.pv.clear();
-    while (!st.empty()) {
-        const int seat = st.to_play();
-        out.pv.push_back(Play{seat, move});
-
-        const int led = st.led_suit();
-        State next = st;
-        next.hands[seat] &= ~card_bit(move);
-        next.broken = spades_broken_after(st.broken, st.trick_len, led, card_suit(move),
-                                          ctx.break_forced);
-        if (st.trick_len == 3) {
-            const CardId played[4] = {st.trick[0], st.trick[1], st.trick[2], move};
-            next.leader = trick_winner(st.leader, played, 4);
-            next.trick_len = 0;
-        } else {
-            next.trick[st.trick_len] = move;
-            next.trick_len = st.trick_len + 1;
-        }
-        st = next;
-        if (st.empty()) break;
-        search(ctx, st, move, WINDOW_MIN, WINDOW_MAX);
-        if (move == NO_CARD) {
-            err = "internal error: no move available at a non-terminal position";
-            return false;
-        }
-    }
+    if (!walk_pv(ctx, st, move, out.pv, err)) return false;
 
     // A solver that lies is worse than no solver.  Replaying recovers the trick
     // counts independently; re-packing them must land back on the search value.
@@ -718,6 +742,204 @@ bool solve(const Position& pos, int nil_seat, const SearchOptions& opts, Solutio
 
 void release_transposition_table() { shared_table().resize(0); }
 
+bool solve_moves(const Position& pos, int nil_seat, const SearchOptions& opts, Solution& out,
+                 std::vector<MoveScore>& moves_out, std::string& err) {
+    moves_out.clear();
+    if (nil_seat < 0 || nil_seat > 3) {
+        err = "nil seat out of range";
+        return false;
+    }
+    if (!validate(pos, err)) return false;
+
+    out = Solution();
+    out.nil_seat = nil_seat;
+    out.mode = opts.mode;
+
+    const int tricks_remaining = pos.tricks_remaining();
+    const ObjectiveWeights weights = objective_weights(tricks_remaining, opts);
+    const bool fast = opts.mode == MODE_FAST;
+
+    State root = state_of(pos);
+    if (root.empty()) {
+        // Nothing to play, so there is no move list to give and no search to
+        // run.  Not an error: an exhausted position is a legal thing to ask
+        // about, and the empty list is the honest answer.
+        out.nil_tricks = fast ? TRICKS_NOT_COMPUTED : 0;
+        out.nil_side_tricks = fast ? TRICKS_NOT_COMPUTED : 0;
+        out.opponent_tricks = fast ? TRICKS_NOT_COMPUTED : 0;
+        out.nil_fails = opts.nil_already_set;
+        return true;
+    }
+
+    const int seat = root.to_play();
+    const bool maximizing = ((seat ^ nil_seat) & 1) != 0;
+
+    // Enumerate the root's legal cards, and record which of them are the same
+    // move under another name BEFORE any of them is searched -- the classes are
+    // a property of this position, and playing a card changes it.
+    const Hand legal = legal_moves(root.hands[seat], root.trick_len, root.led_suit(), root.broken);
+    const Hand relevant =
+        relevant_cards(root.hands, trick_best_card(root.trick, root.trick_len));
+    Hand reps = legal;
+    if (opts.collapse_equivalents && (legal & (legal - 1)) != 0) {
+        reps = distinct_moves(legal, relevant);
+    }
+
+    // Fast mode with the nil already set answers without looking at a card, the
+    // same way solve() does -- the caller has asserted the only thing this mode
+    // computes.  Every legal card gets the same answer, because it is not an
+    // answer about the cards.
+    if (fast && opts.nil_already_set) {
+        out.nil_fails = true;
+        out.nil_tricks = TRICKS_NOT_COMPUTED;
+        out.nil_side_tricks = TRICKS_NOT_COMPUTED;
+        out.opponent_tricks = TRICKS_NOT_COMPUTED;
+        for (Hand h = reps; h;) {
+            const CardId card = take_lowest(h);
+            MoveScore ms;
+            ms.card = card;
+            ms.equals = opts.collapse_equivalents ? equivalent_moves(card, legal, relevant)
+                                                  : card_bit(card);
+            ms.nil_fails = true;
+            ms.is_best = true;
+            moves_out.push_back(ms);
+        }
+        return true;
+    }
+
+    Ctx ctx;
+    configure(ctx, nil_seat, opts, weights);
+
+    const int alpha = fast ? 0 : WINDOW_MIN;
+    const int beta = fast ? 1 : WINDOW_MAX;
+
+    // The root search first, for two reasons.  It is the cheapest way to the
+    // position's own answer -- ordering and cutoffs still apply to it -- and it
+    // warms the shared table, so the per-move searches below spend much of
+    // their time reading back work this one already did.
+    CardId root_move = NO_CARD;
+    const int root_value = search(ctx, root, root_move, alpha, beta);
+
+    int best_value = 0;
+    bool have_best = false;
+    for (Hand h = reps; h;) {
+        const CardId card = take_lowest(h);
+        MoveScore ms;
+        ms.card = card;
+        ms.equals =
+            opts.collapse_equivalents ? equivalent_moves(card, legal, relevant) : card_bit(card);
+        // Same window every move, deliberately.  Narrowing it as the loop went
+        // would make later entries bounds relative to earlier ones rather than
+        // answers about themselves, and a move list whose entries are not
+        // comparable with each other is not a move list.
+        ms.value = value_after(ctx, root, card, alpha, beta, nullptr);
+        if (!have_best || (maximizing ? ms.value > best_value : ms.value < best_value)) {
+            have_best = true;
+            best_value = ms.value;
+        }
+        moves_out.push_back(ms);
+    }
+
+    if (moves_out.empty()) {
+        err = "internal error: no legal move at a non-terminal position";
+        return false;
+    }
+
+    // The cross-check this entry point gets in place of a principal variation
+    // replay: scoring every move and taking the extremum must land where the
+    // ordinary search landed.  In MODE_FULL that is exact, because nothing
+    // cuts.  In MODE_FAST the root may have stopped at the first card that
+    // settled the window, so its value is a bound and only the BOOLEAN is
+    // required to agree -- which is the whole of what that mode claims.
+    if (fast) {
+        if ((best_value > 0) != (root_value > 0)) {
+            std::ostringstream os;
+            os << "internal inconsistency: the position says nil_fails=" << (root_value > 0)
+               << " and the best of its " << moves_out.size() << " move(s) says "
+               << (best_value > 0);
+            err = os.str();
+            return false;
+        }
+    } else if (best_value != root_value) {
+        std::ostringstream os;
+        os << "internal inconsistency: the position scores " << root_value
+           << " and the best of its " << moves_out.size() << " move(s) scores " << best_value;
+        err = os.str();
+        return false;
+    }
+
+    for (MoveScore& ms : moves_out) {
+        ms.is_best = ms.value == best_value;
+        if (fast) {
+            ms.nil_fails = ms.value > 0;
+            continue;
+        }
+        // MODE_FULL owes each move its trick counts, and they are recovered the
+        // way solve() recovers the position's: walk the line this move leads
+        // to, replay it from the ORIGINAL position with the move at its head,
+        // and read the tally off the replay.  That keeps one implementation of
+        // the counting -- replay_pv -- rather than adding a second that would
+        // have to remember to credit the trick this card completes.
+        State child;
+        advance(ctx, root, ms.card, child);
+        CardId next_move = NO_CARD;
+        if (!child.empty()) search(ctx, child, next_move, WINDOW_MIN, WINDOW_MAX);
+
+        std::vector<Play> line;
+        line.push_back(Play{seat, ms.card});
+        if (!child.empty() && !walk_pv(ctx, child, next_move, line, err)) return false;
+
+        Tally tally;
+        if (!replay_pv(pos, line, nil_seat, opts.break_on_forced_spade_lead, tally, err)) {
+            err = "internal inconsistency replaying " + card_to_string(ms.card) + ": " + err;
+            return false;
+        }
+        const int replayed = (weights.primary + weights.tertiary) * tally.nil_tricks +
+                             weights.secondary * tally.nil_side_tricks;
+        if (replayed != ms.value) {
+            std::ostringstream os;
+            os << "internal inconsistency: " << card_to_string(ms.card) << " scores " << ms.value
+               << ", replaying its line gives " << replayed << " (nil=" << tally.nil_tricks
+               << ", side=" << tally.nil_side_tricks << ")";
+            err = os.str();
+            return false;
+        }
+        ms.nil_tricks = tally.nil_tricks;
+        ms.nil_side_tricks = tally.nil_side_tricks;
+        ms.opponent_tricks = tally.opponent_tricks;
+        ms.nil_fails = opts.nil_already_set || tally.nil_tricks > 0;
+
+        // The first best move in canonical order is the one solve() would have
+        // picked -- it enumerates from the bottom and replaces the incumbent
+        // only on a strict improvement -- so keeping its line gives this entry
+        // point the same principal variation, already replay-checked above.
+        if (out.pv.empty() && ms.value == best_value) out.pv = line;
+    }
+
+    // The position's own answer, taken from a best move rather than searched
+    // for a second time.
+    const MoveScore* best = nullptr;
+    for (const MoveScore& ms : moves_out) {
+        if (ms.is_best) {
+            best = &ms;
+            break;
+        }
+    }
+    out.value = fast ? root_value : best_value;
+    out.nil_fails = fast ? root_value > 0 : best->nil_fails;
+    out.nil_tricks = best->nil_tricks;
+    out.nil_side_tricks = best->nil_side_tricks;
+    out.opponent_tricks = best->opponent_tricks;
+    out.nodes = ctx.nodes;
+
+    const TTStats stats = ctx.tt ? ctx.tt->stats() : TTStats();
+    out.tt_probes = stats.probes;
+    out.tt_hits = stats.hits;
+    out.tt_partial = stats.partial;
+    out.tt_stores = stats.stores;
+    out.tt_evictions = stats.evictions;
+    return true;
+}
 bool replay_pv(const Position& pos, const std::vector<Play>& pv, int nil_seat,
                bool break_on_forced_spade_lead, Tally& tally_out, std::string& err) {
     Hand hands[4];

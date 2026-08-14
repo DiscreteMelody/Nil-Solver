@@ -11,6 +11,7 @@
 #include <cstring>
 #include <iostream>
 #include <string>
+#include <vector>
 
 #include "nil/position.hpp"
 #include "nil/search.hpp"
@@ -59,6 +60,9 @@ void usage(const char* argv0) {
         << "                          fast mode only)\n"
         << "  --tt-mb <n>             transposition table size in MiB          [32]\n"
         << "  --tt-stats              also report transposition table behaviour\n"
+        << "  --moves                 score every legal card, not just the best:\n"
+        << "                          one line per card with whether the nil\n"
+        << "                          survives it and what it costs\n"
         << "  --compact               print only the machine-readable result\n"
         << "  --force                 allow more than 9 cards per hand (very slow)\n"
         << "  --help                  this message\n";
@@ -82,6 +86,7 @@ int main(int argc, char** argv) {
     std::string nil_text = "N";
     bool spades_broken = false;
     bool compact = false;
+    bool list_moves = false;
     bool force = false;
     bool tt_stats = false;
     nil::SearchOptions opts;
@@ -147,6 +152,8 @@ int main(int argc, char** argv) {
             opts.tt_megabytes = static_cast<std::size_t>(value);
         } else if (arg == "--tt-stats") {
             tt_stats = true;
+        } else if (arg == "--moves") {
+            list_moves = true;
         } else if (arg == "--compact") {
             compact = true;
         } else if (arg == "--force") {
@@ -211,7 +218,13 @@ int main(int argc, char** argv) {
     }
 
     nil::Solution sol;
-    if (!nil::solve(pos, nil_seat, opts, sol, err)) {
+    std::vector<nil::MoveScore> scored;
+    if (list_moves) {
+        if (!nil::solve_moves(pos, nil_seat, opts, sol, scored, err)) {
+            std::cerr << "error: " << err << "\n";
+            return 3;
+        }
+    } else if (!nil::solve(pos, nil_seat, opts, sol, err)) {
         std::cerr << "error: " << err << "\n";
         return 3;
     }
@@ -232,6 +245,24 @@ int main(int argc, char** argv) {
         // dictionary and would not mind them, but a diagnostic that appears
         // unasked in a machine-readable stream is how a parser starts depending
         // on it.
+        // One `move=` line per card, in canonical order, fields separated by
+        // colons: card, whether the nil fails after it, the three trick counts,
+        // whether it is one of the best, and the equal cards it stands for.
+        for (const nil::MoveScore& m : scored) {
+            std::cout << "move=" << nil::card_to_string(m.card) << ':'
+                      << (m.nil_fails ? 1 : 0) << ':' << m.nil_tricks << ':'
+                      << m.nil_side_tricks << ':' << m.opponent_tricks << ':'
+                      << (m.is_best ? 1 : 0) << ':';
+            bool first = true;
+            for (nil::Hand h = m.equals; h;) {
+                const nil::CardId c = nil::take_lowest(h);
+                if (c == m.card) continue;
+                if (!first) std::cout << ',';
+                std::cout << nil::card_to_string(c);
+                first = false;
+            }
+            std::cout << "\n";
+        }
         if (tt_stats) {
             std::cout << "tt_probes=" << sol.tt_probes << "\n"
                       << "tt_hits=" << sol.tt_hits << "\n"
@@ -241,6 +272,31 @@ int main(int argc, char** argv) {
         }
     } else {
         std::cout << nil::format_solution(pos, sol, opts) << "\n";
+        if (list_moves) {
+            const bool fast = opts.mode == nil::MODE_FAST;
+            std::cout << "Legal cards for " << nil::SEAT_CHARS[(pos.leader + pos.trick_len) & 3]
+                      << ":\n";
+            for (const nil::MoveScore& m : scored) {
+                std::cout << "  " << (m.is_best ? '*' : ' ') << ' '
+                          << nil::card_to_string(m.card) << "  "
+                          << (m.nil_fails ? "nil FAILS " : "nil holds ");
+                if (!fast) {
+                    std::cout << "  " << nil::SEAT_CHARS[sol.nil_seat] << '=' << m.nil_tricks
+                              << "  side=" << m.nil_side_tricks
+                              << "  opp=" << m.opponent_tricks;
+                }
+                bool first = true;
+                for (nil::Hand h = m.equals; h;) {
+                    const nil::CardId c = nil::take_lowest(h);
+                    if (c == m.card) continue;
+                    std::cout << (first ? "   = " : ",") << nil::card_to_string(c);
+                    first = false;
+                }
+                std::cout << "\n";
+            }
+            std::cout << "  (* marks a card that achieves the position's value; cards after "
+                         "'=' are the\n   same move under another name)\n";
+        }
         if (tt_stats) {
             // `partial` is the one to read.  It counts probes that found the
             // position but held a bound too weak to settle the window being

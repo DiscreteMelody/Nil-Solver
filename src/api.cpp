@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "nil/position.hpp"
 #include "nil/search.hpp"
@@ -28,14 +29,12 @@ void copy_err(char* buf, std::int32_t len, const std::string& msg) {
     buf[n] = '\0';
 }
 
-// Shared body for nil_solve / nil_solve_pv.
-std::int32_t solve_impl(const char* pbn, std::int32_t leader, const char* current_trick,
-                        std::int32_t nil_seat, std::uint32_t flags, nil_result* out,
-                        std::string* pv_out, char* err_buf, std::int32_t err_len) {
-    if (!pbn || !out) {
-        copy_err(err_buf, err_len, "null argument");
-        return NIL_ERR_NULL_ARG;
-    }
+// Parse the caller's strings into a Position and translate the flags word into
+// SearchOptions.  Shared by every entry point, so there is one place where a
+// flag means what it means.
+std::int32_t prepare(const char* pbn, std::int32_t leader, const char* current_trick,
+                     std::int32_t nil_seat, std::uint32_t flags, nil::Position& pos,
+                     nil::SearchOptions& opts, char* err_buf, std::int32_t err_len) {
     if (leader < 0 || leader > 3) {
         copy_err(err_buf, err_len, "leader out of range (expected 0..3 for N/E/S/W)");
         return NIL_ERR_ILLEGAL_POSITION;
@@ -46,7 +45,6 @@ std::int32_t solve_impl(const char* pbn, std::int32_t leader, const char* curren
     }
 
     std::string err;
-    nil::Position pos;
     if (!nil::parse_pbn(pbn, pos.hands, err)) {
         copy_err(err_buf, err_len, err);
         return NIL_ERR_PARSE;
@@ -82,7 +80,6 @@ std::int32_t solve_impl(const char* pbn, std::int32_t leader, const char* curren
         return NIL_ERR_TOO_MANY_CARDS;
     }
 
-    nil::SearchOptions opts;
     opts.break_on_forced_spade_lead = (flags & NIL_FLAG_BREAK_ON_FORCED_SPADE_LEAD) != 0;
     opts.use_memo = (flags & NIL_FLAG_NO_MEMO) == 0;
     opts.collapse_equivalents = (flags & NIL_FLAG_NO_COLLAPSE) == 0;
@@ -92,13 +89,10 @@ std::int32_t solve_impl(const char* pbn, std::int32_t leader, const char* curren
     opts.minimise_own_tricks = (flags & NIL_FLAG_MINIMISE_OWN_TRICKS) != 0;
     opts.nil_already_set = (flags & NIL_FLAG_NIL_ALREADY_SET) != 0;
     opts.mode = (flags & NIL_FLAG_FAST_MODE) != 0 ? nil::MODE_FAST : nil::MODE_FULL;
+    return NIL_OK;
+}
 
-    nil::Solution sol;
-    if (!nil::solve(pos, nil_seat, opts, sol, err)) {
-        copy_err(err_buf, err_len, err);
-        return NIL_ERR_INTERNAL;
-    }
-
+void fill_result(nil_result* out, const nil::Solution& sol, int tricks_remaining) {
     out->nil_fails = sol.nil_fails ? 1 : 0;
     // nil::TRICKS_NOT_COMPUTED and NIL_TRICKS_UNKNOWN are the same -1; the two
     // names exist so neither side of the boundary has to include the other's
@@ -106,8 +100,32 @@ std::int32_t solve_impl(const char* pbn, std::int32_t leader, const char* curren
     out->nil_tricks = sol.nil_tricks;
     out->nil_side_tricks = sol.nil_side_tricks;
     out->opponent_tricks = sol.opponent_tricks;
-    out->tricks_remaining = pos.tricks_remaining();
+    out->tricks_remaining = tricks_remaining;
     out->nodes = sol.nodes;
+}
+
+// Shared body for nil_solve / nil_solve_pv.
+std::int32_t solve_impl(const char* pbn, std::int32_t leader, const char* current_trick,
+                        std::int32_t nil_seat, std::uint32_t flags, nil_result* out,
+                        std::string* pv_out, char* err_buf, std::int32_t err_len) {
+    if (!pbn || !out) {
+        copy_err(err_buf, err_len, "null argument");
+        return NIL_ERR_NULL_ARG;
+    }
+    nil::Position pos;
+    nil::SearchOptions opts;
+    const std::int32_t rc =
+        prepare(pbn, leader, current_trick, nil_seat, flags, pos, opts, err_buf, err_len);
+    if (rc != NIL_OK) return rc;
+
+    std::string err;
+    nil::Solution sol;
+    if (!nil::solve(pos, nil_seat, opts, sol, err)) {
+        copy_err(err_buf, err_len, err);
+        return NIL_ERR_INTERNAL;
+    }
+
+    fill_result(out, sol, pos.tricks_remaining());
     if (pv_out) *pv_out = nil::format_pv_compact(sol);
     return NIL_OK;
 }
@@ -171,6 +189,66 @@ NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_fails(const char* pbn, std::int3
     const std::int32_t rc = solve_impl(pbn, leader, current_trick, nil_seat,
                                        flags | NIL_FLAG_FAST_MODE, &result, nullptr, nullptr, 0);
     return rc == NIL_OK ? result.nil_fails : rc;
+}
+
+NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve_moves(
+    const char* pbn, std::int32_t leader, const char* current_trick, std::int32_t nil_seat,
+    std::uint32_t flags, nil_result* out, nil_move* moves, std::int32_t moves_cap,
+    std::int32_t* moves_len, char* err_buf, std::int32_t err_len) {
+    if (!pbn || !out || !moves || !moves_len) {
+        copy_err(err_buf, err_len, "null argument");
+        return NIL_ERR_NULL_ARG;
+    }
+    *moves_len = 0;
+
+    nil::Position pos;
+    nil::SearchOptions opts;
+    const std::int32_t rc =
+        prepare(pbn, leader, current_trick, nil_seat, flags, pos, opts, err_buf, err_len);
+    if (rc != NIL_OK) return rc;
+
+    std::string err;
+    nil::Solution sol;
+    std::vector<nil::MoveScore> scored;
+    if (!nil::solve_moves(pos, nil_seat, opts, sol, scored, err)) {
+        copy_err(err_buf, err_len, err);
+        return NIL_ERR_INTERNAL;
+    }
+
+    fill_result(out, sol, pos.tricks_remaining());
+    *moves_len = static_cast<std::int32_t>(scored.size());
+
+    // The count goes out even when the buffer was too small, so a caller can
+    // size and ask again rather than guess.  NIL_MAX_MOVES always fits.
+    if (moves_cap < static_cast<std::int32_t>(scored.size())) {
+        copy_err(err_buf, err_len, "move buffer too small");
+        return NIL_ERR_BUFFER_TOO_SMALL;
+    }
+
+    for (std::size_t i = 0; i < scored.size(); ++i) {
+        const nil::MoveScore& src = scored[i];
+        nil_move& dst = moves[i];
+        dst.suit = nil::card_suit(src.card);
+        dst.rank = nil::card_rank(src.card);
+
+        // The core's mask includes the card itself; DDS's `equals` does not, and
+        // a caller porting from it will iterate the mask AND emit the named card
+        // separately.  Clearing our own bit here is what keeps that loop from
+        // reporting the card twice.
+        std::int32_t equal_ranks = 0;
+        for (nil::Hand h = src.equals; h;) {
+            const nil::CardId c = nil::take_lowest(h);
+            if (c != src.card) equal_ranks |= 1 << nil::card_rank(c);
+        }
+        dst.equal_ranks = equal_ranks;
+
+        dst.nil_fails = src.nil_fails ? 1 : 0;
+        dst.nil_tricks = src.nil_tricks;
+        dst.nil_side_tricks = src.nil_side_tricks;
+        dst.opponent_tricks = src.opponent_tricks;
+        dst.is_best = src.is_best ? 1 : 0;
+    }
+    return NIL_OK;
 }
 
 NIL_SOLVER_API void NIL_SOLVER_CALL nil_set_table_size(std::uint32_t megabytes) {

@@ -1377,6 +1377,181 @@ int main(int argc, char** argv) {
         check("version string", std::string(nil_solver_version()), std::string("0.1.0"));
     }
 
+    // ---- the move list -----------------------------------------------------
+    //
+    // The property that matters is that scoring every card cannot disagree with
+    // scoring the position, so most of these are differentials rather than
+    // pinned numbers: solve_moves against solve, and each row against an
+    // independent solve of the position that row leads to.
+    {
+        std::cout << "\nMove list\n";
+
+        // Rank equivalence with a witness a person can check.  North holds
+        // SK SQ S2 and the jack is West's, so the king and the queen are one
+        // move under two names and the deuce is not -- East's 543 sit between.
+        nil::Position pos;
+        std::string err;
+        check("equivalence deal parses",
+              nil::parse_pbn("N:KQ2.A.. 543.2.. A76.3.. J98.4..", pos.hands, err), true);
+        pos.leader = nil::SEAT_NORTH;
+        pos.spades_broken = true;
+
+        nil::SearchOptions opts;
+        nil::Solution sol;
+        std::vector<nil::MoveScore> moves;
+        check("solve_moves succeeds", nil::solve_moves(pos, nil::SEAT_NORTH, opts, sol, moves, err),
+              true);
+        check("one row per class", moves.size(), std::size_t{3});
+        check("rows are in canonical order",
+              nil::card_to_string(moves[0].card) + " " + nil::card_to_string(moves[1].card) + " " +
+                  nil::card_to_string(moves[2].card),
+              std::string("S2 SQ HA"));
+        check("the queen stands for the king",
+              nil::hand_to_string(moves[1].equals), std::string("SQ SK"));
+        check("the deuce stands for itself", nil::hand_to_string(moves[0].equals),
+              std::string("S2"));
+
+        // Every legal card is named exactly once across the rows: the classes
+        // partition the legal moves, so a caller expanding them gets the whole
+        // move set and no card twice.
+        nil::Hand covered = 0;
+        int overlaps = 0;
+        for (const nil::MoveScore& m : moves) {
+            if (covered & m.equals) ++overlaps;
+            covered |= m.equals;
+        }
+        const nil::Hand legal = nil::legal_moves(pos.hands[nil::SEAT_NORTH], 0, -1, true);
+        check("the classes cover every legal card", nil::hand_to_string(covered),
+              nil::hand_to_string(legal));
+        check("and never name one twice", overlaps, 0);
+
+        // The move list must not move the position's own answer.
+        nil::Solution plain;
+        check("solve succeeds", nil::solve(pos, nil::SEAT_NORTH, opts, plain, err), true);
+        check("move list agrees on the value", sol.value, plain.value);
+        check("move list agrees on nil_fails", sol.nil_fails, plain.nil_fails);
+        check("move list agrees on the nil count", sol.nil_tricks, plain.nil_tricks);
+        check("move list reproduces the principal variation", nil::format_pv_compact(sol),
+              nil::format_pv_compact(plain));
+
+        // The differential.  Each row says what happens after its card; solving
+        // the position that card actually reaches has to say the same thing, by
+        // a path that shares nothing with solve_moves but the rules.
+        int row_mismatches = 0;
+        for (const nil::MoveScore& m : moves) {
+            nil::Position child = pos;
+            const int seat = (pos.leader + pos.trick_len) & 3;
+            child.hands[seat] &= ~nil::card_bit(m.card);
+            child.spades_broken = nil::spades_broken_after(
+                pos.spades_broken, pos.trick_len, pos.trick_len ? nil::card_suit(pos.trick[0]) : -1,
+                nil::card_suit(m.card), opts.break_on_forced_spade_lead);
+            if (pos.trick_len == 3) {
+                const nil::CardId played[4] = {pos.trick[0], pos.trick[1], pos.trick[2], m.card};
+                child.leader = nil::trick_winner(pos.leader, played, 4);
+                child.trick_len = 0;
+            } else {
+                child.trick[pos.trick_len] = m.card;
+                child.trick_len = pos.trick_len + 1;
+            }
+
+            nil::Solution after;
+            if (!nil::solve(child, nil::SEAT_NORTH, opts, after, err)) {
+                ++row_mismatches;
+                continue;
+            }
+            // The child reports the REST of the hand; the row also carries the
+            // trick this card completed, which mid-trick is none.
+            if (after.nil_tricks != m.nil_tricks || after.nil_fails != m.nil_fails) {
+                ++row_mismatches;
+            }
+        }
+        check("every row matches an independent solve of the position it reaches",
+              row_mismatches, 0);
+
+        // Fast mode: same booleans, no counts.
+        nil::SearchOptions fast = opts;
+        fast.mode = nil::MODE_FAST;
+        nil::Solution fsol;
+        std::vector<nil::MoveScore> fmoves;
+        check("fast move list succeeds",
+              nil::solve_moves(pos, nil::SEAT_NORTH, fast, fsol, fmoves, err), true);
+        check("fast mode lists the same cards", fmoves.size(), moves.size());
+        int boolean_mismatches = 0;
+        int counted = 0;
+        for (std::size_t i = 0; i < fmoves.size() && i < moves.size(); ++i) {
+            if (fmoves[i].card != moves[i].card) ++boolean_mismatches;
+            if (fmoves[i].nil_fails != moves[i].nil_fails) ++boolean_mismatches;
+            if (fmoves[i].nil_tricks != nil::TRICKS_NOT_COMPUTED) ++counted;
+        }
+        check("fast mode agrees card for card on the boolean", boolean_mismatches, 0);
+        check("fast mode withholds the per-card counts", counted, 0);
+
+        // An exhausted position is a legal thing to ask about, and the answer
+        // is an empty list rather than an error.
+        nil::Position done;
+        for (int s = 0; s < 4; ++s) done.hands[s] = 0;
+        done.leader = nil::SEAT_NORTH;
+        nil::Solution dsol;
+        std::vector<nil::MoveScore> dmoves;
+        check("an empty position is not an error",
+              nil::solve_moves(done, nil::SEAT_NORTH, opts, dsol, dmoves, err), true);
+        check("and lists no moves", dmoves.size(), std::size_t{0});
+    }
+
+    // ---- the move list across the C ABI ------------------------------------
+    {
+        std::cout << "\nC ABI: nil_solve_moves\n";
+        nil_result r;
+        nil_move rows[NIL_MAX_MOVES];
+        std::int32_t count = -1;
+        char err[256] = {0};
+
+        const std::int32_t rc =
+            nil_solve_moves("N:2...  A... K... Q...", NIL_SEAT_NORTH, "", NIL_SEAT_NORTH,
+                            NIL_FLAG_NONE, &r, rows, NIL_MAX_MOVES, &count, err, sizeof err);
+        check("nil_solve_moves returns NIL_OK", static_cast<long long>(rc), 0LL);
+        check("one legal card", static_cast<long long>(count), 1LL);
+        check("and it is the spade deuce",
+              std::to_string(rows[0].suit) + ":" + std::to_string(rows[0].rank),
+              std::string("0:2"));
+        check("which is forced, so it is best", static_cast<long long>(rows[0].is_best), 1LL);
+        check("it stands for no other card", static_cast<long long>(rows[0].equal_ranks), 0LL);
+
+        // A buffer too small reports the size it needed rather than leaving the
+        // caller to guess.
+        std::int32_t needed = -1;
+        const std::int32_t rc_small = nil_solve_moves(
+            "N:KQ2.A.. 543.2.. A76.3.. J98.4..", NIL_SEAT_NORTH, "", NIL_SEAT_NORTH,
+            NIL_FLAG_SPADES_BROKEN, &r, rows, 1, &needed, err, sizeof err);
+        check("a small buffer is rejected", static_cast<long long>(rc_small),
+              static_cast<long long>(NIL_ERR_BUFFER_TOO_SMALL));
+        check("and still reports the count needed", static_cast<long long>(needed), 3LL);
+
+        // The equals bitfield uses DDS's encoding: bit r for rank r, and the
+        // card's own rank left clear.
+        std::int32_t n2 = 0;
+        const std::int32_t rc2 = nil_solve_moves(
+            "N:KQ2.A.. 543.2.. A76.3.. J98.4..", NIL_SEAT_NORTH, "", NIL_SEAT_NORTH,
+            NIL_FLAG_SPADES_BROKEN, &r, rows, NIL_MAX_MOVES, &n2, err, sizeof err);
+        check("the equivalence deal returns NIL_OK", static_cast<long long>(rc2), 0LL);
+        check("three classes", static_cast<long long>(n2), 3LL);
+        check("the queen's row names the king",
+              static_cast<long long>(rows[1].equal_ranks), static_cast<long long>(1 << 13));
+        check("and does not name itself",
+              static_cast<long long>(rows[1].equal_ranks & (1 << 12)), 0LL);
+
+        // Fast mode withholds the counts here too.
+        std::int32_t n3 = 0;
+        const std::int32_t rc3 = nil_solve_moves(
+            "N:KQ2.A.. 543.2.. A76.3.. J98.4..", NIL_SEAT_NORTH, "", NIL_SEAT_NORTH,
+            NIL_FLAG_SPADES_BROKEN | NIL_FLAG_FAST_MODE, &r, rows, NIL_MAX_MOVES, &n3, err,
+            sizeof err);
+        check("fast mode returns NIL_OK", static_cast<long long>(rc3), 0LL);
+        check("fast mode lists the same three", static_cast<long long>(n3), 3LL);
+        check("fast mode withholds a row's count", static_cast<long long>(rows[0].nil_tricks),
+              static_cast<long long>(NIL_TRICKS_UNKNOWN));
+    }
+
     std::cout << "\n";
     if (g_failures) {
         std::cout << "FAILURES: " << g_failures << "\n";

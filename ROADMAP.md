@@ -28,6 +28,7 @@ is what the pruned answer is checked against.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ✅ | ~~Per-card move list across the ABI~~ | patch 21 | `nil_solve_moves` scores every legal card, not just the best: one row per equivalence class with the boolean, the trick counts in full mode, DDS-shaped `equal_ranks`, and an `is_best` flag. **1.0x nodes, +0.4% wall** against the plain call — the root search warms the table and the per-card searches mostly read it back. `MODE_FULL` unchanged node for node |
 | ✅ | Bitboard state representation | patch 1 | `Hand = uint64_t`, `suit * 16 + rank`, ctz move extraction, mask-based `legal_moves` |
 | ✅ | Compact canonical state key | patch 7 | 21 + 2n bits at a trick boundary; rank-relative, trick-as-threshold |
 | ✅ | Bounded transposition table | patch 7 | 4-way buckets, evict-shallowest, generation-stamped, full 128-bit key stored |
@@ -1031,10 +1032,64 @@ this item is worth another look.
 
 ---
 
+### 21. ~~Per-card move list across the ABI~~ — ⭐⭐⭐ — **done, patch 21**
+
+Not on this list when it was written. It came from the C# side: the DDS wrapper
+the web app already uses returns a `futureTricks` row per legal card, and a nil
+solver that returns only the position's answer cannot score a player's actual
+choice or colour a hand to show which cards were safe.
+
+`nil_solve_moves` fills in the same `nil_result` and additionally writes one
+`nil_move` per legal card. In `MODE_FULL` each row carries the three trick
+counts; in `MODE_FAST` it carries the boolean, which is what that mode computes.
+
+**What it cost, and why it is nearly nothing.** The obvious fear is that asking
+about every card forbids the very thing the boolean search is for — stopping at
+the first card that settles the question. It does forbid that, and it does not
+matter, because the root position is solved first and every card is then scored
+against the *same* transposition table. The per-card searches spend almost all
+their time reading back work the first search already did. Over twelve random
+thirteen-card deals in fast mode:
+
+| | nodes | wall |
+|---|---:|---:|
+| `solve` | 166,184,672 | 33,488 ms |
+| `solve_moves` | 166,185,277 | 33,630 ms |
+| | **1.0x** | **+0.4%** |
+
+The only positions where it costs anything are the ones the plain call answered
+by static proof without looking at a card. There the position is free and the
+move list is not — 1 node against 79 — which is not a number anybody has to plan
+around.
+
+**Three implementation notes worth carrying forward.**
+
+- *The per-move transition is not a second copy.* `advance` and `value_after`
+  were lifted out of `search`'s own loop, and both callers use them. Two copies
+  of that arithmetic is exactly how a move list comes to disagree with the search
+  that produced it.
+- *The classes are recovered rather than recomputed.* `equivalent_moves` reads
+  `distinct_moves` backwards — walk up from the representative, stopping at the
+  first relevant card that is not a move. It is the same fact stated in the other
+  direction, so the two cannot drift.
+- *The cross-check replaces the PV replay for this entry point.* Scoring every
+  move and taking the extremum has to land where the ordinary search landed:
+  exactly in `MODE_FULL`, which never cuts, and on the boolean in `MODE_FAST`,
+  where the root may have stopped early and its value is a bound. Per row,
+  `MODE_FULL` additionally replays that row's own line and requires the repacked
+  tally to equal the row's score — the same self-check `solve` runs, once per
+  card.
+
+Verified by `corpus_moves` and `corpus_moves_fast`, which run the whole
+560-position corpus through both readings and require the list to agree with the
+position, the classes to partition the legal cards rather than a subset of them,
+and the chosen line to be the same one. `MODE_FULL` is unchanged node for node:
+still 2,647,731 on the corpus.
+
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 9 → 8 → 10 → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 9 → 8 → 10 → measure → 11..14
 ```
 
 `⊘` is item 5: closed without being built, because it has no population. See its

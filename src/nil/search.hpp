@@ -288,6 +288,68 @@ ObjectiveWeights objective_weights(int tricks_remaining, const SearchOptions& op
 bool solve(const Position& pos, int nil_seat, const SearchOptions& opts,
            Solution& out, std::string& err);
 
+// One legal card at the root, and what playing it leads to.
+//
+// This is the DDS-shaped answer: not "what should I play" but "here is every
+// card you may play, and here is what each one costs".  A game client scores
+// its own move list against it; a teaching tool shows the player which cards
+// were safe and which threw the nil away.
+struct MoveScore {
+    // The card, and the other legal cards that are the same move under a
+    // different name.
+    //
+    // `equals` ALWAYS includes `card` itself, so it is never zero and a caller
+    // that wants every legal card can iterate `equals` and ignore `card`.  With
+    // the jack gone, playing the king and playing the queen reach positions
+    // that differ only by swapping two labels, so the search looks at one of
+    // them and this records the other -- the same reduction rules.hpp already
+    // performs, read backwards.  Under collapse_equivalents = false every class
+    // is a singleton and `equals` is just `card`.
+    CardId card = NO_CARD;
+    Hand equals = 0;
+
+    // Does the nil fail AFTER this card is played, against best play by
+    // everyone from there on?
+    //
+    // Read it from whichever side you are on: for the nil bidder or its
+    // covering partner, false means this card holds the nil together; for an
+    // opponent, true means this card breaks it.  It is one fact rather than
+    // two, because a double-dummy answer does not depend on who asked.
+    bool nil_fails = false;
+
+    // As Solution's, but for the position after this card, and INCLUDING the
+    // trick this card completes if it completes one.  TRICKS_NOT_COMPUTED in
+    // MODE_FAST, for the reason Solution gives.
+    int nil_tricks = TRICKS_NOT_COMPUTED;
+    int nil_side_tricks = TRICKS_NOT_COMPUTED;
+    int opponent_tricks = TRICKS_NOT_COMPUTED;
+
+    // The scalar this move scored on the position's own objective, comparable
+    // with Solution::value and with the other entries in the list.
+    int value = 0;
+
+    // True when this card achieves the position's value -- i.e. it is one of
+    // the moves the search would have been content to pick.  There is usually
+    // more than one.
+    bool is_best = false;
+};
+
+// Validates, then scores EVERY legal card at the root rather than just the best
+// one.  `out` is filled in as solve() would fill it, and `moves_out` gets one
+// entry per equivalence class (or per legal card under
+// collapse_equivalents = false), in canonical order: suit-major, ascending
+// rank.
+//
+// The cost is not the same as solve()'s, and in MODE_FAST it is not close.  The
+// whole point of a boolean search is that it stops at the first card that
+// settles the question; asking about all of them forbids exactly that, so
+// expect several times the work of the plain call.  One transposition table is
+// shared across the root moves, which is what keeps the multiple from being the
+// branching factor.  MODE_FULL is nearer to free: it never cut in the first
+// place, so the extra work is the bookkeeping rather than the search.
+bool solve_moves(const Position& pos, int nil_seat, const SearchOptions& opts, Solution& out,
+                 std::vector<MoveScore>& moves_out, std::string& err);
+
 // Replays a PV, checking every play for legality and turn order, and reports
 // who took what.  Also useful for checking a PV produced elsewhere.
 bool replay_pv(const Position& pos, const std::vector<Play>& pv, int nil_seat,

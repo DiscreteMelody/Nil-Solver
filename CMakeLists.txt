@@ -147,6 +147,23 @@ if(NIL_SOLVER_BUILD_TESTS)
     # added the same way, one patch ahead of the pruning it was there to check,
     # and it is cheaper to have the test already running than to remember to
     # write it in the patch that needs it.
+    # The move list against the search that produced it.  Scoring every legal
+    # card is a second reading of the same position, so what it owes is
+    # consistency with the first reading: same answer, same principal variation,
+    # and a set of classes that partitions the legal cards rather than a subset
+    # of them.  Both modes, because they build the list by different routes --
+    # full mode recovers each card's counts by replaying its line, fast mode
+    # reads a boolean off a bound.
+    add_test(NAME corpus_moves
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --check-moves --check-pv --quiet
+                     --slowest 0)
+    set_tests_properties(corpus_moves PROPERTIES TIMEOUT 900)
+
+    add_test(NAME corpus_moves_fast
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --mode fast --check-moves --quiet
+                     --slowest 0)
+    set_tests_properties(corpus_moves_fast PROPERTIES TIMEOUT 900)
+
     add_test(NAME corpus_ordering
              COMMAND nil_bench --corpus "${NIL_CORPUS}" --mode fast --no-ordering --quiet
                      --slowest 0)

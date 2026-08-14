@@ -244,8 +244,14 @@ NIL_SOLVER_API int32_t NIL_SOLVER_CALL nil_solve(const char* pbn, int32_t leader
 
 /* As nil_solve, but also writes the principal variation as a space-separated
  * play list ("N:D2 E:DA S:D5 W:D7") into pv_buf.  Returns
- * NIL_ERR_BUFFER_TOO_SMALL if it does not fit; 4 bytes per remaining card plus
- * one is always enough.
+ * NIL_ERR_BUFFER_TOO_SMALL if it does not fit.
+ *
+ * Sizing: each card is four characters and a separator, so 5 bytes per
+ * remaining card is exactly enough -- the last card's separator is the
+ * terminator's slot -- and 5 * 4 * tricks_remaining covers any position.  An
+ * earlier version of this comment said 4 bytes per card plus one, which is the
+ * arithmetic with the separators left out and is short by a fifth: a 4-trick
+ * ending writes 79 bytes plus a NUL and that formula asks for 65.
  *
  * Returns NIL_ERR_UNSUPPORTED if NIL_FLAG_FAST_MODE is set: that mode has no
  * principal variation, and quietly running the slower mode instead -- or
@@ -267,6 +273,86 @@ NIL_SOLVER_API int32_t NIL_SOLVER_CALL nil_solve_pv(const char* pbn, int32_t lea
 NIL_SOLVER_API int32_t NIL_SOLVER_CALL nil_fails(const char* pbn, int32_t leader,
                                                  const char* current_trick, int32_t nil_seat,
                                                  uint32_t flags);
+
+/* Legal cards a position can offer.  Thirteen is the most any hand holds, and
+ * the equivalent-card reduction only ever returns fewer, so a buffer of this
+ * size is always enough. */
+#define NIL_MAX_MOVES 13
+
+/* One legal card at the root, and what playing it leads to.
+ *
+ * Deliberately shaped like DDS's futureTricks rows, because the question is the
+ * same one -- "here is every card you may play and what each costs" -- and a
+ * caller that already unpacks those can unpack these. */
+typedef struct nil_move {
+    /* 0 = spades, 1 = hearts, 2 = diamonds, 3 = clubs. */
+    int32_t suit;
+    /* 2..14, ace high. */
+    int32_t rank;
+    /* Other legal cards that are this same move under a different name, as a
+     * bitmask with bit r set for rank r (so the king is bit 13, decimal 8192).
+     * Same encoding as DDS's `equals`, including the part that trips people up:
+     * this card's OWN rank is NOT set.  Zero means the card stands alone.
+     *
+     * With the jack already played, holding the king and the queen is one move
+     * under two names -- every card still in existence is above both or below
+     * both, so the two plays reach positions that differ only by swapping two
+     * labels.  The solver searches one of them and names the other here, rather
+     * than searching the same tree twice.  A caller that wants a row per legal
+     * card expands these; a caller choosing a move can ignore them and play the
+     * card named above. */
+    int32_t equal_ranks;
+    /* Does the nil fail AFTER this card is played, against best play by
+     * everyone from there on?
+     *
+     * Read it from whichever side you are on: for the nil bidder or its
+     * covering partner, 0 means this card holds the nil together; for an
+     * opponent, 1 means this card breaks it.  One fact rather than two, because
+     * a double dummy answer does not depend on who asked. */
+    int32_t nil_fails;
+    /* As nil_result's, but for the line this card leads to, and INCLUDING the
+     * trick this card completes if it completes one.  All three are
+     * NIL_TRICKS_UNKNOWN under NIL_FLAG_FAST_MODE. */
+    int32_t nil_tricks;
+    int32_t nil_side_tricks;
+    int32_t opponent_tricks;
+    /* 1 when this card achieves the position's own value -- one of the moves
+     * the solver would have been content to pick.  There is usually more than
+     * one, and among cards that tie, any of them is as good as any other. */
+    int32_t is_best;
+} nil_move;
+
+/* Solve a position and report EVERY legal card rather than just the answer.
+ *
+ * `out` is filled in exactly as nil_solve would fill it.  `moves` receives one
+ * row per equivalence class (or one per legal card under NIL_FLAG_NO_COLLAPSE),
+ * in canonical order: spades first, then hearts, diamonds, clubs, ascending by
+ * rank within each.  `*moves_len` is set to the number of rows written.
+ *
+ * `moves_cap` is the capacity of `moves` in elements.  NIL_MAX_MOVES is always
+ * enough.  A buffer too small returns NIL_ERR_BUFFER_TOO_SMALL and still writes
+ * the count that was needed to `*moves_len`, so a caller can size and retry.
+ *
+ * A position with no cards left is not an error: `out` is filled in and
+ * `*moves_len` is zero.
+ *
+ * WHAT IT COSTS.  Less than it looks, and the reason is worth knowing before
+ * budgeting for it.  The position is solved first and every card is then scored
+ * against the same transposition table, so the per-card searches spend most of
+ * their time reading back work the first search already did.  Measured over
+ * twelve random thirteen-card deals in fast mode it came to 1.0x the nodes and
+ * +0.4% of the wall time of the plain call.  The cases that cost anything are
+ * the ones the plain call answered by proof without looking at a card: there
+ * the position is free and the move list is not, though at 1 node against 79
+ * that is not a number anybody has to plan around.
+ *
+ * Returns NIL_OK or a negative NIL_ERR_* code. */
+NIL_SOLVER_API int32_t NIL_SOLVER_CALL nil_solve_moves(const char* pbn, int32_t leader,
+                                                       const char* current_trick,
+                                                       int32_t nil_seat, uint32_t flags,
+                                                       nil_result* out, nil_move* moves,
+                                                       int32_t moves_cap, int32_t* moves_len,
+                                                       char* err_buf, int32_t err_len);
 
 /* Set the transposition table size, in mebibytes, for subsequent calls on the
  * calling thread.  The table is per-thread, and so is this setting.  Rounded DOWN to a power-of-two bucket count, so the table actually

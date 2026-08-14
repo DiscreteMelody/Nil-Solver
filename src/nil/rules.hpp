@@ -143,6 +143,35 @@ inline Hand distinct_moves(Hand moves, Hand relevant) {
     return moves & ~(flood << 1);
 }
 
+// The inverse reading of the same fact: given a representative that
+// `distinct_moves` kept, which legal cards did it stand for?
+//
+// The classes are maximal runs of `moves` contiguous in `relevant`, and the
+// representative is the lowest member, so the class is what you reach walking
+// UP from it: keep taking cards that are legal moves, step over ranks no
+// relevant card occupies, and stop at the first relevant card that is not a
+// move -- that card is what separates this class from the next one.
+//
+// The result includes `rep` itself, so it is never empty.
+//
+// This is not on the search path.  It exists for callers that were handed one
+// card per class and need the other names for it -- reporting a move list to a
+// game client, which wants every legal card rather than one per class.  The
+// loop is at most eleven steps and runs once per root move.
+inline Hand equivalent_moves(CardId rep, Hand moves, Hand relevant) {
+    const int suit = card_suit(rep);
+    Hand out = card_bit(rep);
+    for (int rank = card_rank(rep) + 1; rank <= 14; ++rank) {  // 14 is the ace
+        const Hand bit = card_bit(make_card(suit, rank));
+        if (moves & bit) {
+            out |= bit;
+        } else if (relevant & bit) {
+            break;
+        }
+    }
+    return out;
+}
+
 }  // namespace nil
 
 #endif  // NIL_RULES_HPP

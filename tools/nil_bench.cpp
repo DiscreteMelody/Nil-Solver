@@ -353,6 +353,8 @@ void usage(const char* argv0) {
               << "                    entries carry their own\n"
               << "  --nil-already-set    likewise, for --random runs\n"
               << "  --check-pv        also require the recorded PV to match (see below)\n"
+              << "  --check-moves     also score every legal card at each position and\n"
+              << "                    require the list to agree with the position\n"
               << "  --csv <file>      write per-position rows for later comparison\n"
               << "  --baseline <file> compare against a csv written earlier\n"
               << "  --history <file>  APPEND a summary row to a running history csv\n"
@@ -411,6 +413,7 @@ int main(int argc, char** argv) {
     bool random_mode = false;
     bool quiet = false;
     bool check_pv = false;
+    bool check_moves = false;
     bool tt_stats = false;
     // --mode both: solve every position in the other mode as well and require
     // the two to agree on nil_fails.
@@ -491,6 +494,8 @@ int main(int argc, char** argv) {
             opts.minimise_own_tricks = (mode == "min");
         } else if (arg == "--nil-already-set") {
             opts.nil_already_set = true;
+        } else if (arg == "--check-moves") {
+            check_moves = true;
         } else if (arg == "--check-pv") {
             check_pv = true;
         } else if (arg == "--tt-stats") {
@@ -582,6 +587,7 @@ int main(int argc, char** argv) {
     // looking at a single card, and counting those zeroes against full mode's
     // real work would report a speedup that is nothing of the kind.
     int mode_checked = 0;
+    int moves_checked = 0;
     int mode_unsearched = 0;
     std::uint64_t cmp_full_nodes = 0;
     std::uint64_t cmp_fast_nodes = 0;
@@ -675,6 +681,70 @@ int main(int argc, char** argv) {
                 }
             }
         }
+        // The move list is a second reading of the same search, so what it owes
+        // is consistency with the first: the same answer, the same principal
+        // variation, a partition of the legal cards rather than a subset, and a
+        // best row that scores what the position scores.  Cheap enough to run
+        // over the whole corpus in either mode.
+        if (check_moves && solved) {
+            nil::SearchOptions move_opts = opts;
+            move_opts.break_on_forced_spade_lead = item.forced;
+            move_opts.minimise_own_tricks = item.minimise_own;
+            move_opts.nil_already_set = item.nil_already_set;
+            nil::Solution msol;
+            std::vector<nil::MoveScore> scored;
+            if (!nil::solve_moves(item.position, item.nil_seat, move_opts, msol, scored, err)) {
+                std::cout << "FAIL " << item.name << ": solve_moves failed: " << err << "\n  "
+                          << item.repro << "\n";
+                ++failures;
+            } else {
+                ++moves_checked;
+                if (msol.nil_fails != sol.nil_fails || msol.nil_tricks != sol.nil_tricks ||
+                    msol.nil_side_tricks != sol.nil_side_tricks) {
+                    std::cout << "FAIL " << item.name
+                              << ": the move list disagrees with the position\n  " << item.repro
+                              << "\n";
+                    ++failures;
+                }
+                if (opts.mode == nil::MODE_FULL &&
+                    nil::format_pv_compact(msol) != nil::format_pv_compact(sol)) {
+                    std::cout << "FAIL " << item.name << ": the move list picks a different line\n"
+                              << "    plain " << nil::format_pv_compact(sol) << "\n"
+                              << "    moves " << nil::format_pv_compact(msol) << "\n  "
+                              << item.repro << "\n";
+                    ++failures;
+                }
+
+                const int seat =
+                    (item.position.leader + item.position.trick_len) & 3;
+                const nil::Hand legal = nil::legal_moves(
+                    item.position.hands[seat], item.position.trick_len,
+                    item.position.trick_len ? nil::card_suit(item.position.trick[0]) : -1,
+                    item.position.spades_broken);
+                nil::Hand covered = 0;
+                bool overlap = false;
+                bool any_best = false;
+                for (const nil::MoveScore& m : scored) {
+                    if (covered & m.equals) overlap = true;
+                    covered |= m.equals;
+                    if (m.is_best) any_best = true;
+                }
+                if (covered != legal || overlap) {
+                    std::cout << "FAIL " << item.name
+                              << ": the classes do not partition the legal cards\n    legal   "
+                              << nil::hand_to_string(legal) << "\n    covered "
+                              << nil::hand_to_string(covered) << (overlap ? "  (overlapping)" : "")
+                              << "\n  " << item.repro << "\n";
+                    ++failures;
+                }
+                if (!any_best && !scored.empty()) {
+                    std::cout << "FAIL " << item.name << ": no card achieves the position's value\n  "
+                              << item.repro << "\n";
+                    ++failures;
+                }
+            }
+        }
+
         if (check_pv && !item.expected_pv.empty()) {
             const std::string got = nil::format_pv_compact(sol);
             if (got != item.expected_pv) {
@@ -746,6 +816,11 @@ int main(int argc, char** argv) {
                   << std::setw(13) << commas(static_cast<std::uint64_t>(nps)) << "\n";
     }
 
+    if (moves_checked) {
+        std::cout << "\n  move list: " << moves_checked
+                  << " position(s) scored card by card, each list agreeing with the "
+                     "position it came from\n";
+    }
     if (cross_check_modes) {
         std::cout << "\n  mode check: " << mode_checked << " position(s) solved both ways, "
                   << mode_unsearched << " answered without searching (nil already set)\n";
