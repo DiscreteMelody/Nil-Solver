@@ -88,6 +88,31 @@ namespace NilSolver
         /// <summary>Every rank this row stands for, this card's own included, ascending.</summary>
         public IEnumerable<int> Expand() => new[] { Rank }.Concat(EqualRanks).OrderBy(r => r);
 
+        /// <summary>
+        /// This row's score attached to one specific rank from its class, with
+        /// <see cref="EqualRanks"/> cleared.
+        ///
+        /// Clearing it is the point: in an expanded list the grouping is already
+        /// materialised, and leaving the mask on would let a caller expand the
+        /// same class a second time. <see cref="NilSolution.Moves"/> is where the
+        /// grouping still lives.
+        /// </summary>
+        public NilMoveScore WithRank(int rank) => new NilMoveScore
+        {
+            Suit = Suit,
+            Rank = rank,
+            EqualRanks = Array.Empty<int>(),
+            NilFails = NilFails,
+            NilTricks = NilTricks,
+            NilSideTricks = NilSideTricks,
+            OpponentTricks = OpponentTricks,
+            IsBest = IsBest
+        };
+
+        /// <summary>"K♠", "T♥", "2♣" — for display. <see cref="ToString"/> is the
+        /// ASCII form, which is the better one for logs.</summary>
+        public string DisplayName => $"{RankChar(Rank)}{"♠♥♦♣"[Suit]}";
+
         /// <summary>"KS", "TH", "2C" — the card in the usual short form.</summary>
         public override string ToString() => $"{RankChar(Rank)}{"SHDC"[Suit]}";
 
@@ -170,8 +195,65 @@ namespace NilSolver
         /// <summary>
         /// Every legal card and what playing it leads to, or empty when the solve
         /// did not ask for one. Populated by the ScoreMoves methods.
+        ///
+        /// One entry per equivalence CLASS, not per card — with the jack gone, the
+        /// king and the queen are one move under two names and arrive as a single
+        /// row. That is the right list for choosing a move, since the members of a
+        /// class are interchangeable. <see cref="AllMoves"/> is the right list for
+        /// lining up against the cards in a player's hand.
         /// </summary>
         public IReadOnlyList<NilMoveScore> Moves { get; init; } = Array.Empty<NilMoveScore>();
+
+        /// <summary>
+        /// <see cref="Moves"/> with every equivalence class expanded, so there is
+        /// one entry per legal CARD. Empty when Moves is.
+        ///
+        /// The analogue of DDS's <c>DDSSolution.AllMoves</c>, and populated the same
+        /// way: each row contributes its own card plus one entry per rank in its
+        /// EqualRanks. Entries come out in canonical order — spades, hearts,
+        /// diamonds, clubs, ascending by rank within each — and each carries its
+        /// class's scores, because that is what being in a class means.
+        ///
+        /// Cards from one class are genuinely indistinguishable here: they share
+        /// NilFails, the trick counts and IsBest. Nothing is lost by picking any of
+        /// them, which is the whole reason the solver searched only one.
+        /// </summary>
+        public IReadOnlyList<NilMoveScore> AllMoves => _allMoves ??= ExpandClasses(Moves);
+
+        /// <summary>
+        /// The cards from <see cref="AllMoves"/> that achieve the position's value
+        /// — the ones the solver would have been content to pick. Empty when Moves
+        /// is.
+        ///
+        /// The analogue of DDS's <c>DDSSolution.BestMoves</c>, but derived from the
+        /// solver's own IsBest rather than by comparing each card's score against
+        /// the position's. Same answer, and it does not go wrong in fast mode where
+        /// there are no per-card scores to compare.
+        /// </summary>
+        public IReadOnlyList<NilMoveScore> BestMoves =>
+            _bestMoves ??= AllMoves.Where(m => m.IsBest).ToArray();
+
+        // Computed on first read rather than at construction, so a solve that never
+        // asked for a move list pays nothing. Two threads racing here would each
+        // build an identical list and one would win; the result is the same either
+        // way, so this is deliberately not locked.
+        private IReadOnlyList<NilMoveScore>? _allMoves;
+        private IReadOnlyList<NilMoveScore>? _bestMoves;
+
+        private static IReadOnlyList<NilMoveScore> ExpandClasses(IReadOnlyList<NilMoveScore> classes)
+        {
+            if (classes == null || classes.Count == 0) return Array.Empty<NilMoveScore>();
+
+            var cards = new List<NilMoveScore>(classes.Count);
+            foreach (var move in classes)
+            {
+                // Rows arrive in canonical order and a class is a contiguous run of
+                // ranks, so expanding each row ascending and concatenating is
+                // already sorted — no second sort needed.
+                foreach (var rank in move.Expand()) cards.Add(move.WithRank(rank));
+            }
+            return cards;
+        }
 
         /// <summary>
         /// False when the trick counts came back as -1, which is what a fast solve

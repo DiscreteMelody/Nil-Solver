@@ -305,6 +305,11 @@ part that trips people up: the card's own rank is not set. A caller choosing a
 move ignores the mask entirely — the members of a class are interchangeable,
 which is the whole reason only one of them was searched.
 
+A caller that has to line up against the cards in a hand wants them expanded, and
+the C# wrapper does that for you: `NilSolution.AllMoves` and `.BestMoves` are one
+entry per legal card, the analogues of DDS's `DDSSolution.AllMoves` and
+`.BestMoves`.
+
 **What it costs**, because the number is better than the shape of the question
 suggests: the position is solved first and every card is then scored against the
 same transposition table, so the per-card searches spend most of their time

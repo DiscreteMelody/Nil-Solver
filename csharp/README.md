@@ -164,6 +164,10 @@ foreach (var m in r.Moves)
 }
 ```
 
+`Moves` is one row per equivalence class. `AllMoves` and `BestMoves` are the same
+information expanded to one entry per legal card, which is usually what a UI
+wants — see below.
+
 Read `NilFails` from whichever side you are on: for the nil bidder or its
 covering partner, false means the card holds the nil together; for an opponent,
 true means it breaks it. One fact rather than two, because a double dummy answer
@@ -178,17 +182,42 @@ the plain call answered by proof without looking at a card — there the positio
 is free and the list is not, though at 1 node against 79 that is not a number to
 plan around.
 
-### Equivalent cards
+### Three lists, and which one you want
 
-Rows come back one per *class*, not one per card. With the jack already played,
-holding the king and the queen is one move under two names — every card still in
-existence is above both or below both, so the two plays reach positions that
-differ only by swapping two labels. The solver searches one and names the other
-in `EqualRanks` rather than searching the same tree twice.
+`Moves` comes back one row per *equivalence class*, not per card. With the jack
+already played, holding the king and the queen is one move under two names —
+every card still in existence is above both or below both, so the two plays reach
+positions that differ only by swapping two labels. The solver searches one and
+names the other in `EqualRanks` rather than searching the same tree twice.
 
-`EqualRanks` uses DDS's convention, including the part that trips people up: the
-card's **own rank is not in the list**. So a loop written against DDS's `equals`
-ports across unchanged:
+| property | one entry per | use it for |
+| --- | --- | --- |
+| `Moves` | equivalence class | choosing a card — class members are interchangeable |
+| `AllMoves` | legal card | lining up against the cards in a player's hand |
+| `BestMoves` | legal card, best only | highlighting every card that holds the nil |
+
+`AllMoves` and `BestMoves` are the analogues of DDS's `DDSSolution.AllMoves` and
+`BestMoves`, and they are populated the same way — each row contributes its own
+card plus one entry per rank in its `EqualRanks`:
+
+```csharp
+foreach (var card in r.AllMoves)
+    Highlight(card.Suit, card.Rank, safe: !card.NilFails, best: card.IsBest);
+```
+
+Both are computed on first read, so a solve that never asked for a move list pays
+nothing, and both come out in canonical order — spades, hearts, diamonds, clubs,
+ascending by rank. Cards from one class are genuinely indistinguishable in them:
+same `NilFails`, same counts, same `IsBest`. That is what being in a class means.
+
+`BestMoves` is derived from the solver's own `IsBest` rather than by comparing
+each card's score against the position's, which is how the DDS wrapper does it.
+Same answer, and it does not go wrong in fast mode, where there are no per-card
+scores to compare.
+
+If you would rather expand it yourself — porting a loop written against DDS's
+`equals` bitfield, say — the convention is DDS's, including the part that trips
+people up: the card's **own rank is not in `EqualRanks`**.
 
 ```csharp
 foreach (var m in r.Moves)
@@ -198,13 +227,13 @@ foreach (var m in r.Moves)
 }
 ```
 
-`m.Expand()` does the same thing in one call if you would rather not write it
-out. Choosing a move rather than displaying one? Ignore `EqualRanks` entirely and
-play the card named in `Suit`/`Rank` — the members of a class are
-interchangeable, which is the whole reason only one was searched.
+`m.Expand()` gives the same ranks in one call. Entries in `AllMoves` have
+`EqualRanks` cleared, on purpose: the grouping is already materialised there, and
+leaving the mask on would let the same class be expanded twice.
 
 `NilFlags.NoCollapse` turns the reduction off and gives a row per legal card with
-`EqualRanks` always empty. It is a diagnostic: same answers, more work.
+`EqualRanks` always empty, so `Moves` and `AllMoves` agree. It is a diagnostic:
+same answers, more work.
 
 ## The other flags
 
