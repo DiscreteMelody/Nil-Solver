@@ -105,8 +105,16 @@ if(NIL_SOLVER_BUILD_TESTS)
     # version of this comment said to drop the flag when move ordering lands;
     # that was written before the mode split and it is wrong.  Ordering is
     # confined to MODE_FAST (roadmap item 6), which produces no PV to check, so
-    # nothing here has to be given up for it.  Should ordering ever reach full
-    # mode, item 7's `--canonical` is what this test would move behind.
+    # nothing here has to be given up for it.
+    #
+    # Patch 22 moved the goalposts and this comment with them.  Full mode now
+    # narrows its window and cuts, but its PV is still canonical and still
+    # checked here card for card -- see roadmap item 22 for why narrowing alone
+    # cannot disturb it.  What WOULD disturb it is ordering reaching full mode,
+    # which is roadmap item 22b, measured at up to 2.99x and deliberately not
+    # shipped for exactly this reason.  That is the contingency this test now
+    # stands in front of, and the canonical-PV re-extraction pass described in
+    # 22b is what would let it through without giving anything up here.
     add_test(NAME corpus
              COMMAND nil_bench --corpus "${NIL_CORPUS}" --check-pv --quiet --slowest 0)
     # Fast subset for the inner loop: ctest -R corpus_quick
@@ -147,6 +155,24 @@ if(NIL_SOLVER_BUILD_TESTS)
     # added the same way, one patch ahead of the pruning it was there to check,
     # and it is cheaper to have the test already running than to remember to
     # write it in the patch that needs it.
+
+    # The control arm for window narrowing (roadmap item 22), on the same model
+    # as corpus_static and corpus_ordering.  --no-narrow restores the search
+    # full mode ran before patch 22 -- no reachable cutoff, exhaustive minimax
+    # over a memo -- so the pair is the strongest differential on this list:
+    # both columns must land on the oracle's answers AND on the oracle's
+    # principal variations, which is why this one carries --check-pv where the
+    # other control arms do not.
+    #
+    # Narrowing is answer-neutral by argument rather than by measurement (see
+    # item 22), and an argument is exactly the kind of thing that stops being
+    # true quietly.  This is what says so out loud.  It is roughly six times the
+    # nodes of the default corpus run and still well inside the timeout.
+    add_test(NAME corpus_narrow
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --check-pv --no-narrow --quiet
+                     --slowest 0)
+    set_tests_properties(corpus_narrow PROPERTIES TIMEOUT 900)
+
     # The move list against the search that produced it.  Scoring every legal
     # card is a second reading of the same position, so what it owes is
     # consistency with the first reading: same answer, same principal variation,

@@ -79,6 +79,12 @@ struct Ctx {
     // mode is the right thing to read.  Recorded rather than glossed, because
     // the pattern elsewhere in this file is the opposite one.
     bool order_moves = false;
+
+    // Narrow the window as moves come back, which is what makes the fail-soft
+    // cutoff reachable in MODE_FULL.  Answer-neutral in both modes; see
+    // SearchOptions::narrow_window for why, and for why fast mode is unchanged
+    // node for node rather than merely unchanged in its answers.
+    bool narrow_window = true;
     std::uint8_t tt_tag = TAG_NONE;  // which objective this solve's values are on
     std::uint64_t nodes = 0;
     TranspositionTable* tt = nullptr;  // null when the caller turned it off
@@ -431,6 +437,15 @@ int search(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta) {
         moves = distinct_moves(
             moves, relevant_cards(st.hands, trick_best_card(st.trick, st.trick_len)));
     }
+    // The window this node was ASKED about, kept because the loop below may
+    // narrow the live one.  Which of the three bounds the result earns is a
+    // statement about the caller's window, not about whatever the node talked
+    // itself into partway through: classifying `best <= alpha` against a
+    // narrowed alpha would call every max node an upper bound, since narrowing
+    // sets alpha to best exactly.
+    const int alpha_asked = alpha;
+    const int beta_asked = beta;
+
     int best = 0;
     bool have_best = false;
 
@@ -475,6 +490,18 @@ int search(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta) {
             best = value;
             best_move = card;
         }
+        // WINDOW NARROWING.  The other half of alpha-beta, and the half that
+        // makes the cutoff below reachable at all in MODE_FULL.  Note which
+        // bound moves: a maximiser raises its own alpha and leaves beta alone,
+        // so the cutoff test on the next line still reads the bound it was
+        // written against.  Inert in MODE_FAST -- see SearchOptions.
+        if (ctx.narrow_window) {
+            if (maximizing) {
+                if (best > alpha) alpha = best;
+            } else {
+                if (best < beta) beta = best;
+            }
+        }
         // Fail-soft cutoff.  A maximiser that has already reached beta cannot
         // be talked down by its own remaining moves, and the minimising parent
         // will never choose this node once it is this bad; symmetrically at a
@@ -486,12 +513,15 @@ int search(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta) {
     if (keyed) {
         const RelMove rel = best_move == NO_CARD ? REL_NO_MOVE : to_relative(best_move, profile);
         // Which of these three the node earned follows from where `best` landed
-        // relative to the window it was given, and the window did not move.
-        // Breaking out of the loop above implies best >= beta > alpha, so a cut
-        // node can never be recorded as an upper bound.
-        const std::uint8_t bound = best <= alpha   ? BOUND_UPPER
-                                   : best >= beta  ? BOUND_LOWER
-                                                   : BOUND_EXACT;
+        // relative to the window it was GIVEN -- alpha_asked and beta_asked,
+        // not the live pair, which narrowing may have moved underneath it.
+        // Breaking out of the loop above implies best >= beta_asked at a
+        // maximiser (narrowing never moves beta there) and best <= alpha_asked
+        // at a minimiser, so a cut node can never be recorded as the bound
+        // belonging to the other side.
+        const std::uint8_t bound = best <= alpha_asked  ? BOUND_UPPER
+                                   : best >= beta_asked ? BOUND_LOWER
+                                                        : BOUND_EXACT;
         ctx.tt->store(key, hash, best, rel, profile.total, bound, ctx.tt_tag);
     }
     return best;
@@ -530,6 +560,11 @@ void configure(Ctx& ctx, int nil_seat, const SearchOptions& opts,
     // doing it; and within MODE_FAST the caller can still switch ordering off
     // to get the control arm.
     ctx.order_moves = opts.order_moves && opts.mode == MODE_FAST;
+    // Unlike ordering, this one is NOT restricted to fast mode -- full mode is
+    // the only mode it can do anything for.  Fast mode's window is null, so
+    // every narrowing it performs is immediately followed by the cutoff that
+    // makes it moot.
+    ctx.narrow_window = opts.narrow_window;
     ctx.tt_tag = opts.mode == MODE_FAST ? TAG_FAST : TAG_FULL;
 
     if (opts.use_memo && opts.tt_megabytes > 0) {

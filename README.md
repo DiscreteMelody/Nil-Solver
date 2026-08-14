@@ -583,6 +583,19 @@ on, `corpus_static` with them off — and both are checked against the oracle's
 recorded answers. The flag is inert outside fast mode, which is the only mode
 the proofs apply to.
 
+`--no-narrow` is the control arm for window narrowing (roadmap item 22), and it
+is the one with the most riding on it. Full mode narrows its window as a node's
+moves come back, which is what makes the alpha-beta cutoff reachable there at
+all; this flag turns that off and restores the exhaustive minimax full mode ran
+before patch 22. Both arms must agree on the value **and** on the principal
+variation, which is why `corpus_narrow` carries `--check-pv` where the other
+control arms do not: narrowing is answer-neutral by argument rather than by
+measurement, and an argument is the kind of thing that stops being true quietly.
+Expect roughly six times the nodes with it on, and about seventy times at nine
+cards. Inert in fast mode, whose window is null — there is no integer strictly
+between alpha and alpha + 1 for a narrowed bound to land on, so a fast search is
+unchanged node for node either way.
+
 The harness generates random positions — random leader, random nil seat, random
 broken flag, and roughly a third of them resumed mid-trick — and compares three
 things: the bool, the exact trick count, and the **principal variation, card for

@@ -28,6 +28,7 @@ is what the pruned answer is checked against.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ✅ | ~~Window narrowing: alpha-beta for `MODE_FULL`~~ | patch 22 | the missing half of patch 10. `alpha = max(alpha, best)` at a maximiser, `beta = min(beta, best)` at a minimiser, so full mode's cutoff becomes reachable for the first time. **68.8x fewer nodes and 62.9x less wall at 9 cards** (23,519,702 -> 342,000 nodes/position), **6.09x nodes / 5.36x wall on the corpus**. `MODE_FAST` unchanged node for node, provably. All 560 oracle-pinned values and principal variations reproduce card for card |
 | ✅ | ~~Per-card move list across the ABI~~ | patch 21 | `nil_solve_moves` scores every legal card, not just the best: one row per equivalence class with the boolean, the trick counts in full mode, DDS-shaped `equal_ranks`, and an `is_best` flag. **1.0x nodes, +0.4% wall** against the plain call — the root search warms the table and the per-card searches mostly read it back. `MODE_FULL` unchanged node for node |
 | ✅ | Bitboard state representation | patch 1 | `Hand = uint64_t`, `suit * 16 + rank`, ctz move extraction, mask-based `legal_moves` |
 | ✅ | Compact canonical state key | patch 7 | 21 + 2n bits at a trick boundary; rank-relative, trick-as-threshold |
@@ -437,7 +438,25 @@ secondary is not zero. Each proof settles the nil bidder's own trick count and
 says nothing about the pair's total or the split between the two partners, so it
 cannot settle the full objective. The corpus still comes in at 2,647,731 nodes.
 
-### 5. ~~Transposition-table move ordering~~ — ⭐⭐⭐⭐ — **closed, patch 12: no population**
+### 5. Transposition-table move ordering — ⭐⭐⭐⭐ — **RE-OPENED by patch 22, for `MODE_FULL` only**
+
+> **Re-opened.** The closure below is still correct *for `MODE_FAST`*, and the
+> theorem that carries it is untouched: a null window admits no integers, so
+> every fast entry settles every window it is probed against and `tt_partial`
+> stays identically zero there. What changed is the other mode. Patch 22 gave
+> `MODE_FULL` a window that narrows, which is exactly the condition the
+> *What would revive it* paragraph below names, and `tt_partial` went non-zero
+> in full mode on the first run — 40 partials on the alpha-beta selftest
+> position alone. The selftest sweep is now split by mode and asserts both
+> halves, so the revival is a pinned fact rather than an inference.
+>
+> The population this item wanted therefore exists now, in the mode that has
+> the nodes to spend. The move is still stored in every entry, still survives
+> the rank relabelling, and would still be free. **Two things must be settled
+> first**: the stored-move-is-in-the-reduced-set invariant at the bottom of
+> this entry, which acquires load the moment anything reads a stored move for
+> ordering; and the principal-variation question in item 22b, since ordering a
+> full-mode node by a table move is ordering, with the same tie-break cost.
 
 Not implemented, and not because it was measured and found weak. It has nothing
 to act on, and that is a theorem rather than a measurement.
@@ -456,9 +475,10 @@ window**, and therefore:
 
 There is no node that holds a stored move *and* has moves left to order. The
 population this item wanted is exactly the set counted by `tt_partial`, and
-`tt_partial` is identically zero. `MODE_FULL` is worse off still: it stores only
-exact values, so a hit there is total, and its move choice is an output that
-item 7 exists to protect.
+`tt_partial` is identically zero. *(As of patch 22 the sentence that stood here
+about `MODE_FULL` — that it stores only exact values, so a hit there is total —
+is no longer true. Full mode narrows its window, cuts, and stores bounds like
+any other alpha-beta searcher. It is the mode this item is now about.)*
 
 Measured anyway, because a theorem about a search is worth one run against the
 search:
@@ -1086,15 +1106,155 @@ position, the classes to partition the legal cards rather than a subset of them,
 and the chosen line to be the same one. `MODE_FULL` is unchanged node for node:
 still 2,647,731 on the corpus.
 
+### 22. ~~Window narrowing: alpha-beta for `MODE_FULL`~~ — ⭐⭐⭐⭐⭐ — **done, patch 22**
+
+The largest single win on this list, and it was sitting inside a function that
+already had the other half written.
+
+*What was wrong.* Patch 10 gave `MODE_FAST` a null window and a fail-soft
+cutoff, and left `MODE_FULL` searching between `[WINDOW_MIN, WINDOW_MAX]`. Every
+Done row since has ended with the same five words — `MODE_FULL` unchanged node
+for node — and they were not describing a mode that had been measured and found
+unimprovable. They were describing a mode with **no pruning of any kind**. Three
+separate mechanisms were inert in it simultaneously:
+
+| mechanism | why it was inert in `MODE_FULL` |
+|---|---|
+| the fail-soft cutoff | `best >= beta` where beta is a sentinel no value can reach |
+| static bounds (item 4) | gated on `value_is_nil_tricks`, false for full mode's weights |
+| move ordering (6a/6b/6d) | `ctx.order_moves = opts.order_moves && mode == MODE_FAST` |
+
+Confirmed by flag differential before anything was changed: at 9 cards on a hard
+deal, `--no-static` and `--no-ordering` produced **byte-identical node counts**
+in full mode. Full mode was the patch-8 algorithm — equivalent-card reduction
+and a memo — wearing four patches' worth of comments about pruning.
+
+*The fix.* The cutoff was already there. What was missing is the assignment that
+makes it reachable: a maximiser raising alpha to its best so far, a minimiser
+lowering beta, and the children that follow inheriting it. Six lines, guarded on
+`SearchOptions::narrow_window`.
+
+*Why it is answer-neutral, which is the whole of why it could ship.* Two
+different arguments for the two modes, and neither is a measurement:
+
+- **`MODE_FAST` is unchanged node for node.** Its window is null — beta is
+  alpha + 1 — so at a maximiser `best > alpha` already implies `best >= beta`,
+  and the cutoff fires before the widened alpha reaches a single child.
+  Symmetrically at a minimiser. Every narrowing fast mode performs is an
+  assignment to a variable the node is about to stop using.
+- **`MODE_FULL` keeps its exact values *and* its canonical principal
+  variation.** Values, because every entry point that needs an exact number asks
+  with the sentinel window — `solve`'s root, each step of `walk_pv`, and the
+  per-move loop in `solve_moves` — and a node given an unreachable window cannot
+  fail either way, so what it returns is exact. The PV, because a probe under
+  that window can only be answered by a `BOUND_EXACT` entry, and an exact entry
+  is by definition one that did not cut: it enumerated every move in canonical
+  order under strict improvement, so its stored move is still the canonically
+  lowest of the best. A move searched after alpha has risen either fails low,
+  returning at most alpha and so unable to strictly improve on it, or lands
+  inside the window and is exact. Neither can displace the incumbent wrongly.
+
+*The one thing that had to change with it.* Bound classification now reads
+`alpha_asked` / `beta_asked`, the window the node was **given**, not the live
+pair the loop may have moved underneath it. Classifying `best <= alpha` against a
+narrowed alpha would label every maximiser an upper bound, since narrowing sets
+alpha to best exactly. This is the classic transposition-table alpha-beta bug and
+it is the only subtle line in the patch.
+
+*Measured.* `MODE_FULL`, against the `--no-narrow` control arm on one binary:
+
+| workload | before | after | ratio |
+|---|---:|---:|---:|
+| random, 9 cards (20, seed 1), nodes/position | 23,519,702 | **342,000** | **68.8x** |
+| random, 9 cards (20, seed 1), ms/position | 4,362.45 | **69.36** | **62.9x** |
+| corpus, all 560, nodes | 2,647,731 | **434,892** | **6.09x** |
+| corpus, all 560, ms | 572.1 | **106.7** | **5.36x** |
+
+The 23,519,702 is not a fresh baseline — it is the number already recorded in
+this file from patch 10, reproduced exactly by the control arm, which is the
+cleanest confirmation available that the flag restores the old search rather
+than approximating it.
+
+Honest note on throughput: it falls 11.9% on the corpus (4,627,869 to 4,076,958
+nodes/sec), because a node that cuts does proportionally more setup per node than
+one that runs its whole move list. Nodes fall far enough that wall time drops
+81% anyway. This is the first optimisation on this list to lose throughput and
+be worth taking regardless.
+
+*On the deal that prompted it.* A maximally rank-interleaved 13-card deal —
+every suit the same `AT62 / K95 / Q84 / J73` shape, gaps of exactly three, so no
+player ever holds two adjacent ranks and equivalent-card reduction has nothing to
+collapse (2.1% saving, against 9.8%–29.9% on random deals of the same size):
+
+| cards | before | after |
+|---:|---:|---:|
+| 9 | 27,903,922 | 556,788 |
+| 10 | 654,977,607 | 2,328,801 |
+| 11 | — (unreachable) | 4,943,514 (1.18 s) |
+| 12 | — (unreachable) | 4,245,840 (1.07 s) |
+| 13 | — | still unreachable; ~40 min, no result |
+
+Full mode went from timing out at **10** cards to answering **12** in about a
+second. Thirteen is still out, and 22b is what is left to try.
+
+*Verified.* All 560 corpus positions match on value **and** principal variation
+under `--check-pv`, all 560 independently oracle-derived and none pinned from
+this solver. `crosscheck.py` agrees card for card at 5 and 6 cards across
+`--secondary min`, `--nil-already-set`, `--break-on-forced-lead`,
+`--spades-broken`, mid-trick and `--no-memo`. `invariants.py` holds in full mode
+at 8, 9 and 11 cards and on the corpus. The new `--no-narrow` arm reproduces
+every corpus PV.
+
+### 22b. Move ordering for `MODE_FULL` — ⭐⭐⭐⭐ — **measured, blocked on the PV**
+
+Now that full mode cuts, ordering it is worth something for the first time, and
+it was measured immediately rather than assumed:
+
+| cards | alpha-beta only | + ordering | gain |
+|---:|---:|---:|---:|
+| 9 | 556,788 | 454,623 | 1.22x |
+| 10 | 2,328,801 | 1,238,899 | 1.88x |
+| 11 | 4,943,514 | 3,009,909 | 1.64x |
+| 12 | 4,245,840 | 1,421,312 | **2.99x** |
+
+**Not shipped, and the reason is not correctness.** The value is right, the
+verdict is right, and the line it returns is optimal — diffed at 10 cards, both
+principal variations show `[S=0]` on every trick. What changes is *which* of
+several equally optimal lines comes back, because the heuristics promote a card
+that may tie with a canonically lower one, and full mode's tie-break — canonical
+order plus strict improvement — is the thing `--check-pv` compares against the
+oracle card for card. Shipping this as-is trades the project's strongest
+correctness evidence for a factor of two.
+
+*What unblocks it.* A canonical-PV re-extraction pass: search for the value with
+ordering on, then walk the PV re-deriving each step by exact-value match in
+canonical order, taking the first move whose full-window value equals the node's
+known exact value. Each step is a warm-table probe, and the per-move loop in
+`solve_moves` already demonstrates that shape is affordable. That restores the
+canonical tie-break exactly, at which point ordering is free to run.
+
+Note that `CMakeLists.txt` around the `corpus` test carries a comment saying
+ordering is confined to `MODE_FAST` and so nothing there has to be given up for
+it, and pointing at item 7's `--canonical` as the contingency if ordering ever
+reaches full mode. Patch 22 made that contingency live; the comment is updated to
+say so.
+
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 9 → 8 → 10 → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 22b → 5 (re-opened) → 9 → 8 → 10 → measure → 11..14
 ```
 
-`⊘` is item 5: closed without being built, because it has no population. See its
-entry — the argument is short and it is worth reading before item 6, since the
-two look adjacent and are not.
+`⊘` is item 5: closed without being built, because it had no population. **Patch
+22 gave it one** — narrowing full mode's window is precisely the condition its
+*What would revive it* paragraph named, and `tt_partial` is no longer zero there.
+It is back in the sequence, after 22b, because both items turn on the same
+question: whether a full-mode node may be ordered at the cost of its canonical
+principal variation. Settle that once and both unblock together.
+
+22b comes first because its gain is already measured (up to 2.99x) and item 5's
+is not, and because the re-extraction pass 22b needs is the same machinery item 5
+would need to assert its stored-move invariant against.
 
 Item 1 went first because it was the last PV-preserving win, and it is banked.
 Item 2 is banked too and bought nothing on its own, which was the plan: it is

@@ -88,7 +88,16 @@ namespace NilSolver
         NoStaticBounds = 0x100u,
 
         /// <summary>Try moves in canonical order rather than promising-first. Diagnostic; fast mode only.</summary>
-        NoOrdering = 0x200u
+        NoOrdering = 0x200u,
+
+        /// <summary>
+        /// Do not narrow the window as a node's own moves come back, which is what makes
+        /// the alpha-beta cutoff reachable. Restores the exhaustive minimax full mode ran
+        /// before patch 22: same value and same principal variation, roughly six times the
+        /// nodes on the corpus and up to seventy times at nine cards. Diagnostic and a
+        /// control arm; inert under <see cref="FastMode"/>, whose window is already null.
+        /// </summary>
+        NoNarrow = 0x400u
     }
 
     /// <summary>Return codes. <see cref="Ok"/> is success; everything else is negative.</summary>

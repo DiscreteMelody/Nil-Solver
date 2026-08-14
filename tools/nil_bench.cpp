@@ -366,6 +366,8 @@ void usage(const char* argv0) {
               << "  --no-collapse     generate every legal card rather than one per class\n"
               << "  --no-static       do not settle positions by proof (fast mode only)\n"
               << "                    of rank-equivalent ones (same answer, many more nodes)\n"
+              << "  --no-narrow       do not narrow the window as moves come back\n"
+              << "                    (same answer, many more nodes; full mode only)\n"
               << "  --no-ordering     try moves in canonical order rather than a\n"
               << "                    promising-first one (fast mode only)\n"
               << "  --tt-stats        also report transposition table behaviour\n"
@@ -375,7 +377,10 @@ void usage(const char* argv0) {
               << "something only in full mode; fast mode produces no principal variation.\n"
               << "It is off by default because most runs are not corpus runs.  Move\n"
               << "ordering does NOT retire it: ordering is confined to --mode fast, and\n"
-              << "full mode neither cuts nor reorders.\n";
+              << "full mode does not reorder.  Full mode DOES cut, as of patch 22, but\n"
+              << "cutting alone cannot move the PV -- every step of it is asked with a\n"
+              << "window no value can reach, and only an exact entry can answer one.\n"
+              << "That is what --no-narrow is here to keep honest.\n";
 }
 
 // Node counts are only comparable between runs that used the same table, so the
@@ -397,6 +402,7 @@ std::string memo_label(const nil::SearchOptions& opts) {
     // fast-mode guard: ordering is inert in full mode, so the suffix there
     // would split the history into two groups holding identical numbers.
     if (!opts.order_moves && opts.mode == nil::MODE_FAST) suffix += "+noordering";
+    if (!opts.narrow_window && opts.mode == nil::MODE_FULL) suffix += "+nonarrow";
     if (!opts.use_memo || opts.tt_megabytes == 0) return "off" + suffix;
     return std::to_string(opts.tt_megabytes) + "mb" + suffix;
 }
@@ -469,6 +475,8 @@ int main(int argc, char** argv) {
             opts.use_static_bounds = false;
         } else if (arg == "--no-ordering") {
             opts.order_moves = false;
+        } else if (arg == "--no-narrow") {
+            opts.narrow_window = false;
         } else if (arg == "--mode" && has_next) {
             const std::string mode = argv[++i];
             if (mode == "full") {

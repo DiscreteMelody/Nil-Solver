@@ -55,6 +55,9 @@ void usage(const char* argv0) {
         << "  --no-static             do not settle a position by proof; search for\n"
         << "                          the answer instead (same answer, more nodes;\n"
         << "                          fast mode only)\n"
+        << "  --no-narrow             do not narrow the window as moves come back\n"
+        << "                          (same answer and same PV, many more nodes;\n"
+        << "                          full mode only)\n"
         << "  --no-ordering           try moves in canonical order rather than a\n"
         << "                          promising-first one (same answer, more nodes;\n"
         << "                          fast mode only)\n"
@@ -141,6 +144,8 @@ int main(int argc, char** argv) {
             opts.use_static_bounds = false;
         } else if (arg == "--no-ordering") {
             opts.order_moves = false;
+        } else if (arg == "--no-narrow") {
+            opts.narrow_window = false;
         } else if (arg == "--tt-mb") {
             std::string mb;
             if (!need_value(argc, argv, i, "--tt-mb", mb)) return 2;

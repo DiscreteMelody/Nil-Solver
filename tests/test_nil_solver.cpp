@@ -621,14 +621,31 @@ int main(int argc, char** argv) {
         check("alpha-beta agrees with the exhaustive search", quick.nil_fails, slow.nil_fails);
         check("alpha-beta visits fewer nodes", quick.nodes < slow.nodes, true);
 
-        // MODE_FULL searches between sentinels no value can reach, so it has no
-        // window to cut against.  If that ever stops being true this is what
-        // says so, and it says so before the PV and the oracle check do.
+        // MODE_FULL is still asked between sentinels no value can reach, so the
+        // value it returns is exact.  What changed in patch 22 is that its own
+        // window narrows underneath it, so the cutoff is reachable and the
+        // table now holds bounds as well as exact values.
         SearchOptions full_again = full;
         full_again.tt_megabytes = 4;  // a different table, so nothing is inherited
         check("full mode is unchanged by the presence of a window",
               must_solve(pos, "N", full_again).value, slow.value);
-        check("full mode still stores nothing but exact values", slow.tt_partial, 0ull);
+
+        // The control arm, and the reason it exists.  Turning narrowing off
+        // restores the exhaustive search exactly: same value, same principal
+        // variation, and strictly more nodes.
+        SearchOptions wide = full;
+        wide.narrow_window = false;
+        const Solution exhaustive = must_solve(pos, "N", wide);
+        check("narrowing does not change the value", slow.value, exhaustive.value);
+        bool same_pv = slow.pv.size() == exhaustive.pv.size();
+        for (std::size_t i = 0; same_pv && i < slow.pv.size(); ++i) {
+            same_pv = slow.pv[i].seat == exhaustive.pv[i].seat &&
+                      slow.pv[i].card == exhaustive.pv[i].card;
+        }
+        check("narrowing does not change the principal variation", same_pv, true);
+        check("narrowing visits fewer nodes", slow.nodes < exhaustive.nodes, true);
+        check("and without it full mode stores nothing but exact values",
+              exhaustive.tt_partial, 0ull);
 
         // Alpha-beta cost the table nothing, and this is what says so.  Every
         // node of a fast search is asked about the same window: the only gain
@@ -656,7 +673,8 @@ int main(int argc, char** argv) {
         // what says so, and item 5 becomes live again in the same breath.
         Rng rng;
         int checked = 0;
-        std::uint64_t partial = 0;
+        std::uint64_t fast_partial = 0;
+        std::uint64_t full_partial = 0;
         std::uint64_t searched_nodes = 0;
         for (int deal = 0; deal < 20; ++deal) {
             for (int cards = 4; cards <= 6; ++cards) {
@@ -666,15 +684,24 @@ int main(int argc, char** argv) {
                         SearchOptions opts;
                         opts.mode = variant == 0 ? nil::MODE_FAST : nil::MODE_FULL;
                         const Solution sol = must_solve(pos, seat, opts);
-                        partial += sol.tt_partial;
+                        (variant == 0 ? fast_partial : full_partial) += sol.tt_partial;
                         searched_nodes += sol.nodes;
                         ++checked;
                     }
                 }
             }
         }
-        check("no node anywhere holds a stored move and still has moves to search",
-              partial, 0ull);
+        // MODE_FAST: the theorem of item 5, unchanged.  Its window is null, so
+        // every entry it stores settles every window it will ever be probed
+        // against, and no node can hold a stored move with work still to do.
+        check("no fast node holds a stored move and still has moves to search", fast_partial,
+              0ull);
+        // MODE_FULL: no longer true, and deliberately so.  Patch 22 gave full
+        // mode a window that narrows, which is precisely the condition the
+        // comment above named as the one that would revive item 5.  This side
+        // of the sweep is what says the population is now non-empty, so that
+        // the revival is a measured fact rather than an inference.
+        check("full nodes now do, which is item 5 live again", full_partial > 0ull, true);
         check("and the sweep did real work", searched_nodes > 100000ull, true);
         check("and it ran the whole cross product", checked, 480);
     }

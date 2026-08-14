@@ -182,6 +182,41 @@ struct SearchOptions {
     // as the only difference between the two columns.
     bool order_moves = true;
 
+    // Narrow the window as a node's own moves come back: a maximiser raises
+    // alpha to the best it has seen, a minimiser lowers beta, and the children
+    // that follow inherit it.  This is the half of alpha-beta that patch 10
+    // deliberately left out, and leaving it out is the whole reason MODE_FULL
+    // has been a node-count fixed point since patch 8: without it MODE_FULL's
+    // sentinel window is never reachable, so the cutoff below it never fires
+    // and the search is exhaustive minimax with a memo bolted on.
+    //
+    // Turning it on is answer-neutral in both modes, for two different reasons.
+    //
+    //   MODE_FAST is unchanged NODE FOR NODE, and provably so.  Its window is
+    //   null -- beta is alpha + 1 -- so at a maximiser `best > alpha` already
+    //   implies `best >= beta`, and the cutoff on the next line fires before
+    //   the widened alpha can reach a single child.  Symmetrically at a
+    //   minimiser.  Every assignment this flag enables in fast mode is to a
+    //   variable the node is about to stop using.
+    //
+    //   MODE_FULL keeps its exact values and its principal variation.  Values,
+    //   because every entry point that needs an exact number asks for it with
+    //   the sentinel window -- solve()'s root, walk_pv()'s each step, and the
+    //   per-move loop in solve_moves() -- and a node given an unreachable
+    //   window cannot fail either way, so what it returns is exact.  The PV,
+    //   because a probe under that window can only be answered by a BOUND_EXACT
+    //   entry, and an exact entry is by definition one that did not cut: it
+    //   enumerated every move in canonical order under strict improvement, so
+    //   its stored move is still the canonically lowest of the best.  A move
+    //   searched after alpha has risen either fails low -- returning at most
+    //   alpha, which cannot strictly improve on it -- or lands inside the
+    //   window and is exact.  Neither can displace the incumbent wrongly.
+    //
+    // On by default, and like the three flags above it exists to be turned off,
+    // so that the saving can be measured as a one-flag differential on one
+    // binary rather than across two builds.
+    bool narrow_window = true;
+
     // Look positions up in a transposition table.  The search is a pure
     // function of the position, so the table changes neither the value nor the
     // principal variation -- it is memoisation, not alpha-beta or any other

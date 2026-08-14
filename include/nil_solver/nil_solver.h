@@ -166,10 +166,23 @@ extern "C" {
  * suits it is short in -- and this flag turns that off.  Same answer either
  * way: ordering changes which cutoff the search finds first and nothing else.
  * It is a diagnostic and a control arm, and it is slower.  Inert without
- * NIL_FLAG_FAST_MODE, which is the only mode that orders: full mode searches
- * between sentinels, never cuts, and so has nothing to gain and a principal
- * variation to lose. */
+ * NIL_FLAG_FAST_MODE, which is the only mode that orders: full mode's cutoffs
+ * are reachable as of NIL_FLAG_NO_NARROW's arrival, but ordering there would
+ * still cost the principal variation its canonical tie-break. */
 #define NIL_FLAG_NO_ORDERING 0x200u
+
+/* Search a node's moves against the window the node was given rather than
+ * against a window that narrows as its own moves come back.  Narrowing is the
+ * half of alpha-beta that makes a cutoff reachable at all, so this flag turns
+ * full mode back into the exhaustive minimax it was before, and is the control
+ * arm the saving is measured against.  Same answer either way, and the same
+ * principal variation: every entry point that needs an exact value asks with a
+ * window no value can reach, and a probe under such a window can only be
+ * answered by an exact entry, which is by definition one that did not cut.
+ * Inert under NIL_FLAG_FAST_MODE, whose window is null -- there is no integer
+ * strictly between alpha and alpha + 1 for a narrowed bound to land on, so a
+ * fast search is unchanged node for node with or without it. */
+#define NIL_FLAG_NO_NARROW 0x400u
 
 /* Cards per hand the solver will attempt without NIL_FLAG_FORCE_LARGE. */
 #define NIL_CARD_LIMIT 9

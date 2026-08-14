@@ -17,6 +17,8 @@
 //     answer different questions and one of them cannot produce a principal
 //     variation, which is easier to keep straight when it is in the name.
 
+using CardGameAcademy.Models.Enums;
+using CardGameAcademy.Services;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -39,6 +41,10 @@ namespace NilSolver
 
         /// <summary>2..14, ace high. Same numbering as DDS.</summary>
         public int Rank { get; init; }
+
+        public Suit CGASuit => GetCGASuit(Suit);
+
+        public Value CGAValue => GetCGAValue(Rank);
 
         /// <summary>
         /// Other legal cards that are this same move under a different name, as
@@ -145,6 +151,20 @@ namespace NilSolver
                 OpponentTricks = m.OpponentTricks,
                 IsBest = m.IsBest != 0
             };
+        }
+
+        private Suit GetCGASuit(int suitIndex) => suitIndex switch
+        {
+            DDSConstants.SPADES => CardGameAcademy.Models.Enums.Suit.Spades,
+            DDSConstants.HEARTS => CardGameAcademy.Models.Enums.Suit.Hearts,
+            DDSConstants.DIAMONDS => CardGameAcademy.Models.Enums.Suit.Diamonds,
+            DDSConstants.CLUBS => CardGameAcademy.Models.Enums.Suit.Clubs,
+            _ => throw new System.NotImplementedException()
+        };
+
+        private Value GetCGAValue(int valueIndex)
+        {
+            return (Value)(valueIndex - 2);
         }
     }
 
