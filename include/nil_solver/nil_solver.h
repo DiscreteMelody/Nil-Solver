@@ -199,6 +199,17 @@ extern "C" {
  * is already set, where the value range has no gap in it to exploit. */
 #define NIL_FLAG_NO_PRESOLVE 0x800u
 
+/* Search the final trick rather than evaluating it.  With four cards left every
+ * hand holds exactly one, so the trick is forced and its value is arithmetic;
+ * the solver computes it in a single node instead of recursing five.  This flag
+ * takes the shortcut away and is the control arm the saving is measured
+ * against.
+ *
+ * Same answer, same principal variation, same value either way -- a forced line
+ * has one value and no window disagrees about it.  Only the node count and the
+ * running time move. */
+#define NIL_FLAG_NO_LAST_TRICK 0x2000u
+
 /* Pass to nil_set_table_size to go back to choosing the table size from the
  * position, which is what a process that never calls it already gets.  The
  * size follows tricks_remaining and mode: a four-card endgame takes 32 MiB and

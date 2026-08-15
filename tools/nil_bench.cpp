@@ -372,6 +372,8 @@ void usage(const char* argv0) {
               << "                    (same answer, many more nodes; full mode only)\n"
               << "  --no-ordering     try moves in canonical order rather than a\n"
               << "                    promising-first one (fast mode only)\n"
+              << "  --no-last-trick   search the forced final trick instead of\n"
+              << "                    evaluating it (same answer, more nodes)\n"
               << "  --tt-stats        also report transposition table behaviour\n"
               << "  --quiet           only print the summary and any failures\n"
               << "\n"
@@ -404,6 +406,10 @@ std::string memo_label(const nil::SearchOptions& opts) {
     // fast-mode guard: ordering is inert in full mode, so the suffix there
     // would split the history into two groups holding identical numbers.
     if (!opts.order_moves && opts.mode == nil::MODE_FAST) suffix += "+noordering";
+    // Applies to both modes: the last trick is forced whatever question is
+    // being asked about it, so both node counts move and neither history should
+    // be merged with the other.
+    if (!opts.last_trick_eval) suffix += "+nolasttrick";
     if (!opts.narrow_window && opts.mode == nil::MODE_FULL) suffix += "+nonarrow";
     if (!opts.presolve_window && opts.mode == nil::MODE_FULL) suffix += "+nopresolve";
     if (!opts.canonical_pv && opts.mode == nil::MODE_FULL) suffix += "+ordered";
@@ -479,6 +485,8 @@ int main(int argc, char** argv) {
             opts.use_static_bounds = false;
         } else if (arg == "--no-ordering") {
             opts.order_moves = false;
+        } else if (arg == "--no-last-trick") {
+            opts.last_trick_eval = false;
         } else if (arg == "--no-narrow") {
             opts.narrow_window = false;
         } else if (arg == "--no-presolve") {

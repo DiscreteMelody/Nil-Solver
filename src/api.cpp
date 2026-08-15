@@ -87,6 +87,7 @@ std::int32_t prepare(const char* pbn, std::int32_t leader, const char* current_t
     opts.collapse_equivalents = (flags & NIL_FLAG_NO_COLLAPSE) == 0;
     opts.use_static_bounds = (flags & NIL_FLAG_NO_STATIC_BOUNDS) == 0;
     opts.order_moves = (flags & NIL_FLAG_NO_ORDERING) == 0;
+    opts.last_trick_eval = (flags & NIL_FLAG_NO_LAST_TRICK) == 0;
     opts.narrow_window = (flags & NIL_FLAG_NO_NARROW) == 0;
     opts.presolve_window = (flags & NIL_FLAG_NO_PRESOLVE) == 0;
     opts.tt_megabytes = g_table_megabytes;

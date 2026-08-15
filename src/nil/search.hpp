@@ -191,6 +191,22 @@ struct SearchOptions {
     // as the only difference between the two columns.
     bool order_moves = true;
 
+    // Evaluate the final trick instead of searching it.
+    //
+    // At a trick boundary every hand holds the same number of cards, so four
+    // cards left means one card each and the trick is settled before it starts.
+    // Searching it anyway costs five nodes -- four plies and the terminal --
+    // each with a key to encode, a table to probe and an entry to store, for a
+    // trick with no decision in it.  Chang's dds opens with the same shortcut
+    // (`if (tricks_left == 1) return LastTrick(sp)`); this search did not have
+    // it, and the last trick is the widest stratum of the tree.
+    //
+    // This is an exact value, not a bound, and it does not consult the window:
+    // a forced line has one value and every window agrees about it.  So the
+    // flag changes node counts and running time and nothing else, which makes
+    // it a control arm in the same sense as --no-collapse.
+    bool last_trick_eval = true;
+
     // Narrow the window as a node's own moves come back: a maximiser raises
     // alpha to the best it has seen, a minimiser lowers beta, and the children
     // that follow inherit it.  This is the half of alpha-beta that patch 10

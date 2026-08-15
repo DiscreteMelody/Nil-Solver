@@ -64,6 +64,8 @@ void usage(const char* argv0) {
         << "  --no-ordering           try moves in canonical order rather than a\n"
         << "                          promising-first one (same answer, more nodes;\n"
         << "                          fast mode only)\n"
+        << "  --no-last-trick         search the forced final trick instead of\n"
+        << "                          evaluating it (same answer, more nodes)\n"
         << "  --tt-mb <n>             transposition table size in MiB          [32]\n"
         << "  --tt-stats              also report transposition table behaviour\n"
         << "  --moves                 score every legal card, not just the best:\n"
@@ -147,6 +149,8 @@ int main(int argc, char** argv) {
             opts.use_static_bounds = false;
         } else if (arg == "--no-ordering") {
             opts.order_moves = false;
+        } else if (arg == "--no-last-trick") {
+            opts.last_trick_eval = false;
         } else if (arg == "--no-narrow") {
             opts.narrow_window = false;
         } else if (arg == "--no-presolve") {

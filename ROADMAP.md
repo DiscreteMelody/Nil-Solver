@@ -28,6 +28,8 @@ is what the pruned answer is checked against.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ✅ | ~~Last-trick evaluation~~ | patch 27 | Chang's `if (tricks_left == 1) return LastTrick(sp)`, which this search never had. At a trick boundary all hands are equal, so four cards left means one card each and the trick is forced: five nodes (four plies plus the terminal) collapse to one, with no key encoded, no probe and no store. **−16.1% nodes on the corpus** (404,836 -> 339,573), −9.1% on the corpus in fast mode, −1.08% at 9 cards, −1.26% at 11. Exact rather than a bound — a forced line has one value and no window disagrees — so it cannot cost nodes at any depth. All 560 oracle-pinned values AND principal variations reproduce |
+| ⊘ | Transposition-table move ordering (item 5), second attempt | patch 26 | **evaluated and rejected on measurement, having been reopened by patch 22.** The population is real this time — `tt_partial` is 8.8% of probes at 9 cards — and the never-tested membership invariant holds exactly (0 rejections in 585,271 promotions). The move is simply a worse hint than what it displaces: **+0.84% nodes at 9 cards, +1.57% at 11**, and ~4% slower on interleaved medians. Nothing shipped |
 | ✅ | ~~Canonical re-derivation: move ordering for `MODE_FULL`~~ | patch 25 | ordering is a pure reorder, so only the TIE-BREAK ever moved. Re-derive the reported move canonically after the search and it stops moving: **1.82x on the 13-card interleaved deal** (263M -> 146M nodes, 104 s -> 57 s), 1.23x on random 9-card, 6.9% on the corpus. All 560 oracle-pinned values AND principal variations reproduce with ordering on, which patch 24 could not manage. Retires the `nil_already_set` exclusion |
 | ✅ | ~~Presolve-seeded root window for `MODE_FULL`~~ | patch 23 | a `MODE_FAST` presolve costs a thousandth of the full search and bounds it: nil safe puts the packed value out of reach of the range where it fails, so beta closes onto the answer. **Turns the 13-card interleaved deal from unreachable into 40 s** (110,681,989 nodes), 1.20x on nil-safe 9-card positions. Costs 3% on nil-fails positions and is gated off below 8 tricks, where it returned nothing. Same value, same PV; all 560 oracle-pinned rows reproduce |
 | ✅ | ~~Window narrowing: alpha-beta for `MODE_FULL`~~ | patch 22 | the missing half of patch 10. `alpha = max(alpha, best)` at a maximiser, `beta = min(beta, best)` at a minimiser, so full mode's cutoff becomes reachable for the first time. **68.8x fewer nodes and 62.9x less wall at 9 cards** (23,519,702 -> 342,000 nodes/position), **6.09x nodes / 5.36x wall on the corpus**. `MODE_FAST` unchanged node for node, provably. All 560 oracle-pinned values and principal variations reproduce card for card |
@@ -56,6 +58,41 @@ Patch 7 measured against the 560-position corpus:
 | 6 | 1,163,389 | 44,309 | 26.3x |
 
 Total corpus wall time 29.9 s to 0.77 s.
+
+Patch 27, measured against `--no-last-trick` on the same binary, interleaved so
+that the container's clock drift cancels:
+
+| workload | searched | evaluated | change |
+|---|---:|---:|---:|
+| corpus 560, full | 404,836 | 339,573 | **−16.1%** |
+| corpus 560, fast | 40,595 | 36,913 | **−9.1%** |
+| random 9-card x20, seed 1 | 6,599,223 | 6,527,925 | −1.08% |
+| random 11-card x10, seed 3 | 231,790,842 | 228,863,611 | −1.26% |
+| random 13-card x20 fast, seed 3 | 11,816,337 | 11,812,359 | −0.03% |
+
+**The gain decays with depth, and the reason is worth recording.** The shortcut
+removes four nodes per distinct four-card endgame reached, so its yield is set
+by how many of those the search reaches rather than by how big the tree is. At
+4-6 cards the last trick is most of the tree. Deeper, two things that are
+already here have got there first: the table collapses the endgame hard, because
+the number of distinct four-card positions is small and the paths into them are
+many, and in fast mode `nil_cannot_be_forced` settles most lines several tricks
+above the bottom. What is left to collapse at 13 cards is 0.03%.
+
+That is not an argument against taking it. The check is one comparison on a node
+that is not at a trick boundary and one AND on a node that is, it can never cost
+a node at any depth, and the corpus -- which is what the C# integration actually
+solves -- is 4-6 cards.
+
+Throughput was unchanged: 83.29 / 85.19 ms with the shortcut against 81.97 /
+87.33 ms without it at 9 cards, which is inside the noise floor measured below.
+
+**A note on measuring this at all.** Wall-clock readings taken minutes apart on
+the development container are not comparable: five identical back-to-back runs
+held 103.70-107.18 ms, while the same configuration measured across separate
+bursts ranged 85-118 ms. Node counts are deterministic to the digit. Every
+timing number in this section is an interleaved A/B on one binary, and any
+timing claim that is not should be treated as unmeasured.
 
 Patch 8, measured against `--no-collapse` on the same binary so the two columns
 differ in exactly one thing:
@@ -440,7 +477,50 @@ secondary is not zero. Each proof settles the nil bidder's own trick count and
 says nothing about the pair's total or the split between the two partners, so it
 cannot settle the full objective. The corpus still comes in at 2,647,731 nodes.
 
-### 5. Transposition-table move ordering — ⭐⭐⭐⭐ — **RE-OPENED by patch 22, for `MODE_FULL` only**
+### ~~5. Transposition-table move ordering~~ — **BUILT, MEASURED AND REJECTED (patch 26)**
+
+> **Closed for the second time, on measurement rather than on a theorem.**
+> Patch 22 gave the item a population and patch 26 spent it. The mechanism
+> works: `probe()` hands back the move off a partial match, and the invariant
+> this item asked to have checked rather than argued — that a stored move is
+> still a member of the reduced move set at the node reading it — held
+> exactly, **0 rejections in 585,271 promotions** at 9 cards. What failed is
+> the premise that the move is a good hint. Three slot orders were built and
+> measured against `--no-tt-ordering` on one binary:
+>
+> | arm | nodes/position at 9 cards | vs canonical |
+> |---|---:|---:|
+> | no table ordering (control) | 329,961 | — |
+> | table move first | 332,719 | **+0.84%** |
+> | heuristic first, table move second | 342,160 | **+3.70%** |
+> | table move only where no heuristic fires | 343,236 | **+4.02%** |
+>
+> At 11 cards the best arm is +1.57% (23,542,340 against 23,179,084), and on
+> interleaved medians it is ~4% slower in wall time. Nothing shipped.
+>
+> **Why it loses, which is the part worth keeping.** The third arm is the
+> informative one. It confines the table move to the seats and plies the 6a/6b/6d
+> heuristics leave alone — the cover partner, the nil bidder on lead, an
+> opponent following suit — and it is the *worst* of the three. So the canonical
+> ascending order is not a gap waiting to be filled at those nodes: it is
+> already close to right, which is the same reason 6c measured flat. Ascending
+> order plays the lowest card first, and low is what an opponent wants when it
+> is ducking under the nil bidder and what the nil bidder wants when it is
+> shedding. The table move displaces a good order with a stale one.
+>
+> The other half of the answer is what the stored move *is*. A partial entry is
+> one whose bound was too weak to settle the window, which is dominated by
+> nodes that failed low: the move recorded there is the best of a set of moves
+> that were all refuted, chosen under a different window. That is a weaker
+> claim than it looks, and weaker than a domain heuristic that knows what a nil
+> bidder is trying to do.
+>
+> The measurement is cheap to reproduce and the diff is small, so if a future
+> item changes the shape of the tree enough to matter — the bar is a change to
+> what a partial entry *is*, not merely how many there are — it is worth ten
+> minutes to re-run. **Measurement validity is tree-specific**, and this result
+> is banked against the patch-25 tree.
+
 
 > **Re-opened.** The closure below is still correct *for `MODE_FAST`*, and the
 > theorem that carries it is untouched: a null window admits no integers, so
@@ -884,6 +964,76 @@ lands, and `nil_bench --help` said ordering would change which equal-valued card
 the search picks. Both were written before the mode split, both are now wrong,
 and the first would have retired the strongest regression test in the project
 for no reason at all.
+
+### 28. Bound estimation immediately after the lead — ⭐⭐⭐ — **from Chang §4**
+
+Run the safe-nil proof at `trick_len == 1` as well as at `trick_len == 0`, and
+nowhere else.
+
+**This is not the arm already rejected.** *The safe-nil proof run mid-trick*
+under "Evaluated and rejected" tested the proof at every ply and paid 5.9%
+throughput for 0.87% nodes. Chang does not do that. He runs his lower-bound
+estimate at exactly two plies -- when a player starts a trick, or when he plays
+"right after the leading card in current trick" -- and gives the reason: because
+the strength of the cards usually falls on one side, estimating right after the
+lead is what lets the stronger side get a large bound *early on the tricks it did
+not start*. A side that only ever estimates at trick boundaries gets its bound
+one full trick later on exactly those lines.
+
+So the claim is not that mid-trick estimation pays. It is that ply 1
+specifically is where the information arrives -- the led suit is known, which is
+most of what the proof needs and all of what it lacks at ply 0 -- and that plies
+2 and 3 are the ones paying throughput for nothing. Two of four plies at roughly
+half the measured cost, against a saving concentrated where the rejected arm
+never separated it out.
+
+Cheap to settle: the mid-trick machinery from the rejected attempt is the same
+machinery, gated on `st.trick_len <= 1` instead of unconditionally. Note that
+only condition 1 of the proof survives mid-trick (see bounds.hpp), which is
+already the constraint the rejected arm ran under.
+
+### 29. Single-suit analysis — ⭐⭐⭐⭐ — **from Chang §4 and BIS §4.2**
+
+Precompute per-suit results into a table and use them for bounds and for suit
+ordering. This is the largest structural gap between this solver and the
+literature, and both reference papers arrive at it independently.
+
+**Chang's version.** For every distribution of relative ranks in a suit and
+every leading player, precompute *sure tricks* (tricks the leader's side wins in
+a row without discarding or losing control), *long-suit tricks*, and *controls*
+(who holds the lead afterwards). Suits of length <= 9 fit in under 3 MB. The
+results feed two places: a lower-bound estimate that is just the sum of sure
+tricks plus the maximal long-suit tricks, and the suit ordering in move
+generation.
+
+**BIS's version, which is the one specialised to nil.** BIS estimates nil
+success as a product over suits under an explicit *almost-suit-independence*
+relaxation, `Pr(nil|hand) ~= prod Pr(nil(suit)|hand ∩ suit)`, on the grounds
+that suit-independence holds exactly while players can follow suit and breaks
+only on a void. Crucially it does not evaluate "nil" per suit but a weaker
+*cards-only* event it calls `cnil(suit)`: on every trick of that suit, both
+opponents can play under one of the nil bidder's cards **and** the partner
+cannot cover it. That event depends only on who holds which cards, not on how
+anyone plays.
+
+**Why that matters here.** BIS needs `cnil` to be probabilistic because it is
+bidding under hidden information. This solver is double-dummy: every card's
+location is known, so `cnil(suit)` is a *decidable predicate*, not an estimate.
+That makes it a candidate static bound in the shape of the two already in
+bounds.hpp -- and a per-suit one, where both current proofs are whole-hand and
+`nil_cannot_be_forced` is documented as failing at roughly three-quarters of
+trick-boundary nodes on a hard 13-card deal, on condition 2. A predicate that
+decomposes by suit is exactly the shape a weaker-and-still-sound condition 2
+would take.
+
+BIS contributes one more usable heuristic: cards beyond the three lowest in a
+suit are not dangerous for a nil bid. If that survives contact with the
+double-dummy setting it is a rank-truncation, and rank-truncation is the one
+lever this project has not pulled that acts on the *state space* rather than on
+the search order.
+
+Sequenced after 28 because 28 is a one-line gate on machinery that exists and
+this is a new subsystem, and before item 8, which it largely subsumes.
 
 ### 8. Quick-trick / forced-trick analysis — ⭐⭐
 
@@ -1434,7 +1584,7 @@ say so.
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 (re-opened) → 9 → 8 → 10 → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 → 29 → 9 → 8 → 10 → measure → 11..14
 ```
 
 `⊘` is item 5: closed without being built, because it had no population. **Patch

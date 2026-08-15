@@ -47,6 +47,7 @@ struct Ctx {
     int tertiary_weight = 0;   // 1 when the cover partner's share is what counts
     bool break_forced = false;
     bool collapse = true;      // one move per class of rank-equivalent cards
+    bool last_trick = true;    // evaluate a forced final trick instead of searching it
     // True when no remaining trick can lower the value, i.e. every weight is
     // non-negative.  That makes what is already banked a lower bound on the
     // whole subtree, which is the one fact the "already past beta" cutoff in
@@ -367,6 +368,43 @@ int search(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta) {
     ++ctx.nodes;    best_move = NO_CARD;
     if (st.empty()) return 0;
 
+    // LAST TRICK.  Chang's `if (tricks_left == 1) return LastTrick(sp)`, which
+    // this search did not have: it recursed to the bottom like any other trick
+    // and spent five nodes doing it -- one per ply, plus the terminal that
+    // returns zero -- on a trick where nobody has a decision to make.
+    //
+    // At a trick boundary all four hands are the same size, so one card in the
+    // leader's hand means one card in every hand: the trick is fully determined
+    // before it starts.  There is no move to order, no window to test and no
+    // cutoff available, because there is no branching to cut.  Playing it out
+    // is arithmetic, and this is that arithmetic.
+    //
+    // EXACT, NOT A BOUND.  Nothing here depends on alpha or beta, and the value
+    // returned is the value of the subtree rather than a claim about where it
+    // sits relative to a window -- the same standing as the `nil_cannot_be_forced`
+    // return below, and for the same reason: the line is forced.
+    //
+    // The broken flag is not updated because nothing reads it again; legality
+    // is a constraint on later tricks and there are none.  Like the static
+    // bounds, this sits ahead of the transposition probe and neither probes nor
+    // stores: a node answered by four bit scans and a comparison is cheaper to
+    // redo than to remember.
+    if (ctx.last_trick && st.trick_len == 0) {
+        const Hand lead_hand = st.hands[st.leader];
+        if ((lead_hand & (lead_hand - 1)) == 0) {
+            const CardId played[4] = {lowest_card(lead_hand),
+                                      lowest_card(st.hands[(st.leader + 1) & 3]),
+                                      lowest_card(st.hands[(st.leader + 2) & 3]),
+                                      lowest_card(st.hands[(st.leader + 3) & 3])};
+            const int winner = trick_winner(st.leader, played, 4);
+            int gained = 0;
+            if (winner == ctx.nil_seat) gained += ctx.primary_weight + ctx.tertiary_weight;
+            if (((winner ^ ctx.nil_seat) & 1) == 0) gained += ctx.secondary_weight;
+            best_move = played[0];
+            return gained;
+        }
+    }
+
     // STATIC BOUNDS.  Two proofs that settle the position outright; see
     // bounds.hpp for both, and for why only one of them survives mid-trick.
     // They sit ahead of the transposition probe because they are cheaper than
@@ -594,6 +632,7 @@ void configure(Ctx& ctx, int nil_seat, const SearchOptions& opts, int tricks_rem
     // not constrain how nil_side_tricks splits, and re-deriving the LINE pins
     // the split regardless of what the value says.
     ctx.order_moves = opts.order_moves;
+    ctx.last_trick = opts.last_trick_eval;
     // Canonicalise whenever the caller wants the canonical line -- and also,
     // whether they asked or not, whenever the value cannot pin nil_tricks on its
     // own.  That is exactly `primary + tertiary == 0`: the coefficient the value

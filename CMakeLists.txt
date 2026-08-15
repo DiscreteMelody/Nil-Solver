@@ -214,6 +214,22 @@ if(NIL_SOLVER_BUILD_TESTS)
              COMMAND nil_bench --corpus "${NIL_CORPUS}" --mode fast --no-ordering --quiet
                      --slowest 0)
     set_tests_properties(corpus_ordering PROPERTIES TIMEOUT 900)
+
+    # The last-trick shortcut returns an exact value rather than a bound, so
+    # taking it away must not move a single answer OR a single principal
+    # variation -- unlike --no-ordering, which is only claimed to preserve the
+    # value.  --check-pv is therefore carried here, in both modes: the shortcut
+    # fires in each of them and the forced trick it evaluates is the tail of
+    # every PV the corpus records.
+    add_test(NAME corpus_last_trick
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --no-last-trick --check-pv --quiet
+                     --slowest 0)
+    set_tests_properties(corpus_last_trick PROPERTIES TIMEOUT 900)
+
+    add_test(NAME corpus_last_trick_fast
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --mode fast --no-last-trick --quiet
+                     --slowest 0)
+    set_tests_properties(corpus_last_trick_fast PROPERTIES TIMEOUT 900)
   endif()
 
   set(NIL_LARGE_CORPUS "${CMAKE_CURRENT_SOURCE_DIR}/tests/corpus/large.txt")
