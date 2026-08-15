@@ -1032,14 +1032,40 @@ int main(int argc, char** argv) {
                         off.use_static_bounds = false;
                         const Solution a = must_solve(pos, SEAT_NAMES[seat], on);
                         const Solution b = must_solve(pos, SEAT_NAMES[seat], off);
-                        if (a.nodes == b.nodes && a.value == b.value &&
+                        if (a.value == b.value &&
                             nil::format_pv_compact(a) == nil::format_pv_compact(b))
                             continue;
                         const std::string tag = std::string(pbn).substr(2, 8) + " nil " +
                                                 SEAT_NAMES[seat] + " v" + std::to_string(variant);
-                        check("full mode does not see the static bounds, " + tag, a.nodes,
-                              b.nodes);
+                        // WHAT THIS USED TO CLAIM, and why it does not any more.
+                        // Until patch 29 the assertion was `a.nodes == b.nodes`:
+                        // MODE_FULL could not read a proof stated in nil tricks,
+                        // so switching the proofs on changed nothing there and
+                        // its node count was a fixed point.  Patch 29 spends
+                        // that deliberately -- the proofs now bound a full-mode
+                        // node instead of settling it -- so the count may fall
+                        // and the claim narrows to what is actually owed.
+                        //
+                        // The value and the principal variation are still owed
+                        // exactly, and they are the whole of the contract: a
+                        // fail-soft bound is returned only when it already
+                        // clears the window, which is a claim the caller was
+                        // entitled to make do with.
+                        //
+                        // NODES ARE NOT ASSERTED IN EITHER DIRECTION, and the
+                        // first draft of this patch wrongly claimed they could
+                        // only fall.  They usually do -- 15.9% at 13 cards on a
+                        // hard seed -- but a node answered by a bound stores a
+                        // BOUND where it would otherwise have stored an exact
+                        // value, and a later probe that would have been settled
+                        // by the exact one is not settled by the bound.  Pruning
+                        // here can therefore cost work elsewhere, and on an easy
+                        // 13-card seed it measured 0.21% worse.  A one-sided
+                        // proof cannot change an answer; it can very much change
+                        // what the table is worth.
                         check("full mode value unmoved, " + tag, a.value, b.value);
+                        check("full mode PV unmoved, " + tag, nil::format_pv_compact(a),
+                              nil::format_pv_compact(b));
                     }
                 }
             }

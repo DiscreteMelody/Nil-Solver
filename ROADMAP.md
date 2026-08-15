@@ -28,6 +28,7 @@ is what the pruned answer is checked against.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ✅ | ~~Static bounds spent in `MODE_FULL`~~ | patch 29 | the two proofs settle a fast node because that mode's value IS the nil trick count; full mode's value also carries the pair's tricks, so the same proof yields a fail-soft BOUND, returned only when it already clears the window. **−6.8% nodes on the corpus** (339,573 -> 316,333), **−5.7% across all three 13-card seeds** (293,841,428 -> 277,143,048), ranging from −15.9% on seed 3 to +0.2% on seed 42. Spends `MODE_FULL`'s node-count fixed point, held since patch 8. Values and principal variations pinned unmoved by test, corpus and oracle |
 | ✅ | ~~Table cap raised for `MODE_FULL`~~ | patch 28b | full mode has not saturated at 13 cards, and the 512 MiB cap was cutting it off mid-curve. Raised to 1024: **−11.8% nodes on a hard 13-card deal** (115,623,205 -> 101,960,580), −0.55% on an easy one, and 2048 buys a further 2.1% which is where it flattens. Nothing below 13 cards changes -- the doubling schedule already returns 512 at 12 -- so this is a pure high-card-count change. Node counts only: whether they buy wall time depends on the host's memory hierarchy |
 | ✅ | ~~Last-trick evaluation~~ | patch 27 | Chang's `if (tricks_left == 1) return LastTrick(sp)`, which this search never had. At a trick boundary all hands are equal, so four cards left means one card each and the trick is forced: five nodes (four plies plus the terminal) collapse to one, with no key encoded, no probe and no store. **−16.1% nodes on the corpus** (404,836 -> 339,573), −9.1% on the corpus in fast mode, −1.08% at 9 cards, −1.26% at 11. Exact rather than a bound — a forced line has one value and no window disagrees — so it cannot cost nodes at any depth. All 560 oracle-pinned values AND principal variations reproduce |
 | ⊘ | Transposition-table move ordering (item 5), second attempt | patch 26 | **evaluated and rejected on measurement, having been reopened by patch 22.** The population is real this time — `tt_partial` is 8.8% of probes at 9 cards — and the never-tested membership invariant holds exactly (0 rejections in 585,271 promotions). The move is simply a worse hint than what it displaces: **+0.84% nodes at 9 cards, +1.57% at 11**, and ~4% slower on interleaved medians. Nothing shipped |
@@ -59,6 +60,41 @@ Patch 7 measured against the 560-position corpus:
 | 6 | 1,163,389 | 44,309 | 26.3x |
 
 Total corpus wall time 29.9 s to 0.77 s.
+
+Patch 29, measured against `--no-full-static` on the same binary:
+
+| workload | fixed point | bounds spent | change |
+|---|---:|---:|---:|
+| corpus 560, full | 339,573 | 316,333 | **−6.84%** |
+| random 11-card x6, seed 3 | 84,567,384 | 83,506,613 | −1.25% |
+| random 12-card x6, seed 3 | 33,140,586 | 31,845,677 | −3.91% |
+| random 13-card x3, seed 3 | 101,960,580 | 85,800,774 | **−15.85%** |
+| random 13-card x2, seed 11 | 159,204,524 | 158,596,352 | −0.38% |
+| random 13-card x2, seed 42 | 32,676,324 | 32,745,922 | **+0.21%** |
+| **all seven 13-card deals** | **293,841,428** | **277,143,048** | **−5.68%** |
+
+**The variance is the result, not noise.** Node counts are deterministic and
+these are exact. What varies is how often the safe proof fires in the subtrees,
+which is a property of the deal rather than of its size: seed 3's deals reach
+provably-safe positions constantly and seed 11's and 42's hardly at all. A
+number quoted from seed 3 alone would be a 15.9% win and would be dishonest.
+
+**Nodes can rise, and the first draft of this patch wrongly asserted they could
+not.** A one-sided proof cannot change an answer, but a node answered by a bound
+stores a BOUND where it would otherwise have stored an exact value, and a later
+probe the exact entry would have settled is not settled by the bound. Pruning
+here buys work there. Seed 42 is where that came out negative; the test now
+asserts the value and the principal variation and says nothing about nodes.
+
+**What this measures for item 29.** This was run first as a prerequisite: full
+mode could not use a static bound at all, so there was no way to tell whether a
+STRONGER proof would pay there. It can, and the existing weak proof is worth
+5.7% at 13 cards off a fire rate of about 5% of trick-boundary nodes (measured
+by instrumentation at 11 cards: 5.06% would prove safe, 0.98% would prove set).
+The safe proof fails at roughly three-quarters of trick-boundary nodes on a hard
+13-card deal, all on condition 2. So the headroom for a condition 2 that fires
+more often is roughly an order of magnitude above what this patch collected,
+and item 29 now has a measured target rather than a hoped-for one.
 
 Patch 27, measured against `--no-last-trick` on the same binary, interleaved so
 that the container's clock drift cancels:
@@ -1636,7 +1672,7 @@ say so.
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 → 9 → 8 → 10 → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 29b (single-suit) → 9 → 8 → 10 → measure → 11..14
 ```
 
 `⊘` is item 5: closed without being built, because it had no population. **Patch

@@ -210,6 +210,21 @@ extern "C" {
  * running time move. */
 #define NIL_FLAG_NO_LAST_TRICK 0x2000u
 
+/* Do not spend the static proofs in MODE_FULL.
+ *
+ * The two proofs in the solver settle a MODE_FAST node outright, because that
+ * mode's value is the nil bidder's trick count and the proofs are about exactly
+ * that.  MODE_FULL's value also carries the pair's tricks, so the same proof
+ * bounds the node instead of settling it, and the bound is returned only when
+ * it already clears the window.  This flag turns that off and is the control
+ * arm the saving is measured against.
+ *
+ * Same value and same principal variation either way.  What it does change is
+ * MODE_FULL's node count, which was a fixed point from patch 8 to patch 29:
+ * counts taken before that patch are not comparable with counts taken after
+ * unless this flag is set.  Implied by NIL_FLAG_NO_STATIC_BOUNDS. */
+#define NIL_FLAG_NO_FULL_STATIC 0x4000u
+
 /* Pass to nil_set_table_size to go back to choosing the table size from the
  * position, which is what a process that never calls it already gets.  The
  * size follows tricks_remaining and mode: a four-card endgame takes 32 MiB and

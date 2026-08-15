@@ -189,6 +189,21 @@ struct SearchOptions {
     // flag exists to be turned off: ordering must be answer-neutral, and the
     // way that gets shown here is a differential on one binary with this flag
     // as the only difference between the two columns.
+    // Spend the two proofs in bounds.hpp in MODE_FULL as well as MODE_FAST.
+    //
+    // They prove things about the PLAY -- that the nil bidder takes no further
+    // trick, or that it takes at least one.  MODE_FAST's value is exactly that
+    // count, so a proof settles the node outright there.  MODE_FULL's value
+    // also carries the pair's trick count, so the same proof pins only part of
+    // it and yields a fail-soft BOUND, returned only when it clears the window.
+    //
+    // This spends MODE_FULL's node-count fixed point, which has held since
+    // patch 8 and which every measurement before patch 29 was taken under.  It
+    // does not spend the differential oracle: values and principal variations
+    // are unchanged, because a bound returned only on a cutoff is a claim the
+    // caller was already entitled to make do with.
+    bool full_static_bounds = true;
+
     bool order_moves = true;
 
     // Evaluate the final trick instead of searching it.

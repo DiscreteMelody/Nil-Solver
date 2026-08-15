@@ -64,6 +64,10 @@ struct Ctx {
     // like gains_nonnegative, because it is a fact about the weights.
     bool value_is_nil_tricks = false;
     bool static_bounds = true;  // the proofs in bounds.hpp; off is the control arm
+    // Spend the proofs in MODE_FULL too, as bounds rather than as values.  Off
+    // is the control arm, and off is also what every measurement recorded
+    // before patch 29 was taken under.
+    bool full_static_bounds = true;
     // True when the search may try moves in an order other than the canonical
     // one.  Item 6 reads this; nothing does yet, and patch 15 landed it inert
     // on purpose so that the flag, the ABI bit and the control-arm test all
@@ -440,6 +444,71 @@ int search(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta) {
         }
     }
 
+    // THE SAME TWO PROOFS, SPENT IN MODE_FULL (patch 29).
+    //
+    // The proofs are about the PLAY -- how many tricks the nil bidder takes --
+    // and MODE_FAST could return them as values because there its value IS that
+    // count.  MODE_FULL's value also carries the pair's tricks, so a proof
+    // settles only part of it and what comes back is a BOUND.  That is the
+    // whole difference, and it is why this arm is separate rather than a
+    // relaxed gate on the one above.
+    //
+    // WHAT THIS COSTS.  MODE_FULL's node count has been a fixed point since
+    // patch 8 and this spends it: a full search now prunes, so its counts move
+    // and are no longer comparable with anything recorded before this patch.
+    // The differential oracle is unaffected -- values and principal variations
+    // are what it checks, and a fail-soft bound returned only on a cutoff
+    // changes neither.
+    //
+    // THE ARITHMETIC.  From advance(): a trick won by the nil bidder is worth
+    // primary + tertiary + secondary, one won by the partner is worth
+    // secondary, and nothing else scores.  So with n tricks to the nil bidder
+    // and p to the partner,
+    //
+    //     value = (primary + tertiary + secondary) * n + secondary * p
+    //
+    // and each proof pins n.  `t` is tricks remaining, which at a trick
+    // boundary is the size of any one hand.
+    if (ctx.static_bounds && ctx.full_static_bounds && !ctx.value_is_nil_tricks &&
+        st.trick_len == 0) {
+        const int t = count_cards(st.hands[ctx.nil_seat]);
+        if ((st.hands[ctx.nil_seat] & suit_mask(SUIT_SPADES)) == 0) {
+            if (nil_cannot_be_forced(st.hands, ctx.nil_seat, st.leader == ctx.nil_seat)) {
+                // n = 0 exactly, so the primary and tertiary terms vanish and
+                // the value is secondary * p for some p in [0, t].  Two ends,
+                // ordered by the sign of the weight rather than assumed.
+                const int span = ctx.secondary_weight * t;
+                const int lo = span < 0 ? span : 0;
+                const int hi = span < 0 ? 0 : span;
+                if (hi <= alpha) {
+                    best_move = first_legal_move(st);
+                    return hi;
+                }
+                if (lo >= beta) {
+                    best_move = first_legal_move(st);
+                    return lo;
+                }
+            }
+        } else {
+            // n >= 1.  The value is smallest when n is exactly 1 and the
+            // partner's tricks push as far down as their weight allows, which
+            // is p = t - 1 when the secondary is negative and p = 0 when it is
+            // not.  Guarded on the nil trick being worth something positive, so
+            // that the bound is a lower bound for the reason stated rather than
+            // for a reason that happens to hold for today's weights.
+            const int per_nil = ctx.primary_weight + ctx.tertiary_weight + ctx.secondary_weight;
+            if (per_nil > 0 && nil_must_take_a_trick(st.hands, ctx.nil_seat)) {
+                const int worst_partner =
+                    ctx.secondary_weight < 0 ? ctx.secondary_weight * (t - 1) : 0;
+                const int lo = per_nil + worst_partner;
+                if (lo >= beta) {
+                    best_move = first_legal_move(st);
+                    return lo;
+                }
+            }
+        }
+    }
+
     // The key describes the position up to a relabelling of ranks, so the move
     // that comes back out of the table is a slot number rather than a card and
     // has to be read against THIS position's live cards.  That relabelling is
@@ -636,6 +705,7 @@ void configure(Ctx& ctx, int nil_seat, const SearchOptions& opts, int tricks_rem
     ctx.value_is_nil_tricks =
         weights.primary == 1 && weights.secondary == 0 && weights.tertiary == 0;
     ctx.static_bounds = opts.use_static_bounds;
+    ctx.full_static_bounds = opts.full_static_bounds;
     // Both halves matter.  MODE_FULL never reorders whatever the caller asked
     // for, because it cannot gain from it and would lose the oracle check by
     // doing it; and within MODE_FAST the caller can still switch ordering off

@@ -483,6 +483,8 @@ int main(int argc, char** argv) {
             opts.collapse_equivalents = false;
         } else if (arg == "--no-static") {
             opts.use_static_bounds = false;
+        } else if (arg == "--no-full-static") {
+            opts.full_static_bounds = false;
         } else if (arg == "--no-ordering") {
             opts.order_moves = false;
         } else if (arg == "--no-last-trick") {
