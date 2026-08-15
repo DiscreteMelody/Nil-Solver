@@ -577,9 +577,37 @@ int search(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta) {
 // weights differ between the modes -- a fast-mode 1 and a full-mode 1 are not
 // the same number.  new_search() on every solve is what keeps one mode's
 // entries out of the other's search, and it is not optional.
+// The caps are measured rather than chosen, and they are not the same shape in
+// the two modes because the two searches saturate at different sizes.
+//
+// MODE_FAST saturates early and hard.  Twenty 13-card deals on seed 3 hold
+// 11,698,913 nodes at 128 MiB and 11,684,852 at 512 -- 0.1% for four times the
+// memory -- so the fast cap sits where the curve flattens and buying past it
+// buys nothing.
+//
+// MODE_FULL does not saturate at 13 cards, which is why its cap is four times
+// the fast one and was raised from 512 at patch 28.  The same three deals in
+// full mode:
+//
+//     256 MiB   162,786,551 nodes
+//     512 MiB   115,623,205
+//    1024 MiB   101,960,580     <- the cap
+//    2048 MiB    99,786,868     (2.1% more for twice the memory: saturated)
+//
+// The gain is concentrated on hard deals, which is the case worth sizing for:
+// the same step from 512 to 1024 is worth 11.8% on seed 3 and 0.55% on seed 42,
+// whose trees are a third the size and fit in 512 already.  Table pressure
+// scales with the tree, so the cap binds exactly where the latency is.
+//
+// WHAT IS AND IS NOT MEASURED HERE.  Node counts are machine-independent and
+// the numbers above are reproducible to the digit.  Whether fewer nodes buy
+// less WALL time at these sizes depends on the host's cache and memory
+// bandwidth, and on the development container it was a wash.  A caller that
+// cares should measure on its own hardware and use nil_set_table_size, which
+// still overrides all of this.
 std::size_t auto_table_megabytes(int tricks_remaining, SearchMode mode) {
     const int floor_tricks = mode == MODE_FAST ? 10 : 8;
-    const std::size_t cap = mode == MODE_FAST ? 128u : 512u;
+    const std::size_t cap = mode == MODE_FAST ? 128u : 1024u;
     if (tricks_remaining <= floor_tricks) return 32u;
     const int steps = tricks_remaining - floor_tricks;
     std::size_t mb = 32u;

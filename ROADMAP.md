@@ -28,6 +28,7 @@ is what the pruned answer is checked against.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ✅ | ~~Table cap raised for `MODE_FULL`~~ | patch 28b | full mode has not saturated at 13 cards, and the 512 MiB cap was cutting it off mid-curve. Raised to 1024: **−11.8% nodes on a hard 13-card deal** (115,623,205 -> 101,960,580), −0.55% on an easy one, and 2048 buys a further 2.1% which is where it flattens. Nothing below 13 cards changes -- the doubling schedule already returns 512 at 12 -- so this is a pure high-card-count change. Node counts only: whether they buy wall time depends on the host's memory hierarchy |
 | ✅ | ~~Last-trick evaluation~~ | patch 27 | Chang's `if (tricks_left == 1) return LastTrick(sp)`, which this search never had. At a trick boundary all hands are equal, so four cards left means one card each and the trick is forced: five nodes (four plies plus the terminal) collapse to one, with no key encoded, no probe and no store. **−16.1% nodes on the corpus** (404,836 -> 339,573), −9.1% on the corpus in fast mode, −1.08% at 9 cards, −1.26% at 11. Exact rather than a bound — a forced line has one value and no window disagrees — so it cannot cost nodes at any depth. All 560 oracle-pinned values AND principal variations reproduce |
 | ⊘ | Transposition-table move ordering (item 5), second attempt | patch 26 | **evaluated and rejected on measurement, having been reopened by patch 22.** The population is real this time — `tt_partial` is 8.8% of probes at 9 cards — and the never-tested membership invariant holds exactly (0 rejections in 585,271 promotions). The move is simply a worse hint than what it displaces: **+0.84% nodes at 9 cards, +1.57% at 11**, and ~4% slower on interleaved medians. Nothing shipped |
 | ✅ | ~~Canonical re-derivation: move ordering for `MODE_FULL`~~ | patch 25 | ordering is a pure reorder, so only the TIE-BREAK ever moved. Re-derive the reported move canonically after the search and it stops moving: **1.82x on the 13-card interleaved deal** (263M -> 146M nodes, 104 s -> 57 s), 1.23x on random 9-card, 6.9% on the corpus. All 560 oracle-pinned values AND principal variations reproduce with ordering on, which patch 24 could not manage. Retires the `nil_already_set` exclusion |
@@ -197,6 +198,51 @@ every node rather than one in four. Net wall time came out *worse*, which is the
 same verdict and the same shape as side-suit canonicalization above. Worth
 re-measuring only if move ordering (item 6) changes the node mix enough that the
 proof starts firing on a different population.
+
+**Chang's 8-way rehashing.** The other half of his section 3, measured at the
+same time as the cap change in patch 28 and for the same reason: an eviction
+rate of 87.9% at 13 cards and 98.5% at 11 makes the bucket geometry look like
+the problem. Chang tested 2, 4, 8 and 16 way and reports 8 as the best on CPU
+time, with 16 slightly better on nodes but not worth its overhead. This table is
+4-way and has been since patch 7, and the width had never been measured.
+
+Twenty 13-card deals, seed 3, fast mode, 64 MiB, one binary and one constant
+changed:
+
+| ways | nodes | vs 4-way | wall |
+|---:|---:|---:|---:|
+| 2 | 11,907,367 | +0.80% | 2801 ms |
+| **4 (incumbent)** | **11,812,359** | — | **2925 ms** |
+| 8 | 11,768,588 | −0.37% | 3060 ms |
+| 16 | 11,747,467 | −0.55% | 3382 ms |
+
+The node curve moves in Chang's direction and is worth nothing: 0.37% for
+double the bucket walk, and wall time gets monotonically worse with width. Same
+verdict as his depth guard, and the same lesson -- the eviction rate is not
+measuring what it looks like it measures. **Capacity is not the binding
+constraint at these sizes**, which the memory sweep in patch 28 shows directly:
+at 12 cards nodes are flat from 256 MiB upward. A high eviction rate against a
+table that is not capacity-starved means the entries being displaced were not
+worth keeping, and widening the bucket only makes them harder to displace.
+
+**Item 28, bound estimation right after the lead -- dropped without building.**
+The item is written up below and the reasoning behind it still looks right; what
+kills it is that the measurement already exists. *The safe-nil proof run
+mid-trick*, above, ran the proof at every ply and found **0.87% of nodes** at 13
+cards. That is the whole mid-trick population, across all three non-boundary
+plies. Item 28 proposes to harvest one of those three plies, so 0.87% is its
+ceiling and its realistic take is a fraction of that -- against a cost of
+roughly half the 5.9% throughput the rejected arm paid, since it lands on two
+plies in four rather than four in four. A best case of well under 0.87% nodes
+for around 3% of wall time is the same losing trade in a smaller package.
+
+Worth building only if some later item changes the node mix enough that the
+proof starts firing on a different population -- which is exactly the condition
+the rejected arm already named. Left in the sequence as a documented
+non-starter rather than deleted, because the *reason* Chang gives for ply 1
+(the side that did not start the trick gets its bound a full trick earlier) is
+sound and may matter to a future bound that is more expensive to reach than this
+one.
 
 **Chang's depth guard on table replacement.** Measured while closing item 5,
 because `--tt-stats` made the eviction rate visible for the first time and it is
@@ -965,7 +1011,13 @@ the search picks. Both were written before the mode split, both are now wrong,
 and the first would have retired the strongest regression test in the project
 for no reason at all.
 
-### 28. Bound estimation immediately after the lead — ⭐⭐⭐ — **from Chang §4**
+### ~~28. Bound estimation immediately after the lead~~ — **DROPPED WITHOUT BUILDING (patch 28)**
+
+> Its ceiling is already measured and it is 0.87% of nodes at 13 cards -- the
+> whole mid-trick population, of which this item harvests one ply in three.
+> See "Evaluated and rejected" for the arithmetic. The write-up below is kept
+> because Chang's *reason* for ply 1 is sound and may apply to a future bound
+> that is dearer to reach than this one.
 
 Run the safe-nil proof at `trick_len == 1` as well as at `trick_len == 0`, and
 nowhere else.
@@ -1584,7 +1636,7 @@ say so.
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 → 29 → 9 → 8 → 10 → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 → 9 → 8 → 10 → measure → 11..14
 ```
 
 `⊘` is item 5: closed without being built, because it had no population. **Patch

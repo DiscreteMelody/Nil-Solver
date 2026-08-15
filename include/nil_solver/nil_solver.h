@@ -213,9 +213,14 @@ extern "C" {
 /* Pass to nil_set_table_size to go back to choosing the table size from the
  * position, which is what a process that never calls it already gets.  The
  * size follows tricks_remaining and mode: a four-card endgame takes 32 MiB and
- * a thirteen-card full solve takes 512, which is the difference between 111
- * million nodes and 688 million on a hard one.  An explicit size still wins,
- * and 0 still means no table at all. */
+ * a thirteen-card full solve takes 1024, raised from 512 at patch 28 because
+ * full mode has not saturated by then -- the extra memory is worth 11.8% of
+ * nodes on a hard 13-card deal, and 2048 is worth a further 2.1%, which is
+ * where the curve flattens.  MODE_FAST caps at 128, where ITS curve flattens.
+ * A thirteen-card full solve is the largest allocation this library will make
+ * on its own; a caller that would rather trade nodes for footprint should say
+ * so explicitly.  An explicit size still wins, and 0 still means no table at
+ * all. */
 #define NIL_TABLE_AUTO 0xFFFFFFFFu
 
 /* Skip the canonical re-derivation of the reported move.
