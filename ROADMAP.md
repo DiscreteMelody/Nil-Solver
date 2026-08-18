@@ -355,6 +355,78 @@ attacking it, and the partner's move mostly matters through what those two do
 with it. Worth revisiting only with a rule that distinguishes a cheap take from
 an expensive one, since the arm that failed spends the cover unconditionally.
 
+**Weakening condition 1 of the safe-nil proof -- the spade gate.** Investigated
+and closed BEFORE building, on a counterexample. This was going to be the first
+half of item 29 and it is not available at all; the entry below is now scoped to
+condition 2 alone.
+
+*Why it looked like the bigger prize.* Item 29 was written against the measured
+observation that the safe proof fails on condition 2. Instrumenting the actual
+three-way outcome at every trick-boundary node says something the entry did not
+record -- there is a second population, nearly as large, that never reaches
+condition 2 at all. Sixty random 13-card deals, three seeds, fast mode:
+
+| seed | boundary nodes | condition 1 fails | proof fires | condition 2 fails |
+|---|---:|---:|---:|---:|
+| 3 | 3,081,243 | 39.2% | 3.5% | 57.3% |
+| 11 | 10,333,331 | 51.7% | 2.0% | 46.4% |
+| 42 | 9,558,291 | 26.9% | 3.8% | 69.4% |
+| **combined** | **22,972,865** | **39.7%** | **2.9%** | **57.4%** |
+
+Two thirds the size of condition 2's population, gated by a single mask test,
+and **82.0% of it is genuinely nil-safe** -- 3,039 sampled condition-1 failures
+solved individually, 2,492 safe. That is a lot of correct answers behind one
+`if`.
+
+*And none of it is reachable.* Every candidate predicate sits at the base rate.
+Numbers are over the same 3,039 samples:
+
+| candidate | n | actually safe |
+|---|---:|---:|
+| all condition-1 failures (base rate) | 3,039 | 82.0% |
+| every spade below every outstanding spade | 539 | 85.5% |
+| that, and side suits clean (condition 2 passes) | 68 | 82.4% |
+| that, and exactly one spade | 50 | 94.0% |
+
+The third row is the interesting one. It is the whole of the case analysis --
+a spade lead is covered by the rank condition, a side-suit lead the nil bidder
+can follow is covered by condition 2, a side-suit lead it is void in it
+discards on -- and it lands on the base rate. A proof needs 100%.
+
+*The hole, and why it does not close.* The case analysis leaves exactly one
+gap: void in the led suit AND holding nothing but spades, where the discard
+becomes a forced ruff. `N:..A97.Q .K..A84 9..65.3 K..T.76`, spades broken,
+leader N, nil on S. South holds S9, D65, C3. The S9 is below the only
+outstanding spade, both side holdings are below everything outstanding in their
+suits, and South is not spade-tight. The nil still fails:
+
+```
+T1  N:DA  E:C4  S:D5  W:DT   won by N
+T2  N:D7  E:HK  S:D6  W:SK   won by W
+T3  W:C6  N:CQ  E:CA  S:C3   won by E
+T4  E:C8  S:S9  W:C7  N:D9   won by S   <-- forced ruff
+```
+
+West holds the SK and never leads a spade. South therefore never gets a legal
+chance to shed the S9, arrives at the last trick spade-tight, and ruffs a club
+it cannot follow. **The opponents choose whether spades are led, so they can
+always manufacture the run-out.** Rank does not help, side-suit cleanliness does
+not help, and holding side cards now does not help, because they get stripped.
+Any spade at all is a live threat that depends on the play sequence rather than
+on the distribution -- which is what `bounds.hpp` already says, more briefly,
+and it is tighter than it reads. The gate is not conservative. It is exact.
+
+*What survives.* The 82% is real and it is the right shape for the static
+heuristics corpus, which does not need soundness -- and it is the complement of
+the strongest discriminator that work has already found. Nothing survives for
+the search.
+
+*One incidental finding.* Condition 2's on-lead/void clause fired **zero** times
+in 22.9 million boundary nodes. That confirms the reasoning in `bounds.hpp` --
+below the root a nil bidder reaches the lead only by winning a trick, and a fast
+search never recurses past that -- and it means a rewrite of condition 2 can
+ignore that branch entirely rather than carrying it forward.
+
 ---
 
 ## The work, highest impact first
@@ -1119,6 +1191,18 @@ suit are not dangerous for a nil bid. If that survives contact with the
 double-dummy setting it is a rank-truncation, and rank-truncation is the one
 lever this project has not pulled that acts on the *state space* rather than on
 the search order.
+
+**Scoped to condition 2 only.** Weakening condition 1 -- the spade gate -- was
+the other candidate and is closed on a counterexample; see "Evaluated and
+rejected" above for the population measurement, the 82% safe rate behind the
+gate, and the forced-ruff line that shuts it. Condition 2's population is 57.4%
+of trick-boundary nodes at 13 cards against the proof's current 2.9% fire rate,
+so the headroom the entry claims is confirmed and now has a denominator.
+
+**Item 9 is an ingredient, not a successor.** A weaker condition 2 has to decide
+whether a low lead can strand a middling card, and that is a question about who
+can still FOLLOW the suit -- the void map. It is sequenced after 29 below and
+the dependency runs the other way.
 
 Sequenced after 28 because 28 is a one-line gate on machinery that exists and
 this is a new subsystem, and before item 8, which it largely subsumes.
