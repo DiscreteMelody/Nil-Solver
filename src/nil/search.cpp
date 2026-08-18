@@ -718,60 +718,7 @@ int search(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta) {
 // weights differ between the modes -- a fast-mode 1 and a full-mode 1 are not
 // the same number.  new_search() on every solve is what keeps one mode's
 // entries out of the other's search, and it is not optional.
-// The caps are measured rather than chosen, and they are not the same shape in
-// the two modes because the two searches saturate at different sizes.
-//
-// MODE_FAST saturates early and hard.  Twenty 13-card deals on seed 3 hold
-// 11,698,913 nodes at 128 MiB and 11,684,852 at 512 -- 0.1% for four times the
-// memory -- so the fast cap sits where the curve flattens and buying past it
-// buys nothing.
-//
-// MODE_FULL's cap CAME DOWN at patch 32, from 1024 to 256, and the history is
-// the point rather than a footnote.  Patch 28b had raised it from 512 to 1024
-// on the strength of full mode not saturating at 13 cards, and that was true of
-// the tree it was measured on.  Patches 30 and 31 then rebuilt that tree twice
-// -- the table stopped holding mid-trick entries, which is three quarters of
-// what used to be in it, and the reach bound removed another fifth of the nodes
-// -- and what was left saturates at a quarter of the old cap.  Seven 13-card
-// deals across three seeds, interleaved on one binary:
-//
-//     cap        nodes          wall
-//     256 MiB    388,268,529    37.3 s   <- the cap
-//    1024 MiB    383,745,540    46.3 s
-//
-// 1.18% more nodes for 1.24x less wall time and a quarter of the memory.  The
-// node column still slopes the way patch 28b found it sloping; what changed is
-// that the slope is now shallow enough that the allocation and the cache
-// footprint outweigh it.
-//
-// The gain is concentrated on hard deals and so is the residual node cost: seed
-// 11, the hardest of the three, is the only one where 1024 still buys anything
-// worth naming (1.88% of nodes), and it is also the seed where the wall-time
-// win is smallest (1.14x against 1.63x on seed 42).  Table pressure scales with
-// the tree, and so does the price of a table too big for its cache.
-//
-// A NOTE ON WHAT THIS COSTS A PROCESS.  TranspositionTable::resize() reassigns
-// its vector and never shrink_to_fit()s below a size it has already held, so a
-// thread's resident set is the LARGEST cap it has ever asked for, not the one
-// it is using.  With the table thread_local and NilSolverPool running two
-// workers, this change takes the pool from 2 GiB to 512 MiB.
-//
-// WHAT IS AND IS NOT MEASURED HERE.  Node counts are machine-independent and
-// the numbers above are reproducible to the digit.  Wall time is not, and every
-// timing above is an interleaved A/B on one binary for that reason.  A caller
-// that cares should measure on its own hardware and use nil_set_table_size,
-// which still overrides all of this.
-std::size_t auto_table_megabytes(int tricks_remaining, SearchMode mode) {
-    const int floor_tricks = mode == MODE_FAST ? 10 : 8;
-    const std::size_t cap = mode == MODE_FAST ? 128u : 256u;
-    if (tricks_remaining <= floor_tricks) return 32u;
-    const int steps = tricks_remaining - floor_tricks;
-    std::size_t mb = 32u;
-    for (int i = 0; i < steps && mb < cap; ++i) mb *= 2u;
-    return mb < cap ? mb : cap;
-}
-
-void configure(Ctx& ctx, int nil_seat, const SearchOptions& opts, int tricks_remaining,
+void configure(Ctx& ctx, int nil_seat, const SearchOptions& opts,
                const ObjectiveWeights& weights) {
     ctx.nil_seat = nil_seat;
     ctx.primary_weight = weights.primary;
@@ -838,9 +785,8 @@ void configure(Ctx& ctx, int nil_seat, const SearchOptions& opts, int tricks_rem
     ctx.narrow_window = opts.narrow_window;
     ctx.tt_tag = opts.mode == MODE_FAST ? TAG_FAST : TAG_FULL;
 
-    const std::size_t table_mb = opts.tt_megabytes == TT_AUTO
-                                     ? auto_table_megabytes(tricks_remaining, opts.mode)
-                                     : opts.tt_megabytes;
+    const std::size_t table_mb =
+        opts.tt_megabytes == TT_AUTO ? TT_DEFAULT_MEGABYTES : opts.tt_megabytes;
     if (opts.use_memo && table_mb > 0) {
         TranspositionTable& table = shared_table();
         table.resize(table_mb);  // a no-op at the size it already is
@@ -1020,7 +966,7 @@ bool solve(const Position& pos, int nil_seat, const SearchOptions& opts, Solutio
         }
 
         Ctx fast_ctx;
-        configure(fast_ctx, nil_seat, opts, pos.tricks_remaining(), weights);
+        configure(fast_ctx, nil_seat, opts, weights);
         State root = state_of(pos);
         CardId root_move = NO_CARD;
         // The whole question is "is the nil bidder's trick count at least one",
@@ -1086,13 +1032,13 @@ bool solve(const Position& pos, int nil_seat, const SearchOptions& opts, Solutio
         pos.tricks_remaining() >= PRESOLVE_MIN_TRICKS) {
         SearchOptions probe_opts = opts;
         probe_opts.mode = MODE_FAST;
-        // Pin the parent's table size on the nested solve.  Left to resolve
-        // itself it would ask for the MODE_FAST size, and a resize discards the
-        // table -- so the presolve would hand the search it is meant to help a
-        // cold table and a reallocation.
-        probe_opts.tt_megabytes = opts.tt_megabytes == TT_AUTO
-                                      ? auto_table_megabytes(pos.tricks_remaining(), opts.mode)
-                                      : opts.tt_megabytes;
+        // The nested solve inherits the parent's size, which is what
+        // `probe_opts = opts` already does now that TT_AUTO is one number for
+        // both modes.  It used to have to be pinned by hand: the presolve would
+        // otherwise resolve to the MODE_FAST size, and a resize discards the
+        // table, so the presolve handed the search it is meant to help a cold
+        // table and a reallocation.  That whole hazard is gone with the
+        // schedule.
         Solution probe;
         std::string probe_err;
         // A failed presolve is not a failed solve.  It is an optimisation, and
@@ -1110,7 +1056,7 @@ bool solve(const Position& pos, int nil_seat, const SearchOptions& opts, Solutio
     }
 
     Ctx ctx;
-    configure(ctx, nil_seat, opts, pos.tricks_remaining(), weights);
+    configure(ctx, nil_seat, opts, weights);
 
     State st = state_of(pos);
     CardId move = NO_CARD;
@@ -1243,7 +1189,7 @@ bool solve_moves(const Position& pos, int nil_seat, const SearchOptions& opts, S
     }
 
     Ctx ctx;
-    configure(ctx, nil_seat, opts, pos.tricks_remaining(), weights);
+    configure(ctx, nil_seat, opts, weights);
 
     std::uint64_t presolve_nodes = 0;
     const int alpha = fast ? 0 : WINDOW_MIN;
@@ -1259,13 +1205,13 @@ bool solve_moves(const Position& pos, int nil_seat, const SearchOptions& opts, S
         pos.tricks_remaining() >= PRESOLVE_MIN_TRICKS) {
         SearchOptions probe_opts = opts;
         probe_opts.mode = MODE_FAST;
-        // Pin the parent's table size on the nested solve.  Left to resolve
-        // itself it would ask for the MODE_FAST size, and a resize discards the
-        // table -- so the presolve would hand the search it is meant to help a
-        // cold table and a reallocation.
-        probe_opts.tt_megabytes = opts.tt_megabytes == TT_AUTO
-                                      ? auto_table_megabytes(pos.tricks_remaining(), opts.mode)
-                                      : opts.tt_megabytes;
+        // The nested solve inherits the parent's size, which is what
+        // `probe_opts = opts` already does now that TT_AUTO is one number for
+        // both modes.  It used to have to be pinned by hand: the presolve would
+        // otherwise resolve to the MODE_FAST size, and a resize discards the
+        // table, so the presolve handed the search it is meant to help a cold
+        // table and a reallocation.  That whole hazard is gone with the
+        // schedule.
         Solution probe;
         std::string probe_err;
         if (solve(pos, nil_seat, probe_opts, probe, probe_err) && !probe.nil_fails) {

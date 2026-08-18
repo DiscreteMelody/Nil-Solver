@@ -119,15 +119,41 @@ enum SearchMode {
 // the other would read a failing nil as a made one.
 inline constexpr int TRICKS_NOT_COMPUTED = -1;
 
-// Sentinel for SearchOptions::tt_megabytes: choose the size from the position.
+// Sentinel for SearchOptions::tt_megabytes: let the library choose the size.
 constexpr std::size_t TT_AUTO = static_cast<std::size_t>(-1);
 
-// The size TT_AUTO resolves to is chosen by auto_table_megabytes in search.cpp:
-// doubling per trick above a floor, which is conservative against measured node
-// growth of 2.1x to 3.5x per card, and capped where the measurements stop
-// paying -- MODE_FULL at 256 MiB as of patch 32 (1024 buys 1.18% fewer nodes
-// and costs 1.24x the wall time), MODE_FAST at 128 MiB (512 is slower in wall
-// time than 128 despite fewer nodes).
+// What TT_AUTO resolves to.  ONE SIZE, for every hand size and both modes.
+//
+// It used to be a schedule -- 32 MiB at a four-card endgame, doubling per trick
+// above a floor, capped at 256 in full mode and 128 in fast.  Sizing to the
+// question looks obviously right and is not, for a reason that only shows up in
+// a process that solves more than one position.
+//
+// TranspositionTable::resize() reuses the allocation when the size is
+// unchanged, and re-zeroes the whole table when it is not.  A hand played out
+// asks for a smaller table every trick or two, so a worker following a live
+// game walks the schedule downwards and back up again on every deal, and each
+// step is a memset of the whole table.  Measured on the schedule this replaced:
+//
+//     first resize to 256 MiB           133.1 ms   (allocation and page faults)
+//     100 resizes to the same size        0.001 ms  (0.00001 ms each)
+//     five hands, 13 -> 3 -> 13 cards    256.5 ms   (51.3 ms per hand)
+//
+// 51 ms per hand, charged against solves that are under a millisecond at the
+// small end.  One size makes every resize after the first the free branch.
+//
+// 256 MiB is the full-mode number from patch 32, and fast mode is happy to take
+// it: more table never costs a fast search nodes -- 13 cards on seed 11 holds
+// 3,492,640 nodes at 128 MiB and 3,485,739 at 256 -- and what it used to cost
+// was the allocation, which is now paid once per thread rather than per size
+// change.
+//
+// WHAT THIS COSTS.  A process that solves ONE small position and exits now
+// spends 133 ms on a table it barely uses, where the schedule would have spent
+// about twelve.  That is the trade: a fixed footprint and no churn for a
+// long-lived worker, against a worse one-shot.  A caller on the wrong side of it
+// should set the size explicitly, which still overrides this.
+constexpr std::size_t TT_DEFAULT_MEGABYTES = 256;
 struct SearchOptions {
     // MODE_FULL by default: the caller who has not thought about it wants the
     // answer that carries its own evidence.
@@ -370,15 +396,15 @@ struct SearchOptions {
     // depends on this number: a bigger table finds more of its own earlier work
     // and visits fewer nodes.  Benchmarks are only comparable at equal size,
     // which is why nil_bench records it in the history file.
-    // TT_AUTO means "pick a size from the position", which is what a caller who
-    // has not thought about it should get.  Sizing this by hand is the setting
-    // most likely to be wrong by an order of magnitude in either direction: a
-    // 13-card MODE_FULL solve at the old flat 32 MiB spends 688 million nodes
-    // where 512 MiB spends 111 million, and a 4-card one at 512 MiB has bought
-    // half a gigabyte to hold a few thousand entries.
+    // TT_AUTO means "let the library choose", which is what a caller who has
+    // not thought about it should get, and it resolves to TT_DEFAULT_MEGABYTES
+    // -- one size for every hand size and both modes.  See the constant for why
+    // it stopped being a schedule.
     //
-    // Resolved once per solve against tricks_remaining and mode; see
-    // auto_table_megabytes.  An explicit number still wins.
+    // Sizing this by hand is still the setting most likely to be wrong by an
+    // order of magnitude in either direction: a 13-card MODE_FULL solve at a
+    // flat 32 MiB spends 688 million nodes where 256 spends 46 million.  An
+    // explicit number wins over TT_AUTO, and 0 is the same as use_memo = false.
     std::size_t tt_megabytes = TT_AUTO;
 
     // Return the canonically lowest of the equally-best lines, rather than

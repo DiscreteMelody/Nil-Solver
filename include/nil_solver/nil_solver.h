@@ -257,21 +257,24 @@ extern "C" {
  * control arm. */
 #define NIL_FLAG_NO_TARGET_BOUNDS 0x10000u
 
-/* Pass to nil_set_table_size to go back to choosing the table size from the
- * position, which is what a process that never calls it already gets.  The
- * size follows tricks_remaining and mode: a four-card endgame takes 32 MiB and
- * a thirteen-card full solve takes 256, LOWERED from 1024 at patch 32.  It had
- * been raised to 1024 at patch 28b because full mode did not saturate by then,
- * which was true of the tree measured; patches 30 and 31 rebuilt that tree and
- * what is left saturates at a quarter of it -- 256 costs 1.18% of nodes across
- * seven 13-card deals and buys 1.24x of wall time.  MODE_FAST caps at 128,
- * where its own curve flattens.
+/* Pass to nil_set_table_size to go back to letting the library choose the
+ * table size, which is what a process that never calls it already gets.
  *
- * Note that the table never shrinks below a size it has already held, so a
- * thread's footprint is the largest size it has ever been asked for.  A
- * thirteen-card full solve is still the largest allocation this library will
- * make on its own.  An explicit size still wins, and 0 still means no table at
- * all. */
+ * It resolves to a FIXED 256 MiB, for every hand size and both modes, as of
+ * patch 33.  It used to be a schedule that sized the table to the position;
+ * that is a worse idea than it looks, because the table is re-zeroed whenever
+ * the requested size changes and a hand played out asks for a smaller table
+ * every trick or two.  A worker following a live game paid 51 ms per deal
+ * walking the schedule down and back up.  One size makes every resize after the
+ * first free.
+ *
+ * The table is thread_local and never shrinks, so 256 MiB per worker thread is
+ * both the steady state and the high-water mark -- which is the point: the
+ * footprint is now predictable rather than a function of what was last asked.
+ * The first solve on a thread spends about 133 ms allocating and faulting it
+ * in; every later one spends nothing.  A caller that would rather trade nodes
+ * for footprint, or that solves one small position and exits, should set the
+ * size explicitly.  0 still means no table at all. */
 #define NIL_TABLE_AUTO 0xFFFFFFFFu
 
 /* Skip the canonical re-derivation of the reported move.

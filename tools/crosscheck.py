@@ -251,6 +251,11 @@ def compare(case: Case, oracle, cpp) -> List[str]:
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    # One process per case, so the solver's default table -- 256 MiB, sized for
+    # a long-lived worker -- would be allocated and faulted in once per case.
+    # These positions are small enough to fit in anything.
+    p.add_argument("--tt-mb", type=int, default=32,
+                   help="table size passed to the solver (0 leaves its default)")
     p.add_argument("--exe", default=os.path.join("build", "bin", "nil_cli"),
                    help="path to nil_cli [build/bin/nil_cli]")
     p.add_argument("--oracle", default=None,
@@ -321,7 +326,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     for index, case in enumerate(cases):
         oracle_answer = run_oracle(oracle, case, not args.oracle_no_memo)
 
-        runs = [("", run_cpp(args.exe, case))]
+        size = ["--tt-mb", str(args.tt_mb)] if args.tt_mb else []
+        runs = [("", run_cpp(args.exe, case, size))]
         if args.no_memo:
             runs.append(("--no-memo", run_cpp(args.exe, case, ["--no-memo"])))
 

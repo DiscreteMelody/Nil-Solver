@@ -361,7 +361,7 @@ void usage(const char* argv0) {
               << "  --note <text>     free-text label for the history row\n"
               << "  --commit <sha>    override the commit git reports\n"
               << "  --slowest <n>     list the n slowest positions            [5]\n"
-              << "  --tt-mb <n>       transposition table size in MiB         [32]\n"
+              << "  --tt-mb <n>       transposition table size in MiB        [256]\n"
               << "  --no-memo         no transposition table at all\n"
               << "  --no-collapse     generate every legal card rather than one per class\n"
               << "  --no-static       do not settle positions by proof (fast mode only)\n"
@@ -427,7 +427,15 @@ std::string memo_label(const nil::SearchOptions& opts) {
     if (!opts.presolve_window && opts.mode == nil::MODE_FULL) suffix += "+nopresolve";
     if (!opts.canonical_pv && opts.mode == nil::MODE_FULL) suffix += "+ordered";
     if (!opts.use_memo || opts.tt_megabytes == 0) return "off" + suffix;
-    return std::to_string(opts.tt_megabytes) + "mb" + suffix;
+    // TT_AUTO is a sentinel, not a size.  Printing it raw put
+    // "18446744073709551615mb" in the history file's memo column, which is the
+    // column bench_history.py GROUPS on -- so every run that did not pass
+    // --tt-mb landed in a bucket of its own name and could not be compared with
+    // the identically-sized run next to it.  Resolve it to the size actually
+    // used, which is what the column is for.
+    const std::size_t mb =
+        opts.tt_megabytes == nil::TT_AUTO ? nil::TT_DEFAULT_MEGABYTES : opts.tt_megabytes;
+    return std::to_string(mb) + "mb" + suffix;
 }
 
 }  // namespace

@@ -202,7 +202,7 @@ def unmap_pv(pv: str, info: Dict) -> str:
 # ---------------------------------------------------------------------------
 
 
-def cli_args(exe: str, spec: Dict, mode: str = "full") -> List[str]:
+def cli_args(exe: str, spec: Dict, mode: str = "full", tt_mb: int = 0) -> List[str]:
     args = [exe, "--pbn", spec["pbn"], "--leader", spec["leader"], "--nil", spec["nil"],
             "--compact", "--force"]
     if mode == "fast":
@@ -217,14 +217,17 @@ def cli_args(exe: str, spec: Dict, mode: str = "full") -> List[str]:
         args.append("--nil-already-set")
     if spec.get("trick"):
         args += ["--trick", spec["trick"]]
+    if tt_mb:
+        args += ["--tt-mb", str(tt_mb)]
     return args
 
 
 def solve(exe: str, spec: Dict, timeout: float,
-          mode: str = "full") -> Optional[Dict[str, str]]:
+          mode: str = "full", tt_mb: int = 0) -> Optional[Dict[str, str]]:
     try:
         proc = subprocess.run(
-            cli_args(exe, spec, mode), capture_output=True, text=True, timeout=timeout
+            cli_args(exe, spec, mode, tt_mb), capture_output=True, text=True,
+            timeout=timeout
         )
     except subprocess.TimeoutExpired:
         return None
@@ -236,7 +239,7 @@ def solve(exe: str, spec: Dict, timeout: float,
 
 
 def check(exe: str, spec: Dict, timeout: float, rng: random.Random,
-          mode: str = "full") -> Tuple[int, int, str]:
+          mode: str = "full", tt_mb: int = 0) -> Tuple[int, int, str]:
     """Returns (checks run, failures, message).
 
     In fast mode the solver reports no trick counts and no principal variation,
@@ -245,7 +248,7 @@ def check(exe: str, spec: Dict, timeout: float, rng: random.Random,
     hand sizes full mode cannot finish -- which, now that fast mode prunes and
     full mode does not, starts at around ten cards.
     """
-    base = solve(exe, spec, timeout, mode)
+    base = solve(exe, spec, timeout, mode, tt_mb)
     if base is None:
         return 0, 0, "skipped (solver did not finish in %.0fs)" % timeout
 
@@ -260,7 +263,7 @@ def check(exe: str, spec: Dict, timeout: float, rng: random.Random,
     failures = 0
     messages = []
     for transformed, info in cases:
-        result = solve(exe, transformed, timeout, mode)
+        result = solve(exe, transformed, timeout, mode, tt_mb)
         if result is None:
             messages.append("  %s: solver did not finish" % info["kind"])
             continue
@@ -347,6 +350,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     p.add_argument("--exe", default=os.path.join("build", "bin", "nil_cli"))
+    # One process per position, so the solver's default table -- 256 MiB, sized
+    # for a long-lived worker -- would be allocated and faulted in hundreds of
+    # times over.  These positions are four to six cards and fit in anything.
+    p.add_argument("--tt-mb", type=int, default=32,
+                   help="table size passed to the solver (0 leaves its default)")
     p.add_argument("--corpus", default=os.path.join("tests", "corpus", "positions.txt"))
     p.add_argument("--random", type=int, default=0, metavar="N",
                    help="check N random deals instead of a corpus")
@@ -388,7 +396,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     total_failures = 0
     skipped = 0
     for spec in specs:
-        run, failures, message = check(args.exe, spec, args.timeout, rng, args.mode)
+        run, failures, message = check(args.exe, spec, args.timeout, rng, args.mode,
+                                       args.tt_mb)
         total_checks += run
         total_failures += failures
         if run == 0:

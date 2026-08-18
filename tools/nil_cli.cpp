@@ -72,7 +72,7 @@ void usage(const char* argv0) {
         << "  --tt-all-plies          consult the transposition table at every\n"
         << "                          ply, not only at a trick boundary (same\n"
         << "                          answer, and much slower)\n"
-        << "  --tt-mb <n>             transposition table size in MiB          [32]\n"
+        << "  --tt-mb <n>             transposition table size in MiB         [256]\n"
         << "  --tt-stats              also report transposition table behaviour\n"
         << "  --moves                 score every legal card, not just the best:\n"
         << "                          one line per card with whether the nil\n"

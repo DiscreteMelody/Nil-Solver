@@ -38,6 +38,7 @@ expensive node. Read items 11 and 31 in that light.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ✅ | ~~One fixed table size, and the memo column repaired~~ | patch 33 | `TT_AUTO` was a schedule that sized the table to the position. `resize()` reuses the allocation when the size is unchanged and **re-zeroes the whole table when it is not**, and a hand played out asks for a smaller table every trick or two -- so a worker following a live game walked the schedule down and back up every deal at **51.3 ms per hand** of pure memset, charged against solves that are under a millisecond at the small end. One size for every hand and both modes makes every resize after the first the free branch (0.00001 ms). Node counts are unchanged or slightly better; fast mode at 13 cards goes 3,492,640 -> 3,485,739 because 256 MiB is more table than the old fast cap. Also fixes the history file's `memo` column, which printed the `TT_AUTO` sentinel as `18446744073709551615mb` and put every auto-sized run in a group of its own |
 | ✅ | ~~`MODE_FULL` table cap lowered to 256 MiB~~ | patch 32 | patch 28b raised it to 1024 because full mode had not saturated at 13 cards, and that was true of the tree it measured. Patches 30 and 31 rebuilt that tree twice, and what is left saturates at a quarter of the cap: **1.18% more nodes for 1.24x less wall time**, across seven 13-card deals on three seeds, interleaved. Also **takes `NilSolverPool` from 2 GiB to 512 MiB** across its two workers, because the table is `thread_local` and never shrinks below a size it has held. The fast-mode half of the item was measured and declined -- see "Evaluated and rejected" |
 | ✅ | ~~`TargetReached`: the reach bound on the tricks left~~ | patch 31 | the direction of DDS §2's check this search never had -- *tricks won plus tricks left cannot reach the target*. A trick is worth `per_nil` to the bidder, `per_partner` to the cover and nothing to either opponent, so a subtree with `t` tricks left is worth `per_nil*n + per_partner*p` over `n + p <= t`: linear over a simplex, extremes at its vertices, **no cards read at all**. **−22.4% nodes at 13 cards** and at 12, −9.2% at 11, −11.4% on the corpus; 1.11x to 1.33x wall. Fires on 3.1-11.2% of trick-boundary nodes, nine tenths of it on `lo >= beta`. `MODE_FAST` byte-identical and provably so. All 560 oracle-pinned values AND principal variations reproduce |
 | ✅ | ~~Transposition table confined to trick boundaries~~ | patch 30 | the paper's rule — *positions stored always consist of completed tricks* — which this solver never followed, because the key was built to describe a mid-trick position too. Building that key is O(live cards) and three nodes in four are mid-trick, so the table's own cost was most of the per-node cost of the search. Hit rates say what it bought: **62-70% at a boundary against 5-11% one ply in**. **2.3x to 3.6x less wall time at 11 to 13 cards** and faster at every size measured, on **2.79x the throughput**. Nodes move both ways — −22.8% on seed 11, +31.4% on seed 3, **−2.5% across all forty 13-card deals** — and that is the result, not noise. Answer-neutral by construction: a memo half-declined changes duration and nothing else, and all 560 oracle-pinned values AND principal variations reproduce |
@@ -73,6 +74,45 @@ Patch 7 measured against the 560-position corpus:
 | 6 | 1,163,389 | 44,309 | 26.3x |
 
 Total corpus wall time 29.9 s to 0.77 s.
+
+Patch 33, measured directly against the schedule it replaced:
+
+| | |
+|---|---:|
+| first resize to 256 MiB | 133.1 ms |
+| 100 resizes to the same size | 0.001 ms total (0.00001 ms each) |
+| five hands, 13 -> 3 -> 13 cards | 256.5 ms (**51.3 ms per hand**) |
+
+**Sizing the table to the question is a worse idea than it looks, and the reason
+only shows up in a process that solves more than one position.** A benchmark run
+solves 560 positions all of one size and never resizes; a service following a
+live game resizes every trick or two, and each step is a memset of the whole
+table. The third row is the schedule being walked down as a hand plays out and
+back up for the next deal.
+
+**What it costs, stated plainly.** A process that solves one small position and
+exits now spends 133 ms allocating a table it barely uses, where the schedule
+spent about twelve. That lands on the test suite, which is made of exactly such
+processes: 9.9 s to 14.9 s, all of it one-off allocation. `tools/invariants.py`
+and `tools/crosscheck.py` now pass `--tt-mb 32` explicitly, which took them back
+to baseline and is better practice anyway -- a correctness harness on four-card
+positions should not depend on what the library's default happens to be this
+month.
+
+**Node counts are unchanged or better.** Every hand size now gets at least as
+much table as the schedule gave it, and more table never costs a search nodes:
+the corpus is identical in both modes, 9-card full mode is identical, and
+13-card fast mode improves 0.2% because 256 MiB is more than the old fast cap of
+128.
+
+**The memo column.** `nil_bench` printed `opts.tt_megabytes` raw, so any run
+that did not pass `--tt-mb` recorded `18446744073709551615mb` -- the `TT_AUTO`
+sentinel -- in the column `bench_history.py` groups on. Every auto-sized run
+therefore sat in a bucket named after a sentinel and could not be compared with
+the identically-sized run beside it. It now resolves to the size actually used,
+so an auto run and a `--tt-mb 256` run both read `256mb` and group together,
+which is correct because they are the same table. Both tools' help text also
+said the default was 32 MiB, which it had not been since the schedule landed.
 
 Patch 32, seven 13-card deals across three seeds, full mode, sizes interleaved
 on one binary, two reps:
