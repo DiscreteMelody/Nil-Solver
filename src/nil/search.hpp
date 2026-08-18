@@ -125,9 +125,9 @@ constexpr std::size_t TT_AUTO = static_cast<std::size_t>(-1);
 // The size TT_AUTO resolves to is chosen by auto_table_megabytes in search.cpp:
 // doubling per trick above a floor, which is conservative against measured node
 // growth of 2.1x to 3.5x per card, and capped where the measurements stop
-// paying -- MODE_FULL at 512 MiB (1024 buys 5% fewer nodes and no wall time,
-// 2048 is slower), MODE_FAST at 128 MiB (512 is slower in wall time than 128
-// despite fewer nodes).
+// paying -- MODE_FULL at 256 MiB as of patch 32 (1024 buys 1.18% fewer nodes
+// and costs 1.24x the wall time), MODE_FAST at 128 MiB (512 is slower in wall
+// time than 128 despite fewer nodes).
 struct SearchOptions {
     // MODE_FULL by default: the caller who has not thought about it wants the
     // answer that carries its own evidence.

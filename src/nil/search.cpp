@@ -726,29 +726,44 @@ int search(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta) {
 // memory -- so the fast cap sits where the curve flattens and buying past it
 // buys nothing.
 //
-// MODE_FULL does not saturate at 13 cards, which is why its cap is four times
-// the fast one and was raised from 512 at patch 28.  The same three deals in
-// full mode:
+// MODE_FULL's cap CAME DOWN at patch 32, from 1024 to 256, and the history is
+// the point rather than a footnote.  Patch 28b had raised it from 512 to 1024
+// on the strength of full mode not saturating at 13 cards, and that was true of
+// the tree it was measured on.  Patches 30 and 31 then rebuilt that tree twice
+// -- the table stopped holding mid-trick entries, which is three quarters of
+// what used to be in it, and the reach bound removed another fifth of the nodes
+// -- and what was left saturates at a quarter of the old cap.  Seven 13-card
+// deals across three seeds, interleaved on one binary:
 //
-//     256 MiB   162,786,551 nodes
-//     512 MiB   115,623,205
-//    1024 MiB   101,960,580     <- the cap
-//    2048 MiB    99,786,868     (2.1% more for twice the memory: saturated)
+//     cap        nodes          wall
+//     256 MiB    388,268,529    37.3 s   <- the cap
+//    1024 MiB    383,745,540    46.3 s
 //
-// The gain is concentrated on hard deals, which is the case worth sizing for:
-// the same step from 512 to 1024 is worth 11.8% on seed 3 and 0.55% on seed 42,
-// whose trees are a third the size and fit in 512 already.  Table pressure
-// scales with the tree, so the cap binds exactly where the latency is.
+// 1.18% more nodes for 1.24x less wall time and a quarter of the memory.  The
+// node column still slopes the way patch 28b found it sloping; what changed is
+// that the slope is now shallow enough that the allocation and the cache
+// footprint outweigh it.
+//
+// The gain is concentrated on hard deals and so is the residual node cost: seed
+// 11, the hardest of the three, is the only one where 1024 still buys anything
+// worth naming (1.88% of nodes), and it is also the seed where the wall-time
+// win is smallest (1.14x against 1.63x on seed 42).  Table pressure scales with
+// the tree, and so does the price of a table too big for its cache.
+//
+// A NOTE ON WHAT THIS COSTS A PROCESS.  TranspositionTable::resize() reassigns
+// its vector and never shrink_to_fit()s below a size it has already held, so a
+// thread's resident set is the LARGEST cap it has ever asked for, not the one
+// it is using.  With the table thread_local and NilSolverPool running two
+// workers, this change takes the pool from 2 GiB to 512 MiB.
 //
 // WHAT IS AND IS NOT MEASURED HERE.  Node counts are machine-independent and
-// the numbers above are reproducible to the digit.  Whether fewer nodes buy
-// less WALL time at these sizes depends on the host's cache and memory
-// bandwidth, and on the development container it was a wash.  A caller that
-// cares should measure on its own hardware and use nil_set_table_size, which
-// still overrides all of this.
+// the numbers above are reproducible to the digit.  Wall time is not, and every
+// timing above is an interleaved A/B on one binary for that reason.  A caller
+// that cares should measure on its own hardware and use nil_set_table_size,
+// which still overrides all of this.
 std::size_t auto_table_megabytes(int tricks_remaining, SearchMode mode) {
     const int floor_tricks = mode == MODE_FAST ? 10 : 8;
-    const std::size_t cap = mode == MODE_FAST ? 128u : 1024u;
+    const std::size_t cap = mode == MODE_FAST ? 128u : 256u;
     if (tricks_remaining <= floor_tricks) return 32u;
     const int steps = tricks_remaining - floor_tricks;
     std::size_t mb = 32u;

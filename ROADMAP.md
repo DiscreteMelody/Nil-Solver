@@ -38,6 +38,7 @@ expensive node. Read items 11 and 31 in that light.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ✅ | ~~`MODE_FULL` table cap lowered to 256 MiB~~ | patch 32 | patch 28b raised it to 1024 because full mode had not saturated at 13 cards, and that was true of the tree it measured. Patches 30 and 31 rebuilt that tree twice, and what is left saturates at a quarter of the cap: **1.18% more nodes for 1.24x less wall time**, across seven 13-card deals on three seeds, interleaved. Also **takes `NilSolverPool` from 2 GiB to 512 MiB** across its two workers, because the table is `thread_local` and never shrinks below a size it has held. The fast-mode half of the item was measured and declined -- see "Evaluated and rejected" |
 | ✅ | ~~`TargetReached`: the reach bound on the tricks left~~ | patch 31 | the direction of DDS §2's check this search never had -- *tricks won plus tricks left cannot reach the target*. A trick is worth `per_nil` to the bidder, `per_partner` to the cover and nothing to either opponent, so a subtree with `t` tricks left is worth `per_nil*n + per_partner*p` over `n + p <= t`: linear over a simplex, extremes at its vertices, **no cards read at all**. **−22.4% nodes at 13 cards** and at 12, −9.2% at 11, −11.4% on the corpus; 1.11x to 1.33x wall. Fires on 3.1-11.2% of trick-boundary nodes, nine tenths of it on `lo >= beta`. `MODE_FAST` byte-identical and provably so. All 560 oracle-pinned values AND principal variations reproduce |
 | ✅ | ~~Transposition table confined to trick boundaries~~ | patch 30 | the paper's rule — *positions stored always consist of completed tricks* — which this solver never followed, because the key was built to describe a mid-trick position too. Building that key is O(live cards) and three nodes in four are mid-trick, so the table's own cost was most of the per-node cost of the search. Hit rates say what it bought: **62-70% at a boundary against 5-11% one ply in**. **2.3x to 3.6x less wall time at 11 to 13 cards** and faster at every size measured, on **2.79x the throughput**. Nodes move both ways — −22.8% on seed 11, +31.4% on seed 3, **−2.5% across all forty 13-card deals** — and that is the result, not noise. Answer-neutral by construction: a memo half-declined changes duration and nothing else, and all 560 oracle-pinned values AND principal variations reproduce |
 | ✅ | ~~Static bounds spent in `MODE_FULL`~~ | patch 29 | the two proofs settle a fast node because that mode's value IS the nil trick count; full mode's value also carries the pair's tricks, so the same proof yields a fail-soft BOUND, returned only when it already clears the window. **−6.8% nodes on the corpus** (339,573 -> 316,333), **−5.7% across all three 13-card seeds** (293,841,428 -> 277,143,048), ranging from −15.9% on seed 3 to +0.2% on seed 42. Spends `MODE_FULL`'s node-count fixed point, held since patch 8. Values and principal variations pinned unmoved by test, corpus and oracle |
@@ -72,6 +73,52 @@ Patch 7 measured against the 560-position corpus:
 | 6 | 1,163,389 | 44,309 | 26.3x |
 
 Total corpus wall time 29.9 s to 0.77 s.
+
+Patch 32, seven 13-card deals across three seeds, full mode, sizes interleaved
+on one binary, two reps:
+
+| workload | 256 MiB | 1024 MiB | nodes | wall |
+|---|---:|---:|---:|---:|
+| 13c x3, seed 3 | 108,175,696 / 9.51 s | 108,076,727 / 12.73 s | +0.09% | **1.34x** |
+| 13c x2, seed 11 | 239,604,003 / 23.98 s | 235,183,781 / 27.29 s | +1.88% | 1.14x |
+| 13c x2, seed 42 | 40,488,830 / 3.85 s | 40,485,032 / 6.29 s | +0.01% | **1.63x** |
+| **all seven** | **388,268,529 / 37.3 s** | **383,745,540 / 46.3 s** | **+1.18%** | **1.24x** |
+
+**The node column still slopes the way patch 28b found it sloping.** What
+changed is the gradient. Under the old tree the step from 512 to 1024 was worth
+11.8% of nodes on a hard deal; under this one the step from 256 to 1024 is worth
+1.18% across seven of them, and a slope that shallow is outweighed by the
+allocation and the cache footprint. This is the ROADMAP's own rule collecting on
+itself: *a measurement is only valid against the tree it was taken on*, and two
+patches in a row changed the tree.
+
+**The residual cost is where it should be.** Seed 11 is the hardest of the three
+and the only one where 1024 still buys anything worth naming -- 1.88% of nodes
+-- and it is also the seed where the wall-time win is smallest, 1.14x against
+1.63x on seed 42. Table pressure scales with the tree and so does the price of a
+table too big for its cache.
+
+**The full curve, for the record**, seed 11 at 13 cards in full mode, which is
+the deal set that binds:
+
+| cap | nodes | wall |
+|---:|---:|---:|
+| 128 MiB | 265,361,894 | 25.2 s |
+| **256 MiB** | **239,604,003** | **24.0 s** |
+| 512 MiB | 235,613,108 | 24.8 s |
+| 1024 MiB | 235,183,781 | 27.3 s |
+
+256 is the minimum of both columns on the hard seed, which is what settled it
+against 128 -- 128 is a wash on wall across all seven deals and 6.4% worse on
+nodes.
+
+**What this does to a process.** `TranspositionTable::resize()` reassigns its
+vector and never `shrink_to_fit()`s below a size it has already held, so a
+thread's resident set is the LARGEST cap it has ever asked for rather than the
+one currently in use. The table is `thread_local` and `NilSolverPool` runs two
+workers in production, so the pool's high-water mark goes from 2 GiB to 512 MiB.
+That behaviour is now documented at `NIL_TABLE_AUTO` rather than left to be
+discovered.
 
 Patch 31, measured against `--no-target-bounds` on the same binary, arms
 interleaved, median of three for wall and exact for nodes:
@@ -363,6 +410,24 @@ every node rather than one in four. Net wall time came out *worse*, which is the
 same verdict and the same shape as side-suit canonicalization above. Worth
 re-measuring only if move ordering (item 6) changes the node mix enough that the
 proof starts firing on a different population.
+
+**The fast-mode table cap, lowered to 64 MiB.** The other half of item 28c,
+measured alongside the full-mode cap in patch 32 and declined. The curve says
+take it: at 13 cards on seed 11, 64 MiB holds 3,556,097 nodes against 3,492,640
+at 128, and 64 is faster on interleaved medians (291 ms against 303).
+
+It buys nothing. `TranspositionTable::resize()` never returns capacity below a
+size the thread has already held, and `MODE_FULL` asks for 128 MiB at ten tricks
+and 256 at eleven, so any thread that runs a full solve is already holding more
+than the fast cap and lowering it changes no allocation at all. What is left is
+1.8% more nodes on the hardest 13-card seed in exchange for 4% of wall time on
+the same workload -- a trade worth making only in a process that never calls
+full mode, and `NilSolverPool` is not one.
+
+*What would revive it:* making `resize()` shrink, which is a different item and
+a bad one on its face -- the pool would then free and re-allocate a quarter of a
+gigabyte between alternating fast and full solves. If a fast-only entry point is
+ever given its own pool, this comes back with it.
 
 **Chang's 8-way rehashing.** The other half of his section 3, measured at the
 same time as the cap change in patch 28 and for the same reason: an eviction
@@ -1461,7 +1526,7 @@ lifts a card out of the mask; this lifts the lowest of each suit in rotation.
 Note the constraint patch 30 sharpened: this runs inside the move loop on every
 ordered node, so the thing to measure first is nodes per second, not nodes.
 
-### 28c. The `MODE_FULL` table cap, re-measured — ⭐⭐⭐ — **next**
+### 28c. ~~The `MODE_FULL` table cap, re-measured~~ — ⭐⭐⭐ — **done, patch 32**
 
 Patch 28b raised the full-mode cap from 512 MiB to 1024 on the strength of full
 mode not having saturated at 13 cards. Patch 30 changed the tree that was
@@ -1481,16 +1546,16 @@ Saturation arrives at 256: the last 4x of memory buys 0.26% of nodes and costs
 entries that are never read. The same shape at 12 cards, where the curve is flat
 from 64 MiB and 1024 MiB is 47% slower than 128.
 
-So the cap should come down, and the number to come down to is 256. Held out of
-patch 30 because it is a second lever and this file's discipline is that levers
-measured together are levers not measured at all. It also matters outside the
-benchmark: `NilSolverPool` runs two workers in production, so the cap is
-multiplied by two in CGA's resident set, and this takes 2 GiB to 512 MiB.
+**Landed at 256, and re-measured once more first, which mattered.** The table
+above was taken after patch 30; patch 31 then removed another fifth of the nodes
+and moved the curve again. The shipped number comes from seven 13-card deals
+across three seeds rather than the three above — see the patch 32 section in Done
+for the numbers and for the full curve on the seed that binds.
 
-The fast-mode cap of 128 MiB wants the same treatment and looks nearly right
-already — 13-card fast saturates between 64 and 128 under boundary-only
-(3,556,097 nodes at 64, 3,492,640 at 128, 3,485,739 at 256), where before it was
-still improving at 256.
+The fast-mode half of this item was measured at the same time and **declined**;
+see "Evaluated and rejected". The short version is that `resize()` never returns
+capacity, so a thread that runs full mode is already holding more than the fast
+cap and lowering it allocates nothing.
 
 ### 31. Winning-rank backup and masked table matching — ⭐⭐⭐⭐⭐ — **from DDS §6.1-6.3 and [Ginsberg]**
 
@@ -2136,16 +2201,11 @@ say so.
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c → 34 (MTD(f)) → 29b (single-suit) → 31 (winning ranks) → 35 → 9 → 32 → 10 → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 (MTD(f)) → 29b (single-suit) → 31 (winning ranks) → 35 → 9 → 32 → 10 → measure → 11..14
 ```
 
-**28c should be taken next.** It is a constant, its measurement is already in
-hand, and it takes CGA's resident set from 2 GiB across two workers to 512 MiB.
-Nothing else on the list is that cheap. It should be re-measured once more first,
-because patch 31 moved the tree again and the saturation point may have moved
-with it.
-
-Item 34 follows because full mode at 13 cards is the slowest thing left and
+**Item 34 is next**, and it is the first item since patch 22 with a claim on the
+same order as that one. It follows because full mode at 13 cards is the slowest thing left and
 because patch 31 is its prerequisite in fact if not in form: a cheaper node makes
 a repeated-probe driver affordable, and the support count that makes bisection
 tractable at all is now written down.
