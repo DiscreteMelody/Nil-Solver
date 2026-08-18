@@ -22,12 +22,23 @@ is untouched by patches 10 and 11, node for node at every hand size measured,
 and still agrees with `nil_oracle.py` card for card. That is not incidental: it
 is what the pruned answer is checked against.
 
+**Patch 30 is the exception to the framing above and is worth reading first.**
+Everything else on this list makes the tree smaller. That one makes the nodes
+cheaper — 2.79x the throughput, by declining to build a transposition key on the
+three nodes in four that are mid-trick — and it is worth 2.3x to 3.6x of wall
+time from four cards to thirteen. It is also the first entry here bought *with*
+nodes rather than in them, and the reason that trade is available is the reason
+four earlier items were rejected: the per-node budget was dominated by key
+construction, so every heuristic charged per node was being charged against an
+expensive node. Read items 11 and 31 in that light.
+
 ---
 
 ## Done
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ✅ | ~~Transposition table confined to trick boundaries~~ | patch 30 | the paper's rule — *positions stored always consist of completed tricks* — which this solver never followed, because the key was built to describe a mid-trick position too. Building that key is O(live cards) and three nodes in four are mid-trick, so the table's own cost was most of the per-node cost of the search. Hit rates say what it bought: **62-70% at a boundary against 5-11% one ply in**. **2.3x to 3.6x less wall time at 11 to 13 cards** and faster at every size measured, on **2.79x the throughput**. Nodes move both ways — −22.8% on seed 11, +31.4% on seed 3, **−2.5% across all forty 13-card deals** — and that is the result, not noise. Answer-neutral by construction: a memo half-declined changes duration and nothing else, and all 560 oracle-pinned values AND principal variations reproduce |
 | ✅ | ~~Static bounds spent in `MODE_FULL`~~ | patch 29 | the two proofs settle a fast node because that mode's value IS the nil trick count; full mode's value also carries the pair's tricks, so the same proof yields a fail-soft BOUND, returned only when it already clears the window. **−6.8% nodes on the corpus** (339,573 -> 316,333), **−5.7% across all three 13-card seeds** (293,841,428 -> 277,143,048), ranging from −15.9% on seed 3 to +0.2% on seed 42. Spends `MODE_FULL`'s node-count fixed point, held since patch 8. Values and principal variations pinned unmoved by test, corpus and oracle |
 | ✅ | ~~Table cap raised for `MODE_FULL`~~ | patch 28b | full mode has not saturated at 13 cards, and the 512 MiB cap was cutting it off mid-curve. Raised to 1024: **−11.8% nodes on a hard 13-card deal** (115,623,205 -> 101,960,580), −0.55% on an easy one, and 2048 buys a further 2.1% which is where it flattens. Nothing below 13 cards changes -- the doubling schedule already returns 512 at 12 -- so this is a pure high-card-count change. Node counts only: whether they buy wall time depends on the host's memory hierarchy |
 | ✅ | ~~Last-trick evaluation~~ | patch 27 | Chang's `if (tricks_left == 1) return LastTrick(sp)`, which this search never had. At a trick boundary all hands are equal, so four cards left means one card each and the trick is forced: five nodes (four plies plus the terminal) collapse to one, with no key encoded, no probe and no store. **−16.1% nodes on the corpus** (404,836 -> 339,573), −9.1% on the corpus in fast mode, −1.08% at 9 cards, −1.26% at 11. Exact rather than a bound — a forced line has one value and no window disagrees — so it cannot cost nodes at any depth. All 560 oracle-pinned values AND principal variations reproduce |
@@ -60,6 +71,77 @@ Patch 7 measured against the 560-position corpus:
 | 6 | 1,163,389 | 44,309 | 26.3x |
 
 Total corpus wall time 29.9 s to 0.77 s.
+
+Patch 30, measured against `--tt-all-plies` on the same binary, arms
+interleaved within one loop so the container's clock drift cancels, median of
+three for wall and exact for nodes, 64 MiB fixed (256 in full mode):
+
+| workload | all plies | boundaries only | nodes | wall |
+|---|---:|---:|---:|---:|
+| corpus 560, full | 564 / 0.17 ms | 647 / 0.09 ms | +14.7% | **1.89x** |
+| corpus 560, fast | 65 / 0.04 ms | 71 / 0.03 ms | +9.2% | 1.33x |
+| random 9c x20, seed 1, fast | 27,717 / 5.66 ms | 32,689 / 2.99 ms | +17.9% | **1.89x** |
+| random 11c x10, seed 3, fast | 1,873,968 / 473 ms | 1,546,965 / 129 ms | **−17.4%** | **3.68x** |
+| random 12c x10, seed 3, fast | 178,786 / 45.9 ms | 227,738 / 19.9 ms | +27.4% | **2.31x** |
+| random 13c x20, seed 3, fast | 590,617 / 147 ms | 776,288 / 58.8 ms | +31.4% | **2.49x** |
+| random 13c x10, seed 11, fast | 4,606,934 / 1,057 ms | 3,556,097 / 292 ms | **−22.8%** | **3.62x** |
+| random 13c x10, seed 42, fast | 2,881,309 / 680 ms | 3,343,091 / 251 ms | +16.0% | **2.71x** |
+| random 11c x6, seed 3, full | 13,917,768 / 4,664 ms | 17,751,351 / 1,739 ms | +27.5% | **2.68x** |
+| random 12c x6, seed 3, full | 5,319,213 / 1,711 ms | 8,100,780 / 740 ms | +52.3% | **2.31x** |
+| **all forty 13-card deals** | **86,694,770 / 20.3 s** | **84,517,640 / 6.6 s** | **−2.5%** | **3.07x** |
+
+**This is the first patch on this list that is bought with nodes rather than
+with them**, and the entry is written that way on purpose. Every earlier
+rejection here — side-suit canonicalization, 8-way associativity, the mid-trick
+static proof — lost because it spent throughput to save nodes. This is the same
+trade run backwards, and the reason it wins is that the thing being bought back
+is not small: throughput goes from 4,094,618 to 11,444,318 nodes/sec at 13
+cards, because `encode_state_key` walks every live card of every suit and it
+was running on three nodes in four.
+
+**Hit rate by ply is what made the case, and it is worth recording.** Measured
+at 13 cards in fast mode across three seeds:
+
+| ply | hit rate | share of all stores |
+|---:|---:|---:|
+| 0 (trick boundary) | 62-70% | 12.6% |
+| 1 | **5-11%** | **27.3%** |
+| 2 | 19-27% | 27.0% |
+| 3 | 25-32% | 33.1% |
+
+**Ply 1 cannot repay its cost and the reason is structural, not empirical.** The
+only route to a ply-1 node is its boundary parent, and a boundary parent reached
+a second time is answered by the table *before* it regenerates any child. So a
+ply-1 entry memoises a position that, by construction, nothing walks twice; the
+5-11% that do hit are the ones whose boundary parent had been evicted. It is
+also 27% of all stores, so what a ply-1 entry mostly does is evict a boundary
+entry that would have been hit.
+
+Plies 2 and 3 genuinely transpose — the `gap` field in the key makes two
+different played cards equal when they trap the same number of survivors, which
+is exactly what statekey.hpp claims for it. They still lose, and a ply sweep on
+one binary shows the margin is not close (13 cards, seed 11, ten deals):
+
+| plies using the table | nodes/position | ms/position |
+|---|---:|---:|
+| 0,1,2,3 (the old default) | 4,606,934 | 1,075 |
+| 0,2,3 | 4,192,289 | 846 |
+| 0,2 | 3,679,073 | 499 |
+| **0 only (shipped)** | **3,556,097** | **297** |
+
+**Why nodes move in both directions, and why the sign is a property of the
+deal.** Removing entries can only cost hits, so a table under no pressure loses
+nodes to this change — which is what seed 3 and the 4-6 card corpus show. A
+table under pressure gains them, because three quarters of its stores were
+displacing the entries with a 65% hit rate. Seed 11 is the hardest of the three
+13-card sets and it gains 22.8%; the corpus, which is small enough that nothing
+is ever evicted, loses 9-15%. Both are the same mechanism read from two ends,
+and the wall-time column does not care which end a deal is on.
+
+**What this invalidates.** Patch 28b raised the `MODE_FULL` cap to 1024 MiB on
+the strength of full mode not having saturated at 13 cards. It has now, at a
+quarter of that: see item 28c below for the re-measurement, which is a separate
+patch because it is a separate lever.
 
 Patch 29, measured against `--no-full-static` on the same binary:
 
@@ -1207,7 +1289,154 @@ the dependency runs the other way.
 Sequenced after 28 because 28 is a one-line gate on machinery that exists and
 this is a new subsystem, and before item 8, which it largely subsumes.
 
-### 8. Quick-trick / forced-trick analysis — ⭐⭐
+### 30. ~~Transposition table confined to trick boundaries~~ — ⭐⭐⭐⭐⭐ — **done, patch 30; from DDS §6**
+
+The paper states it as a fact about its own design rather than as advice:
+*"Positions stored in the Transposition Table always consist of completed
+tricks. Positions stored start at depth=4, then 8, 12, and so on."* This solver
+did not do it, and there was a reason — `statekey.hpp` was deliberately built to
+describe a mid-trick position, and the `gap` field that does it is one of the
+better ideas in the file. It works. It is still not worth what it costs.
+
+The cost is that `encode_state_key` walks every live card of every suit, so it
+is O(cards remaining), and it runs before the probe on every node that consults
+the table. Three nodes in four are mid-trick. The measurement is in the Done
+section above: 2.3x to 3.6x of wall time at 11 to 13 cards, on 2.79x the
+throughput, against node counts that move both ways and come out 2.5% down
+across forty 13-card deals.
+
+**The general lesson, which is the reverse of the one this file kept
+recording.** Four items have now been rejected here for spending throughput to
+save nodes. The reason that trade kept losing is visible from this patch: the
+per-node budget was dominated by key construction, so anything charged per node
+was charged against a node that was already expensive, and anything that saved
+nodes without touching the key saved the cheap part. Item 11 (incremental
+state/key updates) is the item that follows from that and it should be re-read
+in this light — it is now the only remaining per-node cost of any size, and it
+is charged on a quarter as many nodes as before, which cuts both ways.
+
+Control arm `--tt-all-plies` on both tools, `NIL_FLAG_TT_ALL_PLIES` across the
+ABI, `+ttallplies` on the bench memo column, and `corpus_tt_plies` /
+`corpus_tt_plies_fast` on every build.
+
+### 28c. The `MODE_FULL` table cap, re-measured — ⭐⭐⭐ — **next**
+
+Patch 28b raised the full-mode cap from 512 MiB to 1024 on the strength of full
+mode not having saturated at 13 cards. Patch 30 changed the tree that was
+measured on, and the ROADMAP's own rule applies: *a measurement is only valid
+against the tree it was taken on.* Re-measured, three 13-card deals, seed 3,
+full mode, boundary-only:
+
+| cap | nodes | ms |
+|---:|---:|---:|
+| 128 MiB | 47,467,147 | 4,403 |
+| **256 MiB** | **46,475,507** | **4,297** |
+| 512 MiB | 46,363,634 | 4,613 |
+| 1024 MiB (shipping) | 46,353,341 | 5,013 |
+
+Saturation arrives at 256: the last 4x of memory buys 0.26% of nodes and costs
+17% of wall time, which is the allocation and the cache footprint being paid for
+entries that are never read. The same shape at 12 cards, where the curve is flat
+from 64 MiB and 1024 MiB is 47% slower than 128.
+
+So the cap should come down, and the number to come down to is 256. Held out of
+patch 30 because it is a second lever and this file's discipline is that levers
+measured together are levers not measured at all. It also matters outside the
+benchmark: `NilSolverPool` runs two workers in production, so the cap is
+multiplied by two in CGA's resident set, and this takes 2 GiB to 512 MiB.
+
+The fast-mode cap of 128 MiB wants the same treatment and looks nearly right
+already — 13-card fast saturates between 64 and 128 under boundary-only
+(3,556,097 nodes at 64, 3,492,640 at 128, 3,485,739 at 256), where before it was
+still improving at 256.
+
+### 31. Winning-rank backup and masked table matching — ⭐⭐⭐⭐⭐ — **from DDS §6.1-6.3 and [Ginsberg]**
+
+**The largest structural gap between this solver and the literature, now that
+patch 30 has closed the second-largest.** The paper devotes three sections to it
+and Ginsberg's partition search is the same idea under another name.
+
+**What DDS does.** During the search it records which cards won a trick *by
+rank* — the heart A that beat three hearts, but not the spade A that won a trick
+nobody could follow. Those ranks are backed up through the tree, unioned at
+cutoffs by `MergeCutoffMovesData` and across siblings by `MergeAllMovesData`.
+When the node is stored, only ranks at or above the lowest winning rank in each
+suit are recorded; everything below is masked out and matches anything. The
+paper's own example: a last two tricks that went heart A / Q / 9 / 7 and then
+spade A / diamond J / 8 / 3 could equally have gone heart A / x / x / x and
+spade x / diamond x / x / x without changing the outcome, so the entry should
+match both.
+
+**What this solver does instead.** `statekey.hpp` compresses ranks to relative
+ones — which is Chang's idea and is where most of the collapsing comes from —
+but it records the owner of *every* live card, two bits each. Two positions
+differing only in which hand holds an irrelevant deuce are different entries.
+DDS makes them one.
+
+**Why it transfers.** The backup argument preserves the winner of every
+remaining trick, and both of this solver's objectives are functions of the trick
+winners alone: `MODE_FAST`'s value is how many of them are the nil bidder, and
+`MODE_FULL`'s packed value is that plus how many are the pair's. So the
+soundness argument carries over unchanged. This is the *rank truncation* lever
+item 29 names in passing via BIS's "cards beyond the three lowest are not
+dangerous" heuristic, and it is the only lever on this list that acts on the
+state space rather than on the search order.
+
+**What it costs, and why it is not a session's work.** The table stops being a
+hash of an exact key. A masked entry cannot be found by hashing the position,
+because the position does not know which mask it should be looked up under, so
+retrieval becomes: index exactly on the suit distribution, then linear-scan the
+candidates applying each one's stored mask. DDS says so explicitly and describes
+the trade — a 48-bit distribution hashed to 8 bits, a flat list scanned
+linearly, 125 entries per distribution overwritten cyclically. §6.3's
+four-ranks-at-a-time comparison vector exists to make that scan bearable.
+
+**And patch 30 is the caution to read it against.** A linear scan under masks is
+a *more* expensive lookup than the one this solver just found was too expensive
+to run mid-trick. The entries it finds are worth more, so the arithmetic is not
+the same arithmetic — but the thing to measure first is not the hit rate. It is
+nodes per second.
+
+*Cheap first step, if this is picked up:* the backup machinery alone, with the
+existing exact-key table, and an instrument counting how many probes would have
+matched a masked entry. That is a population measurement in the shape this file
+keeps asking for, and it costs no table redesign.
+
+### 32. An adversarial nil-set proof — ⭐⭐⭐ — **from DDS §4**
+
+`nil_must_take_a_trick` proves the nil bidder wins a trick *whatever all four
+players do*. Fast mode does not need that much. Its window is `[0, 1]` and a
+return of 1 is a lower bound on the game value, so the opponents — who are the
+maximisers, and who want the nil broken — may be assumed hostile rather than
+cooperative. The proof discharges a strictly heavier obligation than the search
+asks of it, which is why it fires on 0.98% of trick-boundary nodes.
+
+DDS's `LaterTricks` is the same question asked the right way round: *can the
+side that did not lead force a trick later*, against best defence.
+
+**A case the current proof misses.** The nil bidder holds ♠K and ♠2; one
+opponent holds ♠A, ♠Q and ♠J; nobody else has a spade. Hall's condition holds —
+one spade above the K, three above the 2 — so `cover_deficit_depth` reports the
+holding covered and the proof stays silent. The nil is forced anyway. The
+opponent leads ♠J. If the nil bidder plays the K it wins the trick immediately,
+because the ace is in the leader's own hand and cannot appear on the same trick;
+if it plays the 2, the ♠Q lead that follows leaves it holding nothing but the K.
+**Cover cards concentrated in one hand can only be spent one per trick, and the
+hand that holds them chooses the order.** The current count treats three covers
+in one hand as interchangeable with three covers in three hands, and they are
+not.
+
+Scope carefully before building. The population is the question: this fires
+where Hall holds but concentration is extreme, and nothing here has measured how
+often that is. Do that first — instrument the three-way outcome at trick
+boundaries the way the condition-1 investigation did — because a proof that is
+correct and fires on 0.1% of nodes is a correct proof nobody should ship.
+
+**It also has a second use.** Item 8 is currently downgraded on the grounds that
+quick-trick analysis bounds what a *side* takes and the nil question is about a
+*seat*. This is the seat-level version, and if it works it is what is left of
+item 8 rather than a neighbour of it.
+
 
 **Downgraded: item 4 took the part of this that applies.** The nil-set proof is
 forced-trick analysis for the one seat the question is about, and the safe-nil
@@ -1756,8 +1985,18 @@ say so.
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 29b (single-suit) → 9 → 8 → 10 → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 28c → 29b (single-suit) → 31 (winning ranks) → 9 → 32 → 10 → measure → 11..14
 ```
+
+**Patch 30 moved 28c to the front and it should be taken next.** It is a
+constant, its measurement is already in hand, and it takes CGA's resident set
+from 2 GiB across two workers to 512 MiB. Nothing else on the list is that cheap.
+
+Item 31 is sequenced after 29b rather than before it because 29b is a bounded
+piece of work with a measured target and 31 is a table redesign whose first
+honest step is a population measurement. Item 32 sits low for the same reason
+and lower still: its population is unmeasured, and the shape of this file's last
+several results is that unmeasured populations are usually small.
 
 `⊘` is item 5: closed without being built, because it had no population. **Patch
 22 gave it one** — narrowing full mode's window is precisely the condition its
@@ -1870,3 +2109,9 @@ same grounds, and only on fast rows, since the proofs are inert elsewhere and
 the suffix would split the full-mode history into two groups holding identical
 numbers. `--no-ordering` appends `+noordering` under exactly the same rule and
 for exactly the same reason.
+
+`--tt-all-plies` appends `+ttallplies` in both modes, and it is the one suffix
+on this list that earns itself twice over: the arm it marks moves node counts in
+*both* directions depending on the deal, so a history that merged the two groups
+would not read as a regression or an improvement — it would read as noise, which
+is worse.

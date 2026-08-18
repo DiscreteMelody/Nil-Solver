@@ -372,6 +372,9 @@ void usage(const char* argv0) {
               << "                    (same answer, many more nodes; full mode only)\n"
               << "  --no-ordering     try moves in canonical order rather than a\n"
               << "                    promising-first one (fast mode only)\n"
+              << "  --tt-all-plies    consult the transposition table at every ply,\n"
+              << "                    not only at a trick boundary (same answer,\n"
+              << "                    and much slower)\n"
               << "  --no-last-trick   search the forced final trick instead of\n"
               << "                    evaluating it (same answer, more nodes)\n"
               << "  --tt-stats        also report transposition table behaviour\n"
@@ -410,6 +413,10 @@ std::string memo_label(const nil::SearchOptions& opts) {
     // being asked about it, so both node counts move and neither history should
     // be merged with the other.
     if (!opts.last_trick_eval) suffix += "+nolasttrick";
+    // Both modes again, and for the sharpest version of the same reason: the
+    // control arm here moves node counts in BOTH directions depending on the
+    // deal, so a history that merged the two groups would read as noise.
+    if (!opts.tt_boundaries_only) suffix += "+ttallplies";
     if (!opts.narrow_window && opts.mode == nil::MODE_FULL) suffix += "+nonarrow";
     if (!opts.presolve_window && opts.mode == nil::MODE_FULL) suffix += "+nopresolve";
     if (!opts.canonical_pv && opts.mode == nil::MODE_FULL) suffix += "+ordered";
@@ -489,6 +496,8 @@ int main(int argc, char** argv) {
             opts.order_moves = false;
         } else if (arg == "--no-last-trick") {
             opts.last_trick_eval = false;
+        } else if (arg == "--tt-all-plies") {
+            opts.tt_boundaries_only = false;
         } else if (arg == "--no-narrow") {
             opts.narrow_window = false;
         } else if (arg == "--no-presolve") {

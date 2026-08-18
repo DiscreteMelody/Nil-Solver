@@ -48,6 +48,7 @@ struct Ctx {
     bool break_forced = false;
     bool collapse = true;      // one move per class of rank-equivalent cards
     bool last_trick = true;    // evaluate a forced final trick instead of searching it
+    bool tt_boundaries_only = true;  // consult the table only at a trick boundary
     // True when no remaining trick can lower the value, i.e. every weight is
     // non-negative.  That makes what is already banked a lower bound on the
     // whole subtree, which is the one fact the "already past beta" cutoff in
@@ -516,11 +517,20 @@ int search(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta) {
     // reorders two cards within one -- so the canonically lowest of several
     // equally good moves is still the canonically lowest one after it, and the
     // principal variation is the same one an uncached search would produce.
+    //
+    // AND ONLY AT A TRICK BOUNDARY, by default.  Building the key is O(live
+    // cards) and three nodes in four are mid-trick, so the table's own cost is
+    // most of the per-node cost of the search; the hit rates that cost buys are
+    // 62-70% at a boundary against 5-11% one ply in.  See
+    // SearchOptions::tt_boundaries_only for the ply sweep and for why ply 1 in
+    // particular cannot repay it: nothing walks a ply-1 node twice, because the
+    // boundary parent that is its only route is answered by the table first.
+    // `--tt-all-plies` restores the old behaviour as a control arm.
     StateKey key;
     SuitProfile profile;
     std::uint64_t hash = 0;
     bool keyed = false;
-    if (ctx.tt) {
+    if (ctx.tt && (st.trick_len == 0 || !ctx.tt_boundaries_only)) {
         keyed = encode_state_key(st.hands, st.leader, st.broken, st.trick, st.trick_len, key,
                                  profile);
         if (keyed) {
@@ -731,6 +741,7 @@ void configure(Ctx& ctx, int nil_seat, const SearchOptions& opts, int tricks_rem
     // the split regardless of what the value says.
     ctx.order_moves = opts.order_moves;
     ctx.last_trick = opts.last_trick_eval;
+    ctx.tt_boundaries_only = opts.tt_boundaries_only;
     // Canonicalise whenever the caller wants the canonical line -- and also,
     // whether they asked or not, whenever the value cannot pin nil_tricks on its
     // own.  That is exactly `primary + tertiary == 0`: the coefficient the value

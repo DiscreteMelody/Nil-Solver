@@ -106,7 +106,32 @@ namespace NilSolver
         /// can. Same value and same principal variation; diagnostic and a control arm.
         /// Inert under <see cref="FastMode"/> and when the nil is already set.
         /// </summary>
-        NoPresolve = 0x800u
+        NoPresolve = 0x800u,
+
+        /// <summary>
+        /// Search the forced final trick instead of evaluating it. At a trick boundary
+        /// with one card per hand the trick is fully determined, so five nodes collapse
+        /// to one. Same value and same principal variation; diagnostic and a control arm.
+        /// </summary>
+        NoLastTrick = 0x2000u,
+
+        /// <summary>
+        /// Do not spend the two static proofs in full mode, where they yield a fail-soft
+        /// bound rather than settling the node outright. Same value and same principal
+        /// variation; diagnostic and a control arm. Implied by
+        /// <see cref="NoStaticBounds"/>.
+        /// </summary>
+        NoFullStatic = 0x4000u,
+
+        /// <summary>
+        /// Consult the transposition table at every ply rather than only at a trick
+        /// boundary. Building the key is O(live cards) and three nodes in four are
+        /// mid-trick, so the table's own cost dominates; the hit rate one ply into a
+        /// trick is 5-11% against 62-70% at a boundary. Restores the every-ply behaviour
+        /// the solver had before patch 30, which is 2.3x to 3.6x slower at 11 to 13
+        /// cards. Same value and same principal variation; diagnostic and a control arm.
+        /// </summary>
+        TtAllPlies = 0x8000u
     }
 
     /// <summary>Return codes. <see cref="Ok"/> is success; everything else is negative.</summary>

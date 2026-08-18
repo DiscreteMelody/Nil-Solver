@@ -225,6 +225,23 @@ extern "C" {
  * unless this flag is set.  Implied by NIL_FLAG_NO_STATIC_BOUNDS. */
 #define NIL_FLAG_NO_FULL_STATIC 0x4000u
 
+/* Consult the transposition table at every ply rather than only at a trick
+ * boundary.
+ *
+ * By default the solver probes and stores only when no card has been played to
+ * the current trick, which is what DDS does and what the measurements say is
+ * right: building the key is O(live cards) and three nodes in four are
+ * mid-trick, so the table's own cost dominates the per-node cost of the search,
+ * while the hit rate one ply into a trick is 5-11% against 62-70% at a
+ * boundary.  Turning it off is worth 2.3x to 3.6x of wall time at 11 to 13
+ * cards and is better at every size measured.
+ *
+ * This flag restores the old every-ply behaviour and is the control arm the
+ * saving is measured against.  The table is a memo, so the value, the trick
+ * counts and the principal variation are identical either way; the node count
+ * moves in both directions, which is what the roadmap entry is about. */
+#define NIL_FLAG_TT_ALL_PLIES 0x8000u
+
 /* Pass to nil_set_table_size to go back to choosing the table size from the
  * position, which is what a process that never calls it already gets.  The
  * size follows tricks_remaining and mode: a four-card endgame takes 32 MiB and

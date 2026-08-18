@@ -283,6 +283,54 @@ struct SearchOptions {
     // On by default, off as the control arm.
     bool presolve_window = true;
 
+    // Consult the transposition table only at a trick boundary, never in the
+    // middle of a trick.
+    //
+    // This is what DDS does -- "positions stored in the Transposition Table
+    // always consist of completed tricks" (Haglund and Hein, section 6) -- and
+    // this solver did not, because the key in statekey.hpp was built to
+    // describe a mid-trick position too and there was no reason not to use it.
+    // The reason is throughput, and it is large.
+    //
+    // WHAT A MID-TRICK LOOKUP COSTS.  encode_state_key walks every live card of
+    // every suit, so it is O(cards remaining) -- up to 52 iterations of a bit
+    // loop -- and mix_key, probe and store follow it.  That is the dominant
+    // per-node cost in this search, and three nodes in four are mid-trick.
+    //
+    // WHAT IT BUYS, MEASURED BY PLY.  Hit rates at 13 cards, fast mode, over
+    // three seeds: 62-70% at a trick boundary, 5-11% at ply 1, 19-27% at ply 2,
+    // 25-32% at ply 3.  Ply 1 is the worst and the reason is structural: the
+    // only route to a ply-1 node is its boundary parent, and a boundary parent
+    // reached a second time is answered by the table before it regenerates any
+    // child.  So a ply-1 entry is stored on a path that, by construction,
+    // nothing walks twice -- it is a memo of a position visited once.  It is
+    // also 27% of all stores, so what it mostly does is evict boundary entries
+    // that would have been hit.
+    //
+    // Plies 2 and 3 do transpose, because the `gap` encoding makes different
+    // played cards equal when they trap the same number of survivors.  They
+    // still lose: the hits they earn are worth less than the key construction
+    // they charge on every mid-trick node, and than the boundary entries they
+    // displace.  A ply sweep on one binary at 13 cards, seed 11:
+    //
+    //     plies using the table    nodes/position    ms/position
+    //     0,1,2,3 (the old default)   4,606,934         1,075
+    //     0,2,3                       4,192,289           846
+    //     0,2                         3,679,073           499
+    //     0 only                      3,556,097           297
+    //
+    // Node counts move both ways -- boundary-only costs 31% more nodes at 13
+    // cards on seed 3 and saves 23% on seed 11, because relieving the table of
+    // three quarters of its stores is worth more than the mid-trick hits on
+    // deals whose boundary set does not fit.  Wall time does not move both
+    // ways: it is 2.3x to 3.6x better at 11 to 13 cards and better at every
+    // size measured, including the 4-6 card corpus.
+    //
+    // Answer-neutral by construction.  The table is a memo, so declining to
+    // write or read part of it can change how long a search takes and nothing
+    // else.  On by default, off as the control arm.
+    bool tt_boundaries_only = true;
+
     // Look positions up in a transposition table.  The search is a pure
     // function of the position, so the table changes neither the value nor the
     // principal variation -- it is memoisation, not alpha-beta or any other

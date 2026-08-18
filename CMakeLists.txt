@@ -230,6 +230,21 @@ if(NIL_SOLVER_BUILD_TESTS)
              COMMAND nil_bench --corpus "${NIL_CORPUS}" --mode fast --no-last-trick --quiet
                      --slowest 0)
     set_tests_properties(corpus_last_trick_fast PROPERTIES TIMEOUT 900)
+
+    # The control arm for confining the table to trick boundaries.  The table is
+    # a memo, so this is the strongest claim on the list: not merely the same
+    # value but the same principal variation, in both modes, because declining
+    # to write or read part of a memo can change how long a search takes and
+    # nothing else.  --check-pv is carried for that reason.
+    add_test(NAME corpus_tt_plies
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --tt-all-plies --check-pv --quiet
+                     --slowest 0)
+    set_tests_properties(corpus_tt_plies PROPERTIES TIMEOUT 900)
+
+    add_test(NAME corpus_tt_plies_fast
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --mode fast --tt-all-plies --quiet
+                     --slowest 0)
+    set_tests_properties(corpus_tt_plies_fast PROPERTIES TIMEOUT 900)
   endif()
 
   set(NIL_LARGE_CORPUS "${CMAKE_CURRENT_SOURCE_DIR}/tests/corpus/large.txt")
