@@ -50,6 +50,7 @@ struct Ctx {
     bool last_trick = true;    // evaluate a forced final trick instead of searching it
     bool tt_boundaries_only = true;  // consult the table only at a trick boundary
     bool target_bounds = true;       // the arithmetic reach bound; MODE_FULL only
+    bool suit_mix = true;            // one card per suit at the head of the move list
     // True when no remaining trick can lower the value, i.e. every weight is
     // non-negative.  That makes what is already banked a lower bound on the
     // whole subtree, which is the one fact the "already past beta" cutoff in
@@ -658,11 +659,52 @@ int search(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta) {
         if (promoted != NO_CARD) moves &= ~card_bit(promoted);
     }
 
+    // SUIT MIXING (item 35).  DDS section 5 puts the best card of EACH present
+    // suit at the head of the list, not one card overall, and says why in as
+    // many words: to have a good mixture of moves rather than all cards from
+    // one suit first, "in case the heuristic is not good for a particular
+    // set-up".  What this loop did instead was promote one card and then
+    // enumerate suit-major -- every spade, then every heart -- which is the
+    // shape the paper warns against.
+    //
+    // So: one card from each present suit first, taken in rotation from the
+    // promoted card's suit, and then the canonical tail exactly as before.  It
+    // is a hedge rather than a bet, which is what separates it from 6c: that
+    // one was rejected for spending the cover card unconditionally, and this
+    // spends nothing -- the same moves are searched, in a different order.
+    //
+    // Only where the seat has a free choice of suit, which is the paper's scope
+    // too (trick leader, or void in the suit led).  The gate is the move set
+    // spanning more than one suit, which a seat following suit never does, and
+    // it costs two bit scans on the nodes where ordering runs at all -- BOTH
+    // modes, since order_moves is not the fast-mode-only switch the seat rules
+    // above make it look like.
+    //
+    // THE TAIL IS DELIBERATELY NOT MIXED, and that is a measurement rather than
+    // a reading of the paper.  Rotating the whole tail saves the same nodes --
+    // 77.4M against this version's 77.9M over three 13-card seeds -- and gives
+    // them back on throughput, because it charges a four-way suit scan on every
+    // move instead of on the first four.  Interleaved wall time came out
+    // between 0.96x and 1.03x for the rotated tail against a flat 1.03x for
+    // this one; a version that is slower than the incumbent on one seed is not
+    // worth 0.7% of nodes.
+    int suit_cursor = 3;
+    int mixed = 0;  // moves still to take in rotation
+    if (ctx.order_moves && ctx.suit_mix && moves &&
+        card_suit(lowest_card(moves)) != card_suit(highest_card(moves))) {
+        for (int su = 0; su < 4; ++su)
+            if (moves & suit_mask(su)) ++mixed;
+        if (promoted != NO_CARD) suit_cursor = card_suit(promoted);
+    }
+
     while (promoted != NO_CARD || moves) {
         CardId card;
         if (promoted != NO_CARD) {
             card = promoted;
             promoted = NO_CARD;
+        } else if (mixed > 0) {
+            --mixed;
+            card = take_next_suit(moves, suit_cursor);
         } else {
             card = take_lowest(moves);
         }
@@ -767,6 +809,7 @@ void configure(Ctx& ctx, int nil_seat, const SearchOptions& opts,
     ctx.last_trick = opts.last_trick_eval;
     ctx.tt_boundaries_only = opts.tt_boundaries_only;
     ctx.target_bounds = opts.target_bounds;
+    ctx.suit_mix = opts.suit_mixed_order;
     // Canonicalise whenever the caller wants the canonical line -- and also,
     // whether they asked or not, whenever the value cannot pin nil_tricks on its
     // own.  That is exactly `primary + tertiary == 0`: the coefficient the value

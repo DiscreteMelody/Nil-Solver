@@ -38,6 +38,7 @@ expensive node. Read items 11 and 31 in that light.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ✅ | ~~Suit-mixed move ordering~~ | patch 35 | DDS §5 puts the best card of **each** present suit at the head of the move list, and says why: *"good mixture of moves (i.e. not all cards from the same suit first) in case the heuristic is not good for a particular set-up"*. This loop promoted one card and then enumerated suit-major -- every spade, then every heart -- which is the shape the paper warns against. A hedge, not a bet: the same moves are searched and nothing is spent to decide the order, which is what separates it from the rejected 6c. **−5.4% to −9.0% nodes at 11 and 13 cards in fast mode, −7.9% at 11 in full.** It *costs* nodes on easy deals (+11.5% at 9 cards) and wall time is a much weaker result than nodes -- see the measurement section, which is the honest version |
 | ⊘ | Repeated null-window search for `MODE_FULL` (item 34) | patch 34 | **built as an experiment, measured and rejected.** The mechanism works exactly as predicted -- the reachable value set is 105 wide at 13 cards, bisection converges in 6-7 probes, and convergence costs **26% fewer nodes than the incumbent wide search at 13 cards**. It is still net negative, because a table left full of BOUNDS cannot answer the exact-value walk the principal variation and the replay check require: recovering those costs a further 33.5M nodes on the same three deals, for **119.6M against the incumbent's 108.2M -- 1.11x worse**. The floor is measured too, and it is not far below: seeded with the true value by oracle, merely *verifying* it costs 73% of the incumbent on the deal that dominates the workload. Nothing shipped |
 | ✅ | ~~One fixed table size, and the memo column repaired~~ | patch 33 | `TT_AUTO` was a schedule that sized the table to the position. `resize()` reuses the allocation when the size is unchanged and **re-zeroes the whole table when it is not**, and a hand played out asks for a smaller table every trick or two -- so a worker following a live game walked the schedule down and back up every deal at **51.3 ms per hand** of pure memset, charged against solves that are under a millisecond at the small end. One size for every hand and both modes makes every resize after the first the free branch (0.00001 ms). Node counts are unchanged or slightly better; fast mode at 13 cards goes 3,492,640 -> 3,485,739 because 256 MiB is more table than the old fast cap. Also fixes the history file's `memo` column, which printed the `TT_AUTO` sentinel as `18446744073709551615mb` and put every auto-sized run in a group of its own |
 | ✅ | ~~`MODE_FULL` table cap lowered to 256 MiB~~ | patch 32 | patch 28b raised it to 1024 because full mode had not saturated at 13 cards, and that was true of the tree it measured. Patches 30 and 31 rebuilt that tree twice, and what is left saturates at a quarter of the cap: **1.18% more nodes for 1.24x less wall time**, across seven 13-card deals on three seeds, interleaved. Also **takes `NilSolverPool` from 2 GiB to 512 MiB** across its two workers, because the table is `thread_local` and never shrinks below a size it has held. The fast-mode half of the item was measured and declined -- see "Evaluated and rejected" |
@@ -75,6 +76,65 @@ Patch 7 measured against the 560-position corpus:
 | 6 | 1,163,389 | 44,309 | 26.3x |
 
 Total corpus wall time 29.9 s to 0.77 s.
+
+Patch 35, measured against `--no-suit-mix` on the same binary, arms interleaved,
+median of three for wall and exact for nodes:
+
+| workload | canonical | suit-mixed | nodes | wall |
+|---|---:|---:|---:|---:|
+| corpus 560, fast | 40,102 | 39,701 | −1.00% | 0.98x |
+| random 9c x20, seed 1, fast | 653,784 | 728,920 | **+11.49%** | **0.87x** |
+| random 11c x10, seed 3, fast | 15,400,031 | 14,104,350 | **−8.41%** | **1.08x** |
+| random 12c x10, seed 3, fast | 2,277,389 | 2,329,552 | +2.29% | 0.96x |
+| random 13c x20, seed 3, fast | 15,525,269 | 14,529,924 | **−6.41%** | 1.03x |
+| random 13c x10, seed 11, fast | 34,857,391 | 32,963,937 | **−5.43%** | 1.00x |
+| random 13c x10, seed 42, fast | 33,426,881 | 30,407,921 | **−9.03%** | 1.01x |
+| corpus 560, full | 321,144 | 325,975 | +1.50% | 1.00x |
+| random 9c x20, seed 1, full | 7,681,172 | 7,772,036 | +1.18% | 0.92x |
+| random 11c x6, seed 3, full | 96,733,104 | 89,118,687 | **−7.87%** | **1.09x** |
+| random 12c x6, seed 3, full | 37,698,015 | 35,940,769 | −4.66% | 0.96x |
+| random 13c x3, seed 3, full | 108,175,696 | 106,451,046 | −1.59% | 0.94x |
+
+**It pays on hard deals and charges on easy ones, and that is the shape rather
+than the noise.** 11-card fast (15.4M nodes) and the three 13-card sets (15M to
+35M) all improve 5-9%; 9-card fast (0.65M over twenty deals) and 12-card fast
+(2.3M over ten) both get worse. A hedge earns its keep where the primary
+heuristic misfires, and deep trees are where that happens -- which is also why
+hand size is not the discriminator. 12-card fast on seed 3 is an *easy* set and
+loses; 11-card fast is a hard one and wins the most.
+
+**The wall-time column is weaker than the node column and the entry says so.**
+The gate costs two bit scans and the rotation costs a four-way suit test on the
+first few moves of every ordered node, and that eats most of what the nodes
+save: 1.08x to 1.09x where the saving is largest, ~1.00x on the hardest 13-card
+seed, and *below* 1.00x wherever nodes went up. Five interleaved reps on 13-card
+seed 11 came out 3909.5 ms against 3920.5 -- a wash. An earlier read of a flat
+1.03x across the board was taken under lighter load and did not survive repeats,
+which is recorded here because it nearly went into this table.
+
+**Shipped on the node result at 11 and 13 cards**, per the standing rule that
+those sizes are worth more than time lost at small ones -- the 9-card
+regression is 26 ms across twenty deals. A reader who disagrees with that
+weighting should turn it off with `--no-suit-mix`, and the numbers to argue
+from are above rather than buried.
+
+**The tail is deliberately not mixed.** Rotating the *whole* move list rather
+than its head saves marginally more nodes -- 77.4M against 77.9M over the three
+13-card fast seeds -- and gives them back on throughput, because it charges the
+suit scan on every move instead of on the first four. Interleaved wall time came
+out between 0.96x and 1.03x for the rotated tail against a steadier read for the
+head-only form. DDS's literal wording is the head-only version and the
+measurement agrees with it.
+
+**A correction this patch had to make to itself.** The first draft asserted in
+four places that the change was inert outside `MODE_FAST`, on the reasoning that
+the seat-specific rules in 6a/6b/6d read that way. `order_moves` runs in **both**
+modes; full mode moved 7.9% at 11 cards. The comment, the ABI note, the bench
+memo suffix gate and the ctest were all wrong together, which is what happens
+when a claim is reasoned from neighbouring code instead of measured. The suffix
+now applies to both modes and the full-mode arm carries `--check-pv`, since the
+canonical re-derivation of patch 25 should pin the line whatever order the moves
+were tried in -- and now asserts it.
 
 Patch 33, measured directly against the schedule it replaced:
 
@@ -1601,7 +1661,7 @@ cards being the slowest thing left made it *look* like the largest remaining
 lever; being the slowest thing left is not evidence that a particular lever
 moves it.
 
-### 35. Suit-mixed move ordering — ⭐⭐⭐ — **from DDS §5**
+### 35. ~~Suit-mixed move ordering~~ — ⭐⭐⭐ — **done, patch 35; from DDS §5**
 
 The paper puts the best card of *each* suit at the head of the list, not one
 card overall: *"If the hand-to-play is the trick-leading hand or is void in the
@@ -2301,7 +2361,7 @@ say so.
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 29b (single-suit) → 31 (winning ranks) → 35 → 9 → 32 → 10 → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 29b (single-suit) → 31 (winning ranks) → 9 → 32 → 10 → measure → 11..14
 ```
 
 **Item 29b is next**, item 34 having been built and refuted. What that costs the

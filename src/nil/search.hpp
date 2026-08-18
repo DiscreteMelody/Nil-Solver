@@ -344,6 +344,35 @@ struct SearchOptions {
     // On by default, off as the control arm.
     bool target_bounds = true;
 
+    // Put one card from each present suit at the head of the move list, in
+    // rotation, before the canonical tail.  DDS section 5, whose stated aim is
+    // "good mixture of moves (i.e. not all cards from the same suit first) in
+    // case the heuristic is not good for a particular set-up".
+    //
+    // A hedge, not a bet: the same moves are searched, in a different order,
+    // and nothing is spent to decide the order.  That is what separates it from
+    // the rejected 6c, which spent the cover card unconditionally.
+    //
+    // Follows order_moves, which is BOTH modes -- not MODE_FAST only, however
+    // much the seat-specific heuristics above read that way.  Inert on a seat
+    // following suit: its moves are all one suit and the rotation has nothing
+    // to rotate.
+    //
+    // Worth 5.4% to 9.0% of nodes at 11 and 13 cards in fast mode and 7.9% in
+    // full mode at 11.  It costs nodes on easy deals -- 11.5% at 9 cards, 2.3%
+    // at 12 -- which is what a hedge does: it pays where the primary heuristic
+    // misfires, and deep trees are where that happens.
+    //
+    // Answer-neutral: reordering a full enumeration under fail-soft cutoffs
+    // cannot change the value.  It can change which of several equally good
+    // moves comes back, exactly as 6a, 6b and 6d can.  In MODE_FULL the
+    // canonical re-derivation of patch 25 pins the principal variation
+    // regardless, so the test arm carries --check-pv there and checks values
+    // only in fast mode -- the same split corpus_ordering makes.
+    //
+    // On by default, off as the control arm.
+    bool suit_mixed_order = true;
+
     // Consult the transposition table only at a trick boundary, never in the
     // middle of a trick.
     //

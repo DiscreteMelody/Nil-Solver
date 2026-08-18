@@ -105,6 +105,24 @@ inline int highest_card(Hand h) {
 #endif
 }
 
+// Pop and return the lowest card of the first suit after `cursor`, in rotation,
+// that `h` still holds; `cursor` is left on that suit.  Item 35's enumeration:
+// see the move loop in search.cpp for what it is for.  Undefined on an empty
+// `h`, exactly as take_lowest is.
+inline CardId take_next_suit(Hand& h, int& cursor) {
+    for (int i = 1; i <= 4; ++i) {
+        const int s = (cursor + i) & 3;
+        const Hand in_suit = h & suit_mask(s);
+        if (in_suit) {
+            cursor = s;
+            const CardId c = static_cast<CardId>(lowest_card(in_suit));
+            h &= ~card_bit(c);
+            return c;
+        }
+    }
+    return NO_CARD;
+}
+
 // Pop and return the canonically lowest card of `h`.
 inline CardId take_lowest(Hand& h) {
     const int b = lowest_card(h);

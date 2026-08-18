@@ -257,6 +257,21 @@ extern "C" {
  * control arm. */
 #define NIL_FLAG_NO_TARGET_BOUNDS 0x10000u
 
+/* Do not put one card from each present suit at the head of the move list.
+ *
+ * By default the solver searches one card from every suit it may legally choose
+ * among before returning to the canonical order, which is DDS section 5's
+ * "good mixture of moves (i.e. not all cards from the same suit first)".  It
+ * spends nothing to decide the order -- the same moves are searched -- and is
+ * worth 5.4% to 9.0% of nodes at 11 to 13 cards.
+ *
+ * Applies in both modes, and inert on a seat following suit.  Same value and,
+ * in full mode, the same principal variation -- the canonical re-derivation
+ * pins it.  In fast mode it may return a different one of several equally good
+ * moves, exactly as the other move-ordering heuristics may.  Diagnostic and a
+ * control arm. */
+#define NIL_FLAG_NO_SUIT_MIX 0x20000u
+
 /* Pass to nil_set_table_size to go back to letting the library choose the
  * table size, which is what a process that never calls it already gets.
  *

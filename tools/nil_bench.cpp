@@ -372,6 +372,8 @@ void usage(const char* argv0) {
               << "                    (same answer, many more nodes; full mode only)\n"
               << "  --no-ordering     try moves in canonical order rather than a\n"
               << "                    promising-first one (fast mode only)\n"
+              << "  --no-suit-mix     do not put one card per suit at the head of the\n"
+              << "                    move list (same answer, more nodes)\n"
               << "  --no-target-bounds  do not answer a node from the reachable range\n"
               << "                    of the tricks left (same answer, more nodes;\n"
               << "                    full mode only)\n"
@@ -423,6 +425,10 @@ std::string memo_label(const nil::SearchOptions& opts) {
     // Full mode only: the bound is inert in fast mode, so the suffix there
     // would split one history into two groups holding identical numbers.
     if (!opts.target_bounds && opts.mode == nil::MODE_FULL) suffix += "+notarget";
+    // Both modes: order_moves runs in full mode too, so full-mode rows move
+    // under this arm as well and a fast-only suffix would silently merge two
+    // different trees.
+    if (!opts.suit_mixed_order) suffix += "+nosuitmix";
     if (!opts.narrow_window && opts.mode == nil::MODE_FULL) suffix += "+nonarrow";
     if (!opts.presolve_window && opts.mode == nil::MODE_FULL) suffix += "+nopresolve";
     if (!opts.canonical_pv && opts.mode == nil::MODE_FULL) suffix += "+ordered";
@@ -514,6 +520,8 @@ int main(int argc, char** argv) {
             opts.tt_boundaries_only = false;
         } else if (arg == "--no-target-bounds") {
             opts.target_bounds = false;
+        } else if (arg == "--no-suit-mix") {
+            opts.suit_mixed_order = false;
         } else if (arg == "--no-narrow") {
             opts.narrow_window = false;
         } else if (arg == "--no-presolve") {

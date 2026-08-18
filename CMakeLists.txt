@@ -247,6 +247,22 @@ if(NIL_SOLVER_BUILD_TESTS)
     # guarantees, and which this asserts rather than assumes.  Full mode only:
     # the bound is inert in fast mode, where the reachable range is [0, t]
     # against a window of [0, 1].
+    # The control arm for suit mixing, in both modes, because ordering runs in
+    # both.  Full mode carries --check-pv: the canonical re-derivation pins the
+    # line there whatever order the moves were tried in, and that is worth
+    # asserting rather than assuming.  Fast mode checks values only -- a
+    # reordering can return a different one of several equally good moves, which
+    # is the same claim corpus_ordering makes.
+    add_test(NAME corpus_suit_mix
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --no-suit-mix --check-pv --quiet
+                     --slowest 0)
+    set_tests_properties(corpus_suit_mix PROPERTIES TIMEOUT 900)
+
+    add_test(NAME corpus_suit_mix_fast
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --mode fast --no-suit-mix --quiet
+                     --slowest 0)
+    set_tests_properties(corpus_suit_mix_fast PROPERTIES TIMEOUT 900)
+
     add_test(NAME corpus_target
              COMMAND nil_bench --corpus "${NIL_CORPUS}" --no-target-bounds --check-pv --quiet
                      --slowest 0)
