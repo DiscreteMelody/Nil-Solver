@@ -56,9 +56,9 @@ const TTEntry* TranspositionTable::probe(const StateKey& key, std::uint64_t hash
         // it already falls outside: knowing the value is at least X settles a
         // search whose beta is at or below X, and nothing narrower.
         const int value = e.value;
-        const bool answers = e.bound == BOUND_EXACT ||
-                             (e.bound == BOUND_LOWER && value >= beta) ||
-                             (e.bound == BOUND_UPPER && value <= alpha);
+        const std::uint8_t kind = bound_kind(e.bound);
+        const bool answers = kind == BOUND_EXACT || (kind == BOUND_LOWER && value >= beta) ||
+                             (kind == BOUND_UPPER && value <= alpha);
         if (!answers) {
             ++stats_.partial;
             return nullptr;

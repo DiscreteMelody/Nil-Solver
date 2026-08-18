@@ -76,6 +76,41 @@ enum Bound : std::uint8_t {
     BOUND_UPPER = 2,  // the node cut off low: the value is at most this
 };
 
+// `TTEntry::bound` carries two things, and this is the only place that knows it.
+//
+// Bits 0-1 are the Bound above.  Bits 2-5 are `need`: how many of each suit's
+// live cards, counted from the top, an entry's backed-up winning ranks require
+// pinned -- nil/ranks.hpp calls it the truncation level.  A node that reads an
+// entry needs it to tell its own parent which of ITS cards were essential, and
+// a parent that knows will store more of its own entries coarsely.
+//
+// Why it is squeezed in here rather than given a field.  TTEntry is 24 bytes
+// with no padding on any sane ABI, and a fifteenth byte rounds it to 32 -- a
+// third fewer entries in the same table, which would move every node count this
+// project has banked whether or not the feature is switched on.  `bound` had
+// six bits doing nothing.  Four of them now hold a number that is at most 13.
+//
+// It is per-ENTRY rather than per-suit on purpose: the exact vector is four
+// nibbles and there is not room for sixteen bits.  One number applied to all
+// four suits pins at least as much as the four would, so it is a safe
+// over-approximation -- it costs some coarseness and cannot cost an answer.
+inline constexpr std::uint8_t BOUND_KIND_MASK = 0x03;
+inline constexpr int BOUND_NEED_SHIFT = 2;
+inline constexpr int BOUND_NEED_MAX = 15;
+
+inline std::uint8_t pack_bound(std::uint8_t kind, int need) {
+    if (need < 0) need = 0;
+    if (need > BOUND_NEED_MAX) need = BOUND_NEED_MAX;
+    return static_cast<std::uint8_t>((kind & BOUND_KIND_MASK) |
+                                     (static_cast<unsigned>(need) << BOUND_NEED_SHIFT));
+}
+
+inline std::uint8_t bound_kind(std::uint8_t packed) { return packed & BOUND_KIND_MASK; }
+
+inline int bound_need(std::uint8_t packed) {
+    return (packed >> BOUND_NEED_SHIFT) & BOUND_NEED_MAX;
+}
+
 // Which objective an entry's value is on the scale of.  Zero is what a
 // never-written entry holds, so it deliberately names no objective.
 enum ValueTag : std::uint8_t {

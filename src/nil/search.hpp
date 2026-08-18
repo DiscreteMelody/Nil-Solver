@@ -112,6 +112,7 @@
 #include <vector>
 
 #include "nil/position.hpp"
+#include "nil/ranks.hpp"
 
 namespace nil {
 
@@ -451,6 +452,23 @@ struct SearchOptions {
     // explicit number wins over TT_AUTO, and 0 is the same as use_memo = false.
     std::size_t tt_megabytes = TT_AUTO;
 
+    // Back up which card ranks a subtree's value actually depended on, and
+    // record how coarse the resulting table entries would have been.
+    //
+    // DDS sections 6.1-6.3 and Ginsberg's partition search: a card that won a
+    // trick BY RANK matters, one that won because nobody could follow does not,
+    // and an entry need only pin the ranks at or above the lowest winner in
+    // each suit.  ROADMAP item 31 wants that machinery measured before any
+    // table is redesigned around it, because the redesign trades an exact hash
+    // for a masked scan and the question is not the hit rate but the throughput.
+    //
+    // This is the measurement and nothing else.  It changes no key, no probe
+    // and no store; it computes an extra `Hand` per node and a keep vector per
+    // store, and hands the histogram back through rank_mask_stats().  OFF by
+    // default, because it costs throughput and buys the search nothing.
+    bool track_rank_masks = false;
+
+
     // Return the canonically lowest of the equally-best lines, rather than
     // whichever one the move ordering happened to reach first.
     //
@@ -629,6 +647,12 @@ bool replay_pv(const Position& pos, const std::vector<Play>& pv, int nil_seat,
 // more than the search does.  Call this to hand the memory back; the next
 // solve() will simply allocate again.
 void release_transposition_table();
+
+// The winning-rank histogram accumulated since the last reset, across every
+// solve on this thread that ran with SearchOptions::track_rank_masks.  Empty
+// when nothing did.  See nil/ranks.hpp for what the numbers mean.
+const RankMaskStats& rank_mask_stats();
+void reset_rank_mask_stats();
 
 std::string format_pv_compact(const Solution& sol);       // "N:D2 E:DA S:D5 W:D7"
 std::string format_pv(const Position& pos, const Solution& sol);  // one line per trick

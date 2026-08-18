@@ -383,6 +383,7 @@ void usage(const char* argv0) {
               << "  --no-last-trick   search the forced final trick instead of\n"
               << "                    evaluating it (same answer, more nodes)\n"
               << "  --tt-stats        also report transposition table behaviour\n"
+              << "  --rank-stats      also report the winning-rank mask histogram\n"
               << "  --quiet           only print the summary and any failures\n"
               << "\n"
               << "--check-pv compares against the PV a corpus row recorded, so it means\n"
@@ -458,6 +459,7 @@ int main(int argc, char** argv) {
     bool check_pv = false;
     bool check_moves = false;
     bool tt_stats = false;
+    bool rank_stats = false;
     // --mode both: solve every position in the other mode as well and require
     // the two to agree on nil_fails.
     bool cross_check_modes = false;
@@ -557,6 +559,9 @@ int main(int argc, char** argv) {
             check_moves = true;
         } else if (arg == "--check-pv") {
             check_pv = true;
+        } else if (arg == "--rank-stats") {
+            rank_stats = true;
+            opts.track_rank_masks = true;
         } else if (arg == "--tt-stats") {
             tt_stats = true;
         } else if (arg == "--quiet") {
@@ -661,6 +666,10 @@ int main(int argc, char** argv) {
     std::uint64_t tt_partial = 0;
     std::uint64_t tt_stores = 0;
     std::uint64_t tt_evictions = 0;
+
+    // The winning-rank histogram accumulates across every solve in the run, so
+    // it starts from zero here rather than per position.
+    if (rank_stats) nil::reset_rank_mask_stats();
 
     for (const Item& item : items) {
         nil::Solution sol;
@@ -902,6 +911,70 @@ int main(int argc, char** argv) {
             } else {
                 std::cout << "    (the two no longer walk the same tree, so this agreement is a\n"
                           << "     pruned answer held against an unpruned, oracle-checked one.)\n";
+            }
+        }
+    }
+
+    if (rank_stats) {
+        const nil::RankMaskStats& rk = nil::rank_mask_stats();
+        const auto share = [&](std::uint64_t part) {
+            std::ostringstream os;
+            os << std::fixed << std::setprecision(1)
+               << (rk.stores ? 100.0 * static_cast<double>(part) / static_cast<double>(rk.stores)
+                             : 0.0)
+               << "%";
+            return os.str();
+        };
+        std::cout << "\n  winning-rank masks (roadmap item 31)\n"
+                  << "    entries    " << commas(rk.stores) << "\n";
+        if (rk.stores) {
+            // `need` is the truncation level an entry requires: the largest
+            // number of top slots it would have to pin in any one suit.  The
+            // cumulative column is the one that decides the item -- it is the
+            // fraction of the table a design pinning the top N slots per suit
+            // could hold without lying.
+            std::cout << "    need   entries        share    cumulative\n";
+            std::uint64_t running = 0;
+            for (int n = 0; n < nil::RankMaskStats::MAX_NEED; ++n) {
+                if (!rk.by_need[n]) continue;
+                running += rk.by_need[n];
+                std::cout << "    " << std::setw(4) << n << "   " << std::setw(12)
+                          << commas(rk.by_need[n]) << "   " << std::setw(6) << share(rk.by_need[n])
+                          << "   " << std::setw(11) << share(running) << "\n";
+            }
+            std::cout << "    pinned slots " << commas(rk.pinned_slots) << " of "
+                      << commas(rk.live_slots) << " live   "
+                      << std::fixed << std::setprecision(1)
+                      << (rk.live_slots ? 100.0 * static_cast<double>(rk.pinned_slots) /
+                                              static_cast<double>(rk.live_slots)
+                                        : 0.0)
+                      << "%\n";
+            // Per depth, because an item that only pays in the deep endgame and
+            // an item that pays at the root are different items.
+            bool any_depth = false;
+            for (int c = 0; c < nil::RankMaskStats::MAX_CARDS; ++c) {
+                std::uint64_t total = 0;
+                for (int n = 0; n < nil::RankMaskStats::MAX_NEED; ++n) total += rk.by_need_at[c][n];
+                if (!total) continue;
+                if (!any_depth) {
+                    std::cout << "    cards      entries     need<=2   need<=3   need<=4\n";
+                    any_depth = true;
+                }
+                std::uint64_t c2 = 0, c3 = 0, c4 = 0;
+                for (int n = 0; n <= 4 && n < nil::RankMaskStats::MAX_NEED; ++n) {
+                    if (n <= 2) c2 += rk.by_need_at[c][n];
+                    if (n <= 3) c3 += rk.by_need_at[c][n];
+                    c4 += rk.by_need_at[c][n];
+                }
+                const auto p = [&](std::uint64_t part) {
+                    std::ostringstream os;
+                    os << std::fixed << std::setprecision(1)
+                       << 100.0 * static_cast<double>(part) / static_cast<double>(total) << "%";
+                    return os.str();
+                };
+                std::cout << "    " << std::setw(5) << c << "   " << std::setw(12)
+                          << commas(total) << "   " << std::setw(7) << p(c2) << "   "
+                          << std::setw(7) << p(c3) << "   " << std::setw(7) << p(c4) << "\n";
             }
         }
     }

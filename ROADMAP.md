@@ -38,6 +38,8 @@ expensive node. Read items 11 and 31 in that light.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ✅ | ~~Winning-rank backup and the `need` histogram~~ | patch 36 | DDS §6.1-6.2 and Ginsberg's partition search: record which cards won a trick **by rank**, back them up through the tree, and read off `need` -- how many of a suit's live cards, counted from the top, an entry would have to pin. Merges follow the paper: union across siblings, **the cutting move alone** at a cutoff. `need` rides in `TTEntry::bound`'s spare bits, so the entry stays **24 bytes** and every node count this project has banked is unmoved -- verified byte-identical, 39,701 fast and 325,975 full on the corpus. Off by default, and **free when off**, which took a second attempt: carried as a runtime pointer -- an extra argument on a hot recursive function, a null test at every return path and a zero-initialised `Hand` per move -- it cost **4-8% of wall time with the feature disabled** on three workloads, patched slower in 11 of 11 interleaved paired runs against a pristine binary. Making `TRACK` a template parameter and instantiating both paths returns it to parity (11-card fast: 68.6 ms pristine against 67.6 ms patched, patched faster in 4 of 5). `--rank-stats` turns it on. What it bought is the number item 31 was blocked on, and that number **closed the item** -- see 31b in "Evaluated and rejected" |
+| ⊘ | Masked table matching by canonical key (item 31b) | patch 36 | **built, refuted by counterexample.** DDS §6.3 stores a mask beside each entry and linear-scans; folding the mask into the key instead -- sorting the don't-care region's owner bits, which is a normal form for the multiset a mask leaves visible -- keeps the probe at one hash and one bucket, and would have been strictly better than the paper's scheme. It is **unsound**, and not marginally: a card's rank can matter without that card ever winning a trick by rank, so the criterion under-approximates. Two reproducible counterexamples below. Nothing shipped |
 | ✅ | ~~Suit-mixed move ordering~~ | patch 35 | DDS §5 puts the best card of **each** present suit at the head of the move list, and says why: *"good mixture of moves (i.e. not all cards from the same suit first) in case the heuristic is not good for a particular set-up"*. This loop promoted one card and then enumerated suit-major -- every spade, then every heart -- which is the shape the paper warns against. A hedge, not a bet: the same moves are searched and nothing is spent to decide the order, which is what separates it from the rejected 6c. **−5.4% to −9.0% nodes at 11 and 13 cards in fast mode, −7.9% at 11 in full.** It *costs* nodes on easy deals (+11.5% at 9 cards) and wall time is a much weaker result than nodes -- see the measurement section, which is the honest version |
 | ⊘ | Repeated null-window search for `MODE_FULL` (item 34) | patch 34 | **built as an experiment, measured and rejected.** The mechanism works exactly as predicted -- the reachable value set is 105 wide at 13 cards, bisection converges in 6-7 probes, and convergence costs **26% fewer nodes than the incumbent wide search at 13 cards**. It is still net negative, because a table left full of BOUNDS cannot answer the exact-value walk the principal variation and the replay check require: recovering those costs a further 33.5M nodes on the same three deals, for **119.6M against the incumbent's 108.2M -- 1.11x worse**. The floor is measured too, and it is not far below: seeded with the true value by oracle, merely *verifying* it costs 73% of the incumbent on the deal that dominates the workload. Nothing shipped |
 | ✅ | ~~One fixed table size, and the memo column repaired~~ | patch 33 | `TT_AUTO` was a schedule that sized the table to the position. `resize()` reuses the allocation when the size is unchanged and **re-zeroes the whole table when it is not**, and a hand played out asks for a smaller table every trick or two -- so a worker following a live game walked the schedule down and back up every deal at **51.3 ms per hand** of pure memset, charged against solves that are under a millisecond at the small end. One size for every hand and both modes makes every resize after the first the free branch (0.00001 ms). Node counts are unchanged or slightly better; fast mode at 13 cards goes 3,492,640 -> 3,485,739 because 256 MiB is more table than the old fast cap. Also fixes the history file's `memo` column, which printed the `TT_AUTO` sentinel as `18446744073709551615mb` and put every auto-sized run in a group of its own |
@@ -487,6 +489,90 @@ Full mode is unchanged by this patch, and that is checked rather than asserted:
 
 ## Evaluated and rejected
 
+**Masked table matching (item 31b), by canonical key.** The largest structural
+gap between this solver and the literature, and it is closed the other way: the
+criterion does not transfer.
+
+*What was built.* The winning-rank backup landed and is described in Done. On
+top of it, a second key: pin the top `N` slots of each suit exactly and
+**canonicalise** the rest by sorting the don't-care owners into ascending seat
+order. That is worth stating on its own, because it is better than what the
+paper does. DDS stores a mask beside each entry and scans a flat list applying
+them -- 125 entries per distribution, overwritten cyclically -- because a
+probing position does not know which mask to look itself up under. It does not
+need to: two positions are equal under the mask exactly when their canonical
+forms are equal as bit strings, so the masked key is still exactly hashable and
+the probe stays one hash and one bucket. The suit distribution survives intact,
+which is the part DDS is emphatic about; only *which* low card is whose is
+thrown away. Coarse entries got their own `ValueTag`, since a coarse probe
+reaches a class and an exact entry describes one position, and letting the first
+read the second is a wrong answer while the reverse is harmless.
+
+*Why it is unsound.* At `--mask-top 3`, full mode, these two positions have the
+same distribution, the same owners at the top three heart slots and the same
+census below -- the mask calls them one entry:
+
+```
+    N ♠875 ♥6 | E ♥KQJT | S ♠Q ♥7 ♦9 ♣T | W ♥95 ♦43   →  side_tricks 3
+    N ♠875 ♥6 | E ♥KQJ2 | S ♠Q ♥7 ♦9 ♣T | W ♥95 ♦43   →  side_tricks 4
+```
+
+(South leads, North bids nil, spades broken, `--secondary min`.) They are not
+one entry. **E's fourth heart never wins a trick by rank in the first position
+-- it goes as a discard on trick one -- but sitting above W's ♥9 it changes what
+E can still do, and the value with it.** A card's rank can matter without that
+card ever winning, and "won by rank" does not see that. The counterexample holds
+with `--no-collapse`, so it is not an artifact of equivalence reduction.
+
+*The repair that looked like one.* Restricting coarse stores to `BOUND_EXACT`
+nodes -- so that the union over every move, rather than a single cutoff witness,
+backs each coarse entry -- passes all 560 corpus positions at every truncation
+level, and passes 600 random 6-card deals and 300 random 7-card deals at
+`--mask-top 2` and `3`, the same samples that fail without it. **It is still
+unsound.** At `--mask-top 1` it fails twice in 700 random 6-card deals, e.g.
+`N:Q6.7.Q.96 2.J.85.82 A.6.92.A3 J94.A..QT`, S leads, S nil, `min`, broken:
+3 side tricks exact against 2 coarse. The restriction lowers the failure rate
+and does not remove it, which is the worst possible outcome for a correctness
+lever and the reason a corpus pass was not accepted as evidence here.
+
+*And the population says it would not have paid anyway.* The `need` histogram is
+the measurement the item asked for, and it has the shape this file keeps
+finding. At 13 cards in fast mode, **57.8% of live owner slots still need
+pinning**, and the entries that could be truncated are the cheap ones:
+
+| cards still in hands | entries | need≤2 | need≤3 | need≤4 |
+|---|---|---|---|---|
+| 8 | 811 | 82.5% | 96.5% | 100.0% |
+| 12 | 2,015 | 16.9% | 54.1% | 84.9% |
+| 16 | 1,926 | 6.9% | 22.8% | 43.1% |
+| 20 | 975 | 4.9% | 33.7% | 41.6% |
+| 24 | 411 | 1.5% | 9.0% | 22.6% |
+| 32 | 164 | 8.5% | 11.0% | 16.5% |
+| 40 | 114 | 2.6% | 2.6% | 8.8% |
+
+Masks are coarse near the leaves and fine near the root, which is the opposite
+of where a bigger equivalence class is worth paying for. So the item closes on
+two independent grounds, and a repaired criterion -- one that pinned every rank
+that was *compared*, not merely every rank that won -- would pin very nearly
+everything and collapse very nearly nothing.
+
+*What survives.* The backup machinery itself, and `--rank-stats`. Anyone
+reopening this should start from the counterexample above rather than from DDS
+§6.1.
+
+*One measurement note, because it nearly shipped wrong.* The backup was written
+as a runtime `Hand*` threaded through `search()`, which reads as free when the
+pointer is null and is not: an extra argument on a hot recursive function, a
+null test on every return path and a zero-initialised `Hand` per move cost
+**4-8% of wall time with the feature switched off** -- 68.5 ms against 71.9 ms
+at 11 cards, 6.5 against 7.5 at 9, 19.6 against 20.8 on the corpus in full mode,
+with the patched binary slower in **11 of 11 interleaved paired runs**. Node
+counts were byte-identical throughout, which is exactly why nodes are not the
+whole measurement: a change can be provably answer-neutral and still be a
+regression. A compile-time `TRACK` parameter with both paths instantiated
+returns the disabled path to parity. **Measurement machinery has to be free when
+it is off, or it is not measurement machinery, it is a tax.**
+
 **Side-suit canonicalization.** Hearts, diamonds and clubs are interchangeable,
 so canonicalizing them is a genuine symmetry worth up to 6x in theory. Built and
 measured: 5.3% fewer nodes at 6 cards, 7.7% at 7, bought at roughly 12% of
@@ -556,8 +642,9 @@ worth 12-26% -- against a PV recovery that costs more.
 
 *What would revive it.* Only a way to recover an exact value and a canonical
 line from a bound-valued table without re-searching. That is not a tweak to this
-item; it is a different item, and item 31's winning-rank entries would not supply
-it either.
+item; it is a different item, and item 31's winning-rank entries would not have
+supplied it either -- doubly so now that 31b is closed and no masked entry
+exists to recover anything from.
 
 **The fast-mode table cap, lowered to 64 MiB.** The other half of item 28c,
 measured alongside the full-mode cap in patch 32 and declined. The curve says
@@ -1717,57 +1804,43 @@ see "Evaluated and rejected". The short version is that `resize()` never returns
 capacity, so a thread that runs full mode is already holding more than the fast
 cap and lowering it allocates nothing.
 
-### 31. Winning-rank backup and masked table matching — ⭐⭐⭐⭐⭐ — **from DDS §6.1-6.3 and [Ginsberg]**
+### 31. ~~Winning-rank backup and masked table matching~~ — ⭐⭐⭐⭐⭐ — **31a done, patch 36; 31b refuted; from DDS §6.1-6.3 and [Ginsberg]**
 
-**The largest structural gap between this solver and the literature, now that
-patch 30 has closed the second-largest.** The paper devotes three sections to it
-and Ginsberg's partition search is the same idea under another name.
+**Split in two by what happened to it.** 31a -- the backup machinery and the
+population measurement -- landed. 31b -- the masked table the backup was for --
+was built and refuted by counterexample. The full write-up with both
+counterexamples, the `need` histogram and the canonical-key design is in
+"Evaluated and rejected"; what follows is the short version and the part worth
+keeping in mind.
 
-**What DDS does.** During the search it records which cards won a trick *by
-rank* — the heart A that beat three hearts, but not the spade A that won a trick
-nobody could follow. Those ranks are backed up through the tree, unioned at
-cutoffs by `MergeCutoffMovesData` and across siblings by `MergeAllMovesData`.
-When the node is stored, only ranks at or above the lowest winning rank in each
-suit are recorded; everything below is masked out and matches anything. The
-paper's own example: a last two tricks that went heart A / Q / 9 / 7 and then
-spade A / diamond J / 8 / 3 could equally have gone heart A / x / x / x and
-spade x / diamond x / x / x without changing the outcome, so the entry should
-match both.
+**What landed.** During the search, record which cards won a trick *by rank* --
+the heart A that beat three hearts, but not the spade A that won a trick nobody
+could follow. Back them up: union across siblings, the cutting move alone at a
+cutoff, exactly as `MergeAllMovesData` and `MergeCutoffMovesData` do. Read off
+`need`, the truncation level an entry would require. `--rank-stats` prints the
+histogram; the search is byte-identical with it off.
 
-**What this solver does instead.** `statekey.hpp` compresses ranks to relative
-ones — which is Chang's idea and is where most of the collapsing comes from —
-but it records the owner of *every* live card, two bits each. Two positions
-differing only in which hand holds an irrelevant deuce are different entries.
-DDS makes them one.
+**What did not, and the one-sentence reason.** *A card's rank can matter without
+that card ever winning a trick by rank.* The criterion in §6.1 is an
+under-approximation, and the counterexample is small enough to hold in the head:
+give the opponent ♥KQJT against ♥KQJ2 with the same distribution and the same
+top three heart slots, and the ♥T changes the value while never taking a trick.
 
-**Why it transfers.** The backup argument preserves the winner of every
-remaining trick, and both of this solver's objectives are functions of the trick
-winners alone: `MODE_FAST`'s value is how many of them are the nil bidder, and
-`MODE_FULL`'s packed value is that plus how many are the pair's. So the
-soundness argument carries over unchanged. This is the *rank truncation* lever
-item 29 names in passing via BIS's "cards beyond the three lowest are not
-dangerous" heuristic, and it is the only lever on this list that acts on the
-state space rather than on the search order.
+**What the paper's retrieval problem turned out to be worth solving anyway.**
+§6.3's masked linear scan exists because a probing position does not know which
+mask to look itself up under. It does not need to: canonicalise the don't-care
+region -- sort its owner bits -- and the masked key is exactly hashable, so the
+probe stays one hash and one bucket instead of a scan over 125 entries. That
+part of the design is sound and is written down in the rejection entry, because
+the next person to want a coarser key should not have to rediscover it. It is
+the *criterion* that failed, not the retrieval.
 
-**What it costs, and why it is not a session's work.** The table stops being a
-hash of an exact key. A masked entry cannot be found by hashing the position,
-because the position does not know which mask it should be looked up under, so
-retrieval becomes: index exactly on the suit distribution, then linear-scan the
-candidates applying each one's stored mask. DDS says so explicitly and describes
-the trade — a 48-bit distribution hashed to 8 bits, a flat list scanned
-linearly, 125 entries per distribution overwritten cyclically. §6.3's
-four-ranks-at-a-time comparison vector exists to make that scan bearable.
-
-**And patch 30 is the caution to read it against.** A linear scan under masks is
-a *more* expensive lookup than the one this solver just found was too expensive
-to run mid-trick. The entries it finds are worth more, so the arithmetic is not
-the same arithmetic — but the thing to measure first is not the hit rate. It is
-nodes per second.
-
-*Cheap first step, if this is picked up:* the backup machinery alone, with the
-existing exact-key table, and an instrument counting how many probes would have
-matched a masked entry. That is a population measurement in the shape this file
-keeps asking for, and it costs no table redesign.
+**And the population would not have paid.** At 13 cards, 57.8% of live owner
+slots still need pinning, and the entries coarse enough to truncate sit near the
+leaves: `need <= 3` covers 96.5% of entries at 8 cards remaining and 22.8% at
+16. Masks are coarse where subtrees are cheap. This is the same shape items 15,
+28 and 34 found, and it is now the fourth independent time that a lever with a
+large theoretical class has come back concentrated in the shallow end.
 
 ### 32. An adversarial nil-set proof — ⭐⭐⭐ — **from DDS §4**
 
@@ -2361,27 +2434,40 @@ say so.
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 29b (single-suit) → 31 (winning ranks) → 9 → 32 → 10 → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 29b (single-suit) → 9 → 32 → 10 → measure → 11..14
 ```
 
-**Item 29b is next**, item 34 having been built and refuted. What that costs the
-plan is worth stating: the two largest remaining items are now 31 and 29b, and
-neither has a measured target the way 34 appeared to. The lesson from 34 is to
-get one before building, not after -- its own decisive number, the 73% floor
-under an oracle seed, took twenty minutes and would have closed the item without
-writing a driver at all.
+**Item 29b is next**, and it is now the largest remaining item outright: 34 was
+built and refuted, and 31 has followed it. Item 31 was taken out of order, ahead
+of 29b, and the ordering argument that put it second was right for the wrong
+reason -- it said 31's first honest step was a population measurement, and the
+population measurement is indeed what closed it, but a counterexample closed it
+first and cost less. **The lesson 34 taught was to get a number before building;
+31 adds a second: get a counterexample before getting a number.** The two
+positions that refuted 31b differ in one card and could have been found by a
+randomised differential in an afternoon, against the several sessions the full
+canonical-key build took. A soundness lever earns a property test before it
+earns an implementation.
+
+That test is worth naming precisely, because it is what the corpus could not do.
+Restricting coarse entries to exact nodes passed all 560 oracle-pinned
+positions, and passed 900 random deals at two truncation levels, and was *still*
+unsound -- it showed up only at the most aggressive truncation, twice in 700
+deals. **A corpus pass is evidence about the corpus.** Where a change claims two
+positions have the same value, the thing to run is a generator that hunts for a
+pair that do not.
 
 *What the old text said, kept for the record.* It followed because full mode at 13 cards is the slowest thing left and
 because patch 31 is its prerequisite in fact if not in form: a cheaper node makes
 a repeated-probe driver affordable, and the support count that makes bisection
 tractable at all is now written down.
 
-Item 31 is sequenced after 29b rather than before it because 29b is a bounded
-piece of work with a measured target and 31 is a table redesign whose first
-honest step is a population measurement. Item 35 sits after it as the cheapest
-thing on the list that has not been tried. Item 32 sits lower still: its
-population is unmeasured, and the shape of this file's last several results is
-that unmeasured populations are usually small.
+Item 31 was sequenced after 29b rather than before it because 29b is a bounded
+piece of work with a measured target and 31 was a table redesign whose first
+honest step is a population measurement. It got taken first anyway, and is now
+closed -- 31a landed, 31b refuted. Item 32 sits lower still: its population is
+unmeasured, and the shape of this file's last several results is that unmeasured
+populations are usually small.
 
 `⊘` is item 5: closed without being built, because it had no population. **Patch
 22 gave it one** — narrowing full mode's window is precisely the condition its

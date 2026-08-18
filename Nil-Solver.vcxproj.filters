@@ -35,6 +35,9 @@
     <ClInclude Include="src\nil\position.hpp">
       <Filter>Header Files\nil</Filter>
     </ClInclude>
+    <ClInclude Include="src\nil\ranks.hpp">
+      <Filter>Header Files\nil</Filter>
+    </ClInclude>
     <ClInclude Include="src\nil\rules.hpp">
       <Filter>Header Files\nil</Filter>
     </ClInclude>

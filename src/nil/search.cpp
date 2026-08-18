@@ -31,6 +31,12 @@ TranspositionTable& shared_table() {
     return table;
 }
 
+// The winning-rank histogram, thread-local for the same reason the table is.
+RankMaskStats& rank_mask_stats_storage() {
+    static thread_local RankMaskStats stats;
+    return stats;
+}
+
 // Stand-ins for "no window at all", used by MODE_FULL.  No value the objective
 // can produce comes within several orders of magnitude of either, so every
 // cutoff test in search() is dead on that path: full mode is still exhaustive
@@ -101,6 +107,12 @@ struct Ctx {
     std::uint8_t tt_tag = TAG_NONE;  // which objective this solve's values are on
     std::uint64_t nodes = 0;
     TranspositionTable* tt = nullptr;  // null when the caller turned it off
+
+    // WINNING-RANK BACKUP (roadmap item 31).  Off by default and inert when
+    // off: the essential-set argument threaded through search() is null unless
+    // this is set, and every merge is guarded on it.  See nil/ranks.hpp.
+    bool track_ranks = false;
+    RankMaskStats* rank_stats = nullptr;
 };
 
 // Any legal move, for a static cutoff to hand back.  Both proofs in bounds.hpp
@@ -301,7 +313,67 @@ CardId nil_bidder_discard(const State& st, int nil_seat, Hand moves) {
     return highest_card(losing & suit_mask(best_suit));
 }
 
+// TRACK is a template parameter rather than a flag, and that is a measurement
+// rather than a preference.  Carried as a runtime pointer -- an extra argument
+// on a hot recursive function, a null test at every return path and a
+// zero-initialised Hand per move -- the backup cost 4-8% of wall time on three
+// workloads WITH THE FEATURE OFF, which is a price the search gets nothing for.
+// Two instantiations make the off path compile to exactly what it was.
+template <bool TRACK>
+int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta,
+                [[maybe_unused]] Hand* essential);
+template <bool TRACK>
+int value_after_impl(Ctx& ctx, const State& st, CardId card, int alpha, int beta,
+                     State* next_out, [[maybe_unused]] Hand* essential);
+
+// The dispatchers.  One branch, taken once per entry into the search rather
+// than once per node: the recursion below calls its own instantiation directly.
 int search(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta);
+int value_after(Ctx& ctx, const State& st, CardId card, int alpha, int beta, State* next_out);
+
+// ---------------------------------------------------------------------------
+// WHAT THE STATIC RETURNS ACTUALLY READ
+// ---------------------------------------------------------------------------
+// Every path out of search() that does not recurse owes its caller an essential
+// set: the cards whose ranks its answer depended on.  For the two proofs in
+// bounds.hpp that is not "the whole position", and being exact about it matters
+// -- a set that is too wide at a leaf is too wide at every ancestor.
+//
+// nil_cannot_be_forced reads, per non-spade suit the nil bidder holds, whether
+// every card it holds is below every outstanding one.  Pin the OUTSTANDING
+// cards of that suit and the condition survives: the nil bidder's own cards are
+// then the only thing left to fill the unpinned slots below, and how many of
+// them there are is the suit distribution, which statekey.hpp keeps exactly.
+// Condition 1 (no spades) and the "nobody else holds it" branch of condition 2
+// are distribution facts and need no rank pinned at all.
+inline Hand ranks_read_by_safety_proof(const Hand hands[4], int nil_seat) {
+    const Hand mine = hands[nil_seat];
+    const Hand outstanding = relevant_cards(hands, NO_CARD) & ~mine;
+    Hand read = 0;
+    for (int suit = SUIT_HEARTS; suit <= SUIT_CLUBS; ++suit) {
+        if (mine & suit_mask(suit)) read |= outstanding & suit_mask(suit);
+    }
+    return read;
+}
+
+// nil_must_take_a_trick walks the spades downwards and stops at the first of
+// the nil bidder's cards that runs short of covers.  Nothing below that card is
+// ever looked at, so nothing below it needs pinning.
+inline Hand ranks_read_by_set_proof(const Hand hands[4], int nil_seat) {
+    const Hand live = relevant_cards(hands, NO_CARD) & suit_mask(SUIT_SPADES);
+    const Hand mine = hands[nil_seat] & suit_mask(SUIT_SPADES);
+    const Hand theirs = live & ~mine;
+    int held = 0;
+    int above = 0;
+    for (Hand bit = card_bit(make_card(SUIT_SPADES, 14)); bit; bit >>= 1) {
+        if (mine & bit) {
+            if (++held > above) return live & ~(bit - 1);  // this card and everything above
+        } else if (theirs & bit) {
+            ++above;
+        }
+    }
+    return live;  // the proof did not fire; the caller does not use this
+}
 
 // Apply `card` at `st`.  Returns what the trick banked -- zero unless this card
 // completed one -- and writes the child position to `next`.
@@ -340,10 +412,35 @@ int advance(const Ctx& ctx, const State& st, CardId card, State& next) {
 // and the two cases collapse into one line.  The early return stays guarded on
 // the trick actually completing, because that is the condition its argument is
 // written for and folding it in would rest on beta never reaching zero.
-int value_after(Ctx& ctx, const State& st, CardId card, int alpha, int beta, State* next_out) {
+template <bool TRACK>
+int value_after_impl(Ctx& ctx, const State& st, CardId card, int alpha, int beta, State* next_out,
+                     [[maybe_unused]] Hand* essential) {
     State next;
     const int gained = advance(ctx, st, card, next);
     if (next_out) *next_out = next;
+
+    // WON BY RANK (DDS 6.1).  A completed trick contributes its winner to the
+    // essential set exactly when a second card of the WINNER'S suit was played
+    // to it -- that is what makes the comparison a rank comparison.  A spade
+    // ruffing alone wins whatever its rank; a lead nobody could follow wins
+    // whatever its rank; both leave the essential set alone, and both are the
+    // paper's own example.
+    [[maybe_unused]] Hand trick_essential = 0;
+    if constexpr (TRACK) {
+      if (st.trick_len == 3) {
+        const CardId played[4] = {st.trick[0], st.trick[1], st.trick[2], card};
+        int win = 0;
+        for (int i = 1; i < 4; ++i) {
+            if (beats(played[i], played[win])) win = i;
+        }
+        const int win_suit = card_suit(played[win]);
+        int followers = 0;
+        for (int i = 0; i < 4; ++i) {
+            if (card_suit(played[i]) == win_suit) ++followers;
+        }
+        if (followers >= 2) trick_essential = card_bit(played[win]);
+      }
+    }
 
     if (st.trick_len == 3 && ctx.gains_nonnegative && gained >= beta) {
         // This trick alone has already carried the line to beta, and no later
@@ -362,17 +459,28 @@ int value_after(Ctx& ctx, const State& st, CardId card, int alpha, int beta, Sta
         // window, and no probe that finds an entry ever fails to be answered by
         // it.  The pruning is free of the usual cost of bounded entries, and
         // Solution::tt_partial staying at zero is what checks it.
+        //
+        // The claim is "this trick alone has reached beta", and this trick is
+        // the whole of what witnesses it.
+        if constexpr (TRACK) *essential = trick_essential;
         return gained;
     }
 
     CardId ignored;
     // The child is asked about the value of the REST of the hand, so the window
     // it has to beat is this one less what the trick just banked.
-    return gained + search(ctx, next, ignored, alpha - gained, beta - gained);
+    Hand child_essential = 0;
+    const int value = gained + search_impl<TRACK>(ctx, next, ignored, alpha - gained,
+                                                  beta - gained, &child_essential);
+    if constexpr (TRACK) *essential = trick_essential | child_essential;
+    return value;
 }
 
-int search(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta) {
+template <bool TRACK>
+int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta,
+                [[maybe_unused]] Hand* essential) {
     ++ctx.nodes;    best_move = NO_CARD;
+    if constexpr (TRACK) *essential = 0;
     if (st.empty()) return 0;
 
     // LAST TRICK.  Chang's `if (tricks_left == 1) return LastTrick(sp)`, which
@@ -408,6 +516,18 @@ int search(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta) {
             if (winner == ctx.nil_seat) gained += ctx.primary_weight + ctx.tertiary_weight;
             if (((winner ^ ctx.nil_seat) & 1) == 0) gained += ctx.secondary_weight;
             best_move = played[0];
+            // The same by-rank test value_after() applies to every other trick.
+            // `winner` is a seat, so the winning CARD is the one at that seat's
+            // offset from the leader.
+            if constexpr (TRACK) {
+                const CardId won = played[(winner - st.leader) & 3];
+                const int win_suit = card_suit(won);
+                int followers = 0;
+                for (int i = 0; i < 4; ++i) {
+                    if (card_suit(played[i]) == win_suit) ++followers;
+                }
+                if (followers >= 2) *essential = card_bit(won);
+            }
             return gained;
         }
     }
@@ -431,6 +551,8 @@ int search(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta) {
                 // the value of this subtree is zero exactly, and it is returned
                 // as an exact value whatever window was asked about.
                 best_move = first_legal_move(st);
+                if constexpr (TRACK)
+                    *essential = ranks_read_by_safety_proof(st.hands, ctx.nil_seat);
                 return 0;
             }
         } else if (beta <= 1 && nil_must_take_a_trick(st.hands, ctx.nil_seat)) {
@@ -443,6 +565,7 @@ int search(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta) {
             // the code rather than of a fact about the window that some later
             // item could quietly change.
             best_move = first_legal_move(st);
+            if constexpr (TRACK) *essential = ranks_read_by_set_proof(st.hands, ctx.nil_seat);
             return 1;
         }
     }
@@ -546,10 +669,14 @@ int search(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta) {
                 const int hi = span < 0 ? 0 : span;
                 if (hi <= alpha) {
                     best_move = first_legal_move(st);
+                    if constexpr (TRACK)
+                        *essential = ranks_read_by_safety_proof(st.hands, ctx.nil_seat);
                     return hi;
                 }
                 if (lo >= beta) {
                     best_move = first_legal_move(st);
+                    if constexpr (TRACK)
+                        *essential = ranks_read_by_safety_proof(st.hands, ctx.nil_seat);
                     return lo;
                 }
             }
@@ -567,6 +694,7 @@ int search(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta) {
                 const int lo = per_nil + worst_partner;
                 if (lo >= beta) {
                     best_move = first_legal_move(st);
+                    if constexpr (TRACK) *essential = ranks_read_by_set_proof(st.hands, ctx.nil_seat);
                     return lo;
                 }
             }
@@ -604,6 +732,17 @@ int search(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta) {
             // pruning is that not every stored fact is enough.
             if (const TTEntry* hit = ctx.tt->probe(key, hash, ctx.tt_tag, alpha, beta)) {
                 best_move = from_relative(hit->move, profile);
+                // The answer is the stored subtree's, so the essential set is
+                // its too.  It rides in the bound byte as ONE number applied to
+                // all four suits rather than four -- see tt.hpp for why there is
+                // no room for the vector, and why one number is the safe way to
+                // be short of room.
+                if constexpr (TRACK) {
+                    KeepVector keep = 0;
+                    const int need = bound_need(hit->bound);
+                    for (int su = 0; su < 4; ++su) keep = keep_set(keep, su, need);
+                    *essential = keep_to_essential(keep, profile);
+                }
                 return hit->value;
             }
         }
@@ -633,6 +772,16 @@ int search(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta) {
 
     int best = 0;
     bool have_best = false;
+
+    // MERGING (DDS 6.2).  Two rules, and the difference between them is the
+    // difference between a value and a bound.  A node that looks at every move
+    // is claiming a value and every move it looked at is part of why --
+    // MergeAllMovesData unions the lot.  A node that cuts off is claiming only
+    // which side of the window the value falls on, and ONE move witnesses that;
+    // MergeCutoffMovesData keeps that move's set and discards the siblings.
+    [[maybe_unused]] Hand all_moves_essential = 0;
+    [[maybe_unused]] Hand cut_move_essential = 0;
+    bool cut_off = false;
 
     // ORDERING (item 6a).  One card lifted out of the mask and searched first;
     // everything else keeps the canonical ascending order it always had.  That
@@ -709,7 +858,13 @@ int search(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta) {
             card = take_lowest(moves);
         }
 
-        const int value = value_after(ctx, st, card, alpha, beta, nullptr);
+        Hand move_essential = 0;
+        const int value =
+            value_after_impl<TRACK>(ctx, st, card, alpha, beta, nullptr, &move_essential);
+        if constexpr (TRACK) {
+            all_moves_essential |= move_essential;
+            cut_move_essential = move_essential;
+        }
 
         if (!have_best || (maximizing ? value > best : value < best)) {
             have_best = true;
@@ -733,8 +888,16 @@ int search(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta) {
         // will never choose this node once it is this bad; symmetrically at a
         // minimiser reaching alpha.  Either way the moves not looked at cannot
         // change the answer the parent came for.
-        if (maximizing ? best >= beta : best <= alpha) break;
+        if (maximizing ? best >= beta : best <= alpha) {
+            cut_off = true;
+            break;
+        }
     }
+    // The move that reached beta is the move that just ran: the test runs after
+    // every move, so an earlier one that had already reached it would have
+    // broken then.  `best` therefore came from this move, and this move's set is
+    // the whole witness the bound needs.
+    if constexpr (TRACK) *essential = cut_off ? cut_move_essential : all_moves_essential;
 
     if (keyed) {
         const RelMove rel = best_move == NO_CARD ? REL_NO_MOVE : to_relative(best_move, profile);
@@ -745,12 +908,48 @@ int search(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta) {
         // maximiser (narrowing never moves beta there) and best <= alpha_asked
         // at a minimiser, so a cut node can never be recorded as the bound
         // belonging to the other side.
-        const std::uint8_t bound = best <= alpha_asked  ? BOUND_UPPER
-                                   : best >= beta_asked ? BOUND_LOWER
-                                                        : BOUND_EXACT;
-        ctx.tt->store(key, hash, best, rel, profile.total, bound, ctx.tt_tag);
+        const std::uint8_t kind = best <= alpha_asked  ? BOUND_UPPER
+                                  : best >= beta_asked ? BOUND_LOWER
+                                                       : BOUND_EXACT;
+
+        // `need` is the largest number of top slots the backed-up winning ranks
+        // require pinned in any one suit -- the truncation level a masked table
+        // would have had to give this entry.  It rides in the bound byte's spare
+        // bits so a node ANSWERED by this entry can tell its own parent which of
+        // its cards were essential; without it a table hit would have to report
+        // the whole position, and two boundary probes in three are hits.
+        //
+        // Boundaries only, because the essential set is a set of cards LIVE at
+        // this node, and mid-trick it also carries the winner of the trick in
+        // progress, which is in nobody's hand.  A mid-trick entry keeps the
+        // "everything pinned" default, which is the safe direction.
+        int need = BOUND_NEED_MAX;
+        if constexpr (TRACK) {
+            if (st.trick_len == 0) {
+                const KeepVector keep = essential_to_keep(*essential, profile);
+                need = keep_need(keep);
+                if (ctx.rank_stats) ctx.rank_stats->record(keep, profile.total);
+            }
+        }
+        ctx.tt->store(key, hash, best, rel, profile.total, pack_bound(kind, need), ctx.tt_tag);
     }
     return best;
+}
+
+int search(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta) {
+    if (ctx.track_ranks) {
+        Hand essential = 0;
+        return search_impl<true>(ctx, st, best_move, alpha, beta, &essential);
+    }
+    return search_impl<false>(ctx, st, best_move, alpha, beta, nullptr);
+}
+
+int value_after(Ctx& ctx, const State& st, CardId card, int alpha, int beta, State* next_out) {
+    if (ctx.track_ranks) {
+        Hand essential = 0;
+        return value_after_impl<true>(ctx, st, card, alpha, beta, next_out, &essential);
+    }
+    return value_after_impl<false>(ctx, st, card, alpha, beta, next_out, nullptr);
 }
 
 // Both modes set up identically: weights into the context, then the shared
@@ -827,6 +1026,12 @@ void configure(Ctx& ctx, int nil_seat, const SearchOptions& opts,
     // makes it moot.
     ctx.narrow_window = opts.narrow_window;
     ctx.tt_tag = opts.mode == MODE_FAST ? TAG_FAST : TAG_FULL;
+
+    // The measurement arm.  Nothing below reads the histogram when it is off,
+    // and the `essential` pointer threaded through search() is null in that
+    // case, so every merge in the tree is a branch that is never taken.
+    ctx.track_ranks = opts.track_rank_masks;
+    if (ctx.track_ranks) ctx.rank_stats = &rank_mask_stats_storage();
 
     const std::size_t table_mb =
         opts.tt_megabytes == TT_AUTO ? TT_DEFAULT_MEGABYTES : opts.tt_megabytes;
@@ -1165,6 +1370,10 @@ bool solve(const Position& pos, int nil_seat, const SearchOptions& opts, Solutio
 }
 
 void release_transposition_table() { shared_table().resize(0); }
+
+const RankMaskStats& rank_mask_stats() { return rank_mask_stats_storage(); }
+
+void reset_rank_mask_stats() { rank_mask_stats_storage() = RankMaskStats(); }
 
 bool solve_moves(const Position& pos, int nil_seat, const SearchOptions& opts, Solution& out,
                  std::vector<MoveScore>& moves_out, std::string& err) {
