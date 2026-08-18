@@ -46,3 +46,4 @@ __pycache__/
 /Nil-Solver/x64/Release
 /Nil-Solver/x64/Debug
 /bench-history.csv
+/.idea
