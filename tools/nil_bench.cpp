@@ -372,6 +372,9 @@ void usage(const char* argv0) {
               << "                    (same answer, many more nodes; full mode only)\n"
               << "  --no-ordering     try moves in canonical order rather than a\n"
               << "                    promising-first one (fast mode only)\n"
+              << "  --no-target-bounds  do not answer a node from the reachable range\n"
+              << "                    of the tricks left (same answer, more nodes;\n"
+              << "                    full mode only)\n"
               << "  --tt-all-plies    consult the transposition table at every ply,\n"
               << "                    not only at a trick boundary (same answer,\n"
               << "                    and much slower)\n"
@@ -417,6 +420,9 @@ std::string memo_label(const nil::SearchOptions& opts) {
     // control arm here moves node counts in BOTH directions depending on the
     // deal, so a history that merged the two groups would read as noise.
     if (!opts.tt_boundaries_only) suffix += "+ttallplies";
+    // Full mode only: the bound is inert in fast mode, so the suffix there
+    // would split one history into two groups holding identical numbers.
+    if (!opts.target_bounds && opts.mode == nil::MODE_FULL) suffix += "+notarget";
     if (!opts.narrow_window && opts.mode == nil::MODE_FULL) suffix += "+nonarrow";
     if (!opts.presolve_window && opts.mode == nil::MODE_FULL) suffix += "+nopresolve";
     if (!opts.canonical_pv && opts.mode == nil::MODE_FULL) suffix += "+ordered";
@@ -498,6 +504,8 @@ int main(int argc, char** argv) {
             opts.last_trick_eval = false;
         } else if (arg == "--tt-all-plies") {
             opts.tt_boundaries_only = false;
+        } else if (arg == "--no-target-bounds") {
+            opts.target_bounds = false;
         } else if (arg == "--no-narrow") {
             opts.narrow_window = false;
         } else if (arg == "--no-presolve") {

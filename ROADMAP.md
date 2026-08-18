@@ -38,6 +38,7 @@ expensive node. Read items 11 and 31 in that light.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ✅ | ~~`TargetReached`: the reach bound on the tricks left~~ | patch 31 | the direction of DDS §2's check this search never had -- *tricks won plus tricks left cannot reach the target*. A trick is worth `per_nil` to the bidder, `per_partner` to the cover and nothing to either opponent, so a subtree with `t` tricks left is worth `per_nil*n + per_partner*p` over `n + p <= t`: linear over a simplex, extremes at its vertices, **no cards read at all**. **−22.4% nodes at 13 cards** and at 12, −9.2% at 11, −11.4% on the corpus; 1.11x to 1.33x wall. Fires on 3.1-11.2% of trick-boundary nodes, nine tenths of it on `lo >= beta`. `MODE_FAST` byte-identical and provably so. All 560 oracle-pinned values AND principal variations reproduce |
 | ✅ | ~~Transposition table confined to trick boundaries~~ | patch 30 | the paper's rule — *positions stored always consist of completed tricks* — which this solver never followed, because the key was built to describe a mid-trick position too. Building that key is O(live cards) and three nodes in four are mid-trick, so the table's own cost was most of the per-node cost of the search. Hit rates say what it bought: **62-70% at a boundary against 5-11% one ply in**. **2.3x to 3.6x less wall time at 11 to 13 cards** and faster at every size measured, on **2.79x the throughput**. Nodes move both ways — −22.8% on seed 11, +31.4% on seed 3, **−2.5% across all forty 13-card deals** — and that is the result, not noise. Answer-neutral by construction: a memo half-declined changes duration and nothing else, and all 560 oracle-pinned values AND principal variations reproduce |
 | ✅ | ~~Static bounds spent in `MODE_FULL`~~ | patch 29 | the two proofs settle a fast node because that mode's value IS the nil trick count; full mode's value also carries the pair's tricks, so the same proof yields a fail-soft BOUND, returned only when it already clears the window. **−6.8% nodes on the corpus** (339,573 -> 316,333), **−5.7% across all three 13-card seeds** (293,841,428 -> 277,143,048), ranging from −15.9% on seed 3 to +0.2% on seed 42. Spends `MODE_FULL`'s node-count fixed point, held since patch 8. Values and principal variations pinned unmoved by test, corpus and oracle |
 | ✅ | ~~Table cap raised for `MODE_FULL`~~ | patch 28b | full mode has not saturated at 13 cards, and the 512 MiB cap was cutting it off mid-curve. Raised to 1024: **−11.8% nodes on a hard 13-card deal** (115,623,205 -> 101,960,580), −0.55% on an easy one, and 2048 buys a further 2.1% which is where it flattens. Nothing below 13 cards changes -- the doubling schedule already returns 512 at 12 -- so this is a pure high-card-count change. Node counts only: whether they buy wall time depends on the host's memory hierarchy |
@@ -71,6 +72,52 @@ Patch 7 measured against the 560-position corpus:
 | 6 | 1,163,389 | 44,309 | 26.3x |
 
 Total corpus wall time 29.9 s to 0.77 s.
+
+Patch 31, measured against `--no-target-bounds` on the same binary, arms
+interleaved, median of three for wall and exact for nodes:
+
+| workload | no reach bound | with it | nodes | wall |
+|---|---:|---:|---:|---:|
+| corpus 560, full | 647 / 0.09 ms | 573 / 0.08 ms | **−11.4%** | 1.12x |
+| random 9c x20, seed 1, full | 424,019 / 30.3 ms | 384,058 / 26.6 ms | −9.4% | 1.14x |
+| random 11c x6, seed 3, full | 17,751,351 / 1,657 ms | 16,122,184 / 1,492 ms | −9.2% | 1.11x |
+| random 12c x6, seed 3, full | 8,100,780 / 689 ms | 6,283,002 / 529 ms | **−22.4%** | **1.30x** |
+| random 13c x3, seed 3, full | 46,475,507 / 4,159 ms | 36,058,565 / 3,138 ms | **−22.4%** | **1.33x** |
+
+`MODE_FAST` is unchanged **byte for byte** -- 35,560,973 nodes on both arms at
+13 cards -- and that is a proof rather than a measurement. There the value is
+the nil bidder's trick count, so the reachable range is `[0, t]` against a
+window that is `[0, 1]` at every node: `hi <= alpha` needs `t <= 0`, which is
+the empty position handled at the top of search(), and `lo >= beta` needs
+`0 >= 1`.
+
+**The fire rate, and which direction pays.** Counted at every full-mode
+trick-boundary node:
+
+| workload | boundary nodes | `hi <= alpha` | `lo >= beta` | rate |
+|---|---:|---:|---:|---:|
+| corpus 560 | 94,429 | 5,317 | 3,444 | 9.28% |
+| random 11c x6, seed 3 | 31,669,350 | 30,930 | 960,342 | 3.13% |
+| random 12c x6, seed 3 | 13,791,760 | 174,813 | 821,472 | 7.22% |
+| random 13c x3, seed 3 | 44,132,630 | 241,860 | 4,697,788 | 11.19% |
+
+**It is a minimiser's bound, thirty to one.** `lo >= beta` is the nil side
+being told that even winning every remaining trick with the cover partner
+cannot beat the line already found; `hi <= alpha` is the opponents being told
+the same in reverse. The first outnumbers the second by 31:1 at 11 cards and
+19:1 at 13, and the corpus is the only workload where they are comparable. The
+asymmetry is the objective's: `secondary` is `-k` and `per_nil` is `k*k + 1 -
+k`, so the reachable range is lopsided -- it stretches far below zero and much
+further above it, and a lopsided range clears a narrow window from its short
+end first.
+
+**Node savings run two to three times the fire rate**, which is what a bound
+that prunes a subtree rather than a node should do, and the ratio is the reason
+this was worth building despite firing on one node in ten.
+
+**Sequenced ahead of item 34 on purpose.** A tighter node-level bound makes
+every null-window probe cheaper, so it is worth having before the repeated-search
+driver rather than after it.
 
 Patch 30, measured against `--tt-all-plies` on the same binary, arms
 interleaved within one loop so the container's clock drift cancels, median of
@@ -1319,6 +1366,101 @@ Control arm `--tt-all-plies` on both tools, `NIL_FLAG_TT_ALL_PLIES` across the
 ABI, `+ttallplies` on the bench memo column, and `corpus_tt_plies` /
 `corpus_tt_plies_fast` on every build.
 
+### 33. ~~`TargetReached`: the reach bound on the tricks left~~ — ⭐⭐⭐⭐ — **done, patch 31; from DDS §2**
+
+DDS runs `TargetReached` at the start of every trick and tests both directions:
+tricks already won against the target, and tricks already won *plus tricks left
+to play* against the target. This search had the first only, and only at the
+last ply -- the `gained >= beta` return in `value_after()`. The second is the
+one that says *even the best case from here cannot reach the window*, and it
+reads no cards.
+
+The window arriving at a node is already residual, because `value_after()`
+shifts it by what the path has banked, so comparing the reachable range against
+it IS Chang's "currently won plus tricks left against target" with the
+subtraction done on the way down instead of the way up.
+
+**Why it was not available before.** `MODE_FULL` searched between sentinels
+until patch 22 and had no window to test anything against; patch 23 then gave
+its root a real one. This item is the third thing to fall out of that pair, after
+patches 25 and 29, and it is the cheapest of the three.
+
+**Why it lives at a trick boundary and not at every ply.** The bound depends
+only on `t`, which does not change within a trick, so a mid-trick node tests the
+same `hi` and `lo` its boundary parent already tested -- against a window that
+narrowing may have tightened in between. At a maximiser that tightening cannot
+help: `hi` bounds every child, so `alpha` reaching `hi` means the parent already
+holds the maximum and has cut. Symmetrically at a minimiser. This is reasoning
+rather than measurement and is flagged as such, but it is the same reasoning
+that made patch 30's ply-1 finding structural rather than empirical.
+
+Control arm `--no-target-bounds` on both tools, `NIL_FLAG_NO_TARGET_BOUNDS`
+across the ABI, `+notarget` on full-mode bench rows, and `corpus_target` with
+`--check-pv` on every build.
+
+### 34. Repeated null-window search for `MODE_FULL` — ⭐⭐⭐⭐⭐ — **from DDS §1 and [Plaat et al.]**
+
+§1 closes by noting that the boolean search does not say how many tricks a side
+takes, and that DDS gets the count by *repeated calls* with different targets.
+The reference list carries Plaat, Schaeffer, Pijls and de Bruin 1996, which is
+the MTD(f) lineage. Patch 23 took the first step -- one `MODE_FAST` presolve
+seeding `beta` -- and stopped there.
+
+**The header comment in `search.hpp` is what has been blocking this, and it is
+wrong in a specific way.** It says the packed scalar "spans thousands of values,
+so a window on it excludes almost nothing", and that is true of the RANGE and
+false of the SUPPORT. From `advance()` and `objective_weights()` the value is
+`per_nil * n + per_partner * c` with `n + c <= t`, and the file already notes
+that `gcd(k*k + 1, k) = 1` so no two `(n, c)` pairs collide. The reachable set
+is therefore one value per pair:
+
+    (t + 1)(t + 2) / 2  =  105 values at 13 cards
+
+not thousands. Bisecting 105 values is about seven null-window probes, and a
+null-window probe on the packed objective is a fast-mode-shaped search with real
+cutoffs rather than the wide one full mode runs today.
+
+**Most of the risk is already retired.** Patch 22 made full mode's cutoff
+reachable at all. Patch 25 made the principal variation canonical independently
+of move order, which is what a driver that re-searches at several windows would
+otherwise threaten. Patch 29 established that a fail-soft bound returned on a
+cutoff is acceptable there, and patch 31 gives every probe a cheaper node.
+
+**What to watch.** The PV still has to come out of an exact-valued search, so the
+driver converges to the value and then walks the line at the sentinel window,
+which is what `walk_pv()` already does. And the probe count is the whole game:
+seven probes that each cost a fifth of the current search is a win, seven that
+each cost half is not. Measure the probe count before optimising anything about
+it.
+
+Full mode at 13 cards is the slowest thing left in the solver, so this is the
+largest remaining lever bar item 31.
+
+### 35. Suit-mixed move ordering — ⭐⭐⭐ — **from DDS §5**
+
+The paper puts the best card of *each* suit at the head of the list, not one
+card overall: *"If the hand-to-play is the trick-leading hand or is void in the
+suit played by leading hand, the card with the highest weight for each present
+suit will get a high additional bonus weight."* It gives the reason too, and the
+reason is a hedge rather than a bet -- *"another aim is to have good mixture of
+moves (i.e. not all cards from the same suit first) in case the heuristic is not
+good for a particular set-up."*
+
+This solver promotes exactly one card and then enumerates what is left by
+`take_lowest`, which is suit-major ascending: every spade, then every heart, and
+so on. That is precisely the shape §5 warns against.
+
+**Two seats are unmined.** The opponents on lead take one promotion from 6b and
+then fall back to suit-major. The cover partner is unordered entirely -- and 6c
+was rejected because it *spent the cover unconditionally*, which a round-robin
+enumeration does not do at all. A hedge and a bet fail differently, and the
+measurement that killed 6c does not carry over to this.
+
+**Cheap, and it fits the existing machinery.** The promotion mechanism already
+lifts a card out of the mask; this lifts the lowest of each suit in rotation.
+Note the constraint patch 30 sharpened: this runs inside the move loop on every
+ordered node, so the thing to measure first is nodes per second, not nodes.
+
 ### 28c. The `MODE_FULL` table cap, re-measured — ⭐⭐⭐ — **next**
 
 Patch 28b raised the full-mode cap from 512 MiB to 1024 on the strength of full
@@ -1449,6 +1591,15 @@ the nil bidder took one of them.
 
 Rises to ⭐⭐⭐⭐ in `nil_already_set` mode, where the problem degenerates to
 ordinary trick maximization and the standard analysis applies directly.
+
+**And that is the one place in the DDS paper that transfers verbatim.** Every
+other borrowing on this list had to be reinterpreted for a question about one
+SEAT rather than one SIDE -- the quick-trick check became the two proofs in
+bounds.hpp, `LaterTricks` became item 32, the move-ordering weights became item
+6's four seat-specific rules. With the nil already broken there is nothing to
+reinterpret: §3's QuickTricks and §4's LaterTricks are the algorithms this mode
+wants, as written. The work is transcription, not translation, which makes it
+the cheapest ⭐⭐⭐⭐ on the list per unit of thinking.
 
 ### 9. Suit and void analysis — ⭐⭐⭐
 
@@ -1985,18 +2136,26 @@ say so.
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 28c → 29b (single-suit) → 31 (winning ranks) → 9 → 32 → 10 → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c → 34 (MTD(f)) → 29b (single-suit) → 31 (winning ranks) → 35 → 9 → 32 → 10 → measure → 11..14
 ```
 
-**Patch 30 moved 28c to the front and it should be taken next.** It is a
-constant, its measurement is already in hand, and it takes CGA's resident set
-from 2 GiB across two workers to 512 MiB. Nothing else on the list is that cheap.
+**28c should be taken next.** It is a constant, its measurement is already in
+hand, and it takes CGA's resident set from 2 GiB across two workers to 512 MiB.
+Nothing else on the list is that cheap. It should be re-measured once more first,
+because patch 31 moved the tree again and the saturation point may have moved
+with it.
+
+Item 34 follows because full mode at 13 cards is the slowest thing left and
+because patch 31 is its prerequisite in fact if not in form: a cheaper node makes
+a repeated-probe driver affordable, and the support count that makes bisection
+tractable at all is now written down.
 
 Item 31 is sequenced after 29b rather than before it because 29b is a bounded
 piece of work with a measured target and 31 is a table redesign whose first
-honest step is a population measurement. Item 32 sits low for the same reason
-and lower still: its population is unmeasured, and the shape of this file's last
-several results is that unmeasured populations are usually small.
+honest step is a population measurement. Item 35 sits after it as the cheapest
+thing on the list that has not been tried. Item 32 sits lower still: its
+population is unmeasured, and the shape of this file's last several results is
+that unmeasured populations are usually small.
 
 `⊘` is item 5: closed without being built, because it had no population. **Patch
 22 gave it one** — narrowing full mode's window is precisely the condition its

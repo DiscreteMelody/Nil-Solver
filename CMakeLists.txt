@@ -241,6 +241,17 @@ if(NIL_SOLVER_BUILD_TESTS)
                      --slowest 0)
     set_tests_properties(corpus_tt_plies PROPERTIES TIMEOUT 900)
 
+    # The control arm for the reach bound.  It returns a fail-soft bound rather
+    # than an exact value, so what it must not move is the value and the
+    # principal variation -- which the sentinel window at every PV step already
+    # guarantees, and which this asserts rather than assumes.  Full mode only:
+    # the bound is inert in fast mode, where the reachable range is [0, t]
+    # against a window of [0, 1].
+    add_test(NAME corpus_target
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --no-target-bounds --check-pv --quiet
+                     --slowest 0)
+    set_tests_properties(corpus_target PROPERTIES TIMEOUT 900)
+
     add_test(NAME corpus_tt_plies_fast
              COMMAND nil_bench --corpus "${NIL_CORPUS}" --mode fast --tt-all-plies --quiet
                      --slowest 0)

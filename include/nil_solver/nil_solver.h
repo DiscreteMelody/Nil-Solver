@@ -242,6 +242,21 @@ extern "C" {
  * moves in both directions, which is what the roadmap entry is about. */
 #define NIL_FLAG_TT_ALL_PLIES 0x8000u
 
+/* Do not answer a MODE_FULL node from arithmetic when the reachable range of
+ * the remaining tricks already falls outside the window.
+ *
+ * A trick is worth a fixed amount to the nil bidder, another fixed amount to
+ * the cover partner and nothing to either opponent, so a subtree with t tricks
+ * left has a value range computable from t alone -- no cards are read.  When
+ * that whole range sits on one side of the window the node is answered with a
+ * fail-soft bound.  This is the direction of DDS's TargetReached that the
+ * solver did not have.
+ *
+ * Inert under NIL_FLAG_FAST_MODE, whose reachable range is [0, t] against a
+ * window of [0, 1].  Same value and same principal variation; diagnostic and a
+ * control arm. */
+#define NIL_FLAG_NO_TARGET_BOUNDS 0x10000u
+
 /* Pass to nil_set_table_size to go back to choosing the table size from the
  * position, which is what a process that never calls it already gets.  The
  * size follows tricks_remaining and mode: a four-card endgame takes 32 MiB and

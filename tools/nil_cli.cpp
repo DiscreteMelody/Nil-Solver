@@ -66,6 +66,9 @@ void usage(const char* argv0) {
         << "                          fast mode only)\n"
         << "  --no-last-trick         search the forced final trick instead of\n"
         << "                          evaluating it (same answer, more nodes)\n"
+        << "  --no-target-bounds      do not answer a node from the reachable\n"
+        << "                          range of the tricks left (same answer,\n"
+        << "                          more nodes; full mode only)\n"
         << "  --tt-all-plies          consult the transposition table at every\n"
         << "                          ply, not only at a trick boundary (same\n"
         << "                          answer, and much slower)\n"
@@ -158,6 +161,8 @@ int main(int argc, char** argv) {
             opts.last_trick_eval = false;
         } else if (arg == "--tt-all-plies") {
             opts.tt_boundaries_only = false;
+        } else if (arg == "--no-target-bounds") {
+            opts.target_bounds = false;
         } else if (arg == "--no-narrow") {
             opts.narrow_window = false;
         } else if (arg == "--no-presolve") {

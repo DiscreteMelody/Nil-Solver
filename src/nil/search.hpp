@@ -283,6 +283,26 @@ struct SearchOptions {
     // On by default, off as the control arm.
     bool presolve_window = true;
 
+    // Answer a MODE_FULL node from arithmetic alone when the best or worst the
+    // remaining tricks could possibly be worth already falls outside the
+    // window.  DDS section 2's TargetReached, whose second direction -- "tricks
+    // won plus tricks left to play cannot reach the target" -- this search
+    // never had.
+    //
+    // A trick is worth per_nil to the nil bidder, per_partner to the cover
+    // partner and nothing to either opponent, so a subtree with t tricks left
+    // is worth per_nil * n + per_partner * p over n + p <= t.  That is linear
+    // over a simplex and its extremes are at its vertices, so the whole bound
+    // is a popcount and two multiplications, and it reads no cards at all.
+    //
+    // Inert in MODE_FAST by construction, not by measurement: there the value
+    // is the nil bidder's trick count, so the reachable range is [0, t] against
+    // a window that is [0, 1] at every node, and neither test can fire above
+    // the empty position.
+    //
+    // On by default, off as the control arm.
+    bool target_bounds = true;
+
     // Consult the transposition table only at a trick boundary, never in the
     // middle of a trick.
     //

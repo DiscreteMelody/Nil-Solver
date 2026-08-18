@@ -49,6 +49,7 @@ struct Ctx {
     bool collapse = true;      // one move per class of rank-equivalent cards
     bool last_trick = true;    // evaluate a forced final trick instead of searching it
     bool tt_boundaries_only = true;  // consult the table only at a trick boundary
+    bool target_bounds = true;       // the arithmetic reach bound; MODE_FULL only
     // True when no remaining trick can lower the value, i.e. every weight is
     // non-negative.  That makes what is already banked a lower bound on the
     // whole subtree, which is the one fact the "already past beta" cutoff in
@@ -445,6 +446,67 @@ int search(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta) {
         }
     }
 
+    // TARGET REACHED.  The other half of Chang's and DDS's check, which this
+    // search has only ever had one side of.  DDS runs it at the start of every
+    // trick and tests both directions -- tricks already won against the target,
+    // and tricks already won PLUS tricks left to play against the target -- and
+    // returns without looking at a card either way.
+    //
+    // What this solver had is the first direction only, and only at the last
+    // ply: the `gained >= beta` return in value_after().  The second direction
+    // is the one that says "even the best case from here cannot reach the
+    // window", and it needs no cards at all.
+    //
+    // THE BOUND.  From advance(): a trick won by the nil bidder scores
+    // primary + tertiary + secondary, one won by the cover partner scores
+    // secondary, and a trick won by either opponent scores nothing.  So with n
+    // tricks to the nil bidder and p to the partner the subtree is worth
+    //
+    //     value = per_nil * n + per_partner * p,   n >= 0, p >= 0, n + p <= t
+    //
+    // which is linear over a simplex, so its extremes are at the three
+    // vertices: (0,0), (t,0) and (0,t).  Nothing about the deal enters into it.
+    // The window arriving here is already residual -- value_after() shifts it
+    // by what the path has banked -- so comparing against it IS Chang's
+    // "currently won plus tricks left against target", with the subtraction
+    // done on the way down instead of the way up.
+    //
+    // FAIL-SOFT AND ONE-SIDED.  `hi` is an upper bound on the value and is
+    // returned only when it is at or below alpha, `lo` a lower bound returned
+    // only at or above beta; both are exactly what a fail-soft cutoff owes its
+    // caller.  A node that fires is a node whose parent had already found
+    // something this subtree cannot beat.
+    //
+    // WHY IT IS AHEAD OF THE PROOFS.  It is cheaper than either of them -- one
+    // popcount and four comparisons against no cards -- and a node it answers
+    // wants neither a probe nor a store, for the same reason the proofs below
+    // do not take one.
+    //
+    // INERT IN MODE_FAST, and provably.  There the value is the nil bidder's
+    // trick count, so per_nil is 1 and per_partner is 0: `hi` is t and `lo` is
+    // 0 against a window that is [0, 1] at every node.  `hi <= alpha` needs
+    // t <= 0, which is the empty position handled at the top, and `lo >= beta`
+    // needs 0 >= 1.  The gate is therefore the mode rather than a measurement.
+    if (ctx.target_bounds && !ctx.value_is_nil_tricks && st.trick_len == 0) {
+        const int t = count_cards(st.hands[ctx.nil_seat]);
+        const int all_nil = (ctx.primary_weight + ctx.tertiary_weight + ctx.secondary_weight) * t;
+        const int all_partner = ctx.secondary_weight * t;
+        int hi = 0;
+        if (all_nil > hi) hi = all_nil;
+        if (all_partner > hi) hi = all_partner;
+        int lo = 0;
+        if (all_nil < lo) lo = all_nil;
+        if (all_partner < lo) lo = all_partner;
+        if (hi <= alpha) {
+            best_move = first_legal_move(st);
+            return hi;
+        }
+        if (lo >= beta) {
+            best_move = first_legal_move(st);
+            return lo;
+        }
+    }
+
     // THE SAME TWO PROOFS, SPENT IN MODE_FULL (patch 29).
     //
     // The proofs are about the PLAY -- how many tricks the nil bidder takes --
@@ -742,6 +804,7 @@ void configure(Ctx& ctx, int nil_seat, const SearchOptions& opts, int tricks_rem
     ctx.order_moves = opts.order_moves;
     ctx.last_trick = opts.last_trick_eval;
     ctx.tt_boundaries_only = opts.tt_boundaries_only;
+    ctx.target_bounds = opts.target_bounds;
     // Canonicalise whenever the caller wants the canonical line -- and also,
     // whether they asked or not, whenever the value cannot pin nil_tricks on its
     // own.  That is exactly `primary + tertiary == 0`: the coefficient the value

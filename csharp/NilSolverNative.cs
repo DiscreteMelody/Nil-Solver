@@ -131,7 +131,18 @@ namespace NilSolver
         /// the solver had before patch 30, which is 2.3x to 3.6x slower at 11 to 13
         /// cards. Same value and same principal variation; diagnostic and a control arm.
         /// </summary>
-        TtAllPlies = 0x8000u
+        TtAllPlies = 0x8000u,
+
+        /// <summary>
+        /// Do not answer a full-mode node from the reachable range of the tricks left.
+        /// A trick is worth a fixed amount to the nil bidder, another to the cover
+        /// partner and nothing to either opponent, so a subtree with t tricks left has a
+        /// value range computable from t alone; when that whole range sits on one side
+        /// of the window the node is answered without reading a card. Worth 9-22% of
+        /// nodes in full mode. Same value and same principal variation; diagnostic and a
+        /// control arm. Inert under <see cref="FastMode"/>.
+        /// </summary>
+        NoTargetBounds = 0x10000u
     }
 
     /// <summary>Return codes. <see cref="Ok"/> is success; everything else is negative.</summary>
