@@ -39,10 +39,25 @@
 // TWO MODES
 // ---------
 // Everything above describes the FULL objective, and it is what you want when
-// the answer has to say who took which trick.  It is also close to unprunable.
-// The packed scalar spans thousands of values, so a window on it excludes
-// almost nothing, and every tie on the primary has to be explored to the bottom
-// anyway or the secondary comes out wrong.
+// the answer has to say who took which trick.  It used to be close to
+// unprunable, and this comment used to explain why with an argument that is
+// half true: the packed scalar SPANS thousands of values, so a window on it
+// excludes almost nothing, and every tie on the primary has to be explored to
+// the bottom anyway or the secondary comes out wrong.
+//
+// The span is not the support.  A trick is worth per_nil to the bidder,
+// per_partner to the cover and nothing to either opponent, so the value is
+// per_nil * n + per_partner * c over n + c <= t, and no two (n, c) pairs
+// collide -- gcd(k*k + 1, k) = 1.  The reachable set is therefore
+// (t + 1)(t + 2) / 2 values: 105 at thirteen cards, not thousands.  Patch 22
+// made the window bite anyway and patch 23 seeds it, so full mode does prune
+// now, and the paragraph above should be read as history rather than as a
+// description of this code.
+//
+// The correction is recorded rather than quietly applied because it is what
+// ROADMAP item 34 was built on, and 34 was refuted -- bisecting 105 values
+// converges in six or seven probes exactly as predicted, and still loses.  See
+// "Evaluated and rejected".
 //
 // The nil question itself is boolean, and a boolean question wants a boolean
 // search.  MODE_FAST zeroes the secondary and tertiary weights and gives the

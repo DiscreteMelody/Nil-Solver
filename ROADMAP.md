@@ -38,6 +38,7 @@ expensive node. Read items 11 and 31 in that light.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ⊘ | Repeated null-window search for `MODE_FULL` (item 34) | patch 34 | **built as an experiment, measured and rejected.** The mechanism works exactly as predicted -- the reachable value set is 105 wide at 13 cards, bisection converges in 6-7 probes, and convergence costs **26% fewer nodes than the incumbent wide search at 13 cards**. It is still net negative, because a table left full of BOUNDS cannot answer the exact-value walk the principal variation and the replay check require: recovering those costs a further 33.5M nodes on the same three deals, for **119.6M against the incumbent's 108.2M -- 1.11x worse**. The floor is measured too, and it is not far below: seeded with the true value by oracle, merely *verifying* it costs 73% of the incumbent on the deal that dominates the workload. Nothing shipped |
 | ✅ | ~~One fixed table size, and the memo column repaired~~ | patch 33 | `TT_AUTO` was a schedule that sized the table to the position. `resize()` reuses the allocation when the size is unchanged and **re-zeroes the whole table when it is not**, and a hand played out asks for a smaller table every trick or two -- so a worker following a live game walked the schedule down and back up every deal at **51.3 ms per hand** of pure memset, charged against solves that are under a millisecond at the small end. One size for every hand and both modes makes every resize after the first the free branch (0.00001 ms). Node counts are unchanged or slightly better; fast mode at 13 cards goes 3,492,640 -> 3,485,739 because 256 MiB is more table than the old fast cap. Also fixes the history file's `memo` column, which printed the `TT_AUTO` sentinel as `18446744073709551615mb` and put every auto-sized run in a group of its own |
 | ✅ | ~~`MODE_FULL` table cap lowered to 256 MiB~~ | patch 32 | patch 28b raised it to 1024 because full mode had not saturated at 13 cards, and that was true of the tree it measured. Patches 30 and 31 rebuilt that tree twice, and what is left saturates at a quarter of the cap: **1.18% more nodes for 1.24x less wall time**, across seven 13-card deals on three seeds, interleaved. Also **takes `NilSolverPool` from 2 GiB to 512 MiB** across its two workers, because the table is `thread_local` and never shrinks below a size it has held. The fast-mode half of the item was measured and declined -- see "Evaluated and rejected" |
 | ✅ | ~~`TargetReached`: the reach bound on the tricks left~~ | patch 31 | the direction of DDS §2's check this search never had -- *tricks won plus tricks left cannot reach the target*. A trick is worth `per_nil` to the bidder, `per_partner` to the cover and nothing to either opponent, so a subtree with `t` tricks left is worth `per_nil*n + per_partner*p` over `n + p <= t`: linear over a simplex, extremes at its vertices, **no cards read at all**. **−22.4% nodes at 13 cards** and at 12, −9.2% at 11, −11.4% on the corpus; 1.11x to 1.33x wall. Fires on 3.1-11.2% of trick-boundary nodes, nine tenths of it on `lo >= beta`. `MODE_FAST` byte-identical and provably so. All 560 oracle-pinned values AND principal variations reproduce |
@@ -450,6 +451,53 @@ every node rather than one in four. Net wall time came out *worse*, which is the
 same verdict and the same shape as side-suit canonicalization above. Worth
 re-measuring only if move ordering (item 6) changes the node mix enough that the
 proof starts firing on a different population.
+
+**Repeated null-window search for `MODE_FULL` (item 34).** Built as an
+experiment, measured, and rejected. The item's arithmetic was right and its
+conclusion was wrong, which is worth separating.
+
+*What was right.* The support of the packed value is `(t+1)(t+2)/2` -- 78
+distinct values at 11 cards and 105 at 13, not the thousands the `search.hpp`
+header used to imply. Bisection over that set converged in **3-6 probes at 11
+cards and 6-7 at 13**, which is `log2(support)` to the digit. The presolve
+collapses it further on a nil-safe deal: `root_beta` excludes every value with
+`n >= 1`, leaving 12 values and 3-4 probes.
+
+*What was wrong.* Convergence is cheaper than the incumbent, and not by enough
+to pay for what it destroys.
+
+| workload | incumbent | bisection converge | after +exact+PV |
+|---|---:|---:|---:|
+| 11c x6, seed 3, full | 96,733,104 | 86,644,215 (1.12x) | 112,035,262 (**1.16x worse**) |
+| 13c x3, seed 3, full | 108,175,696 | 86,115,202 (1.26x) | 119,571,000 (**1.11x worse**) |
+
+**A converged MTD run leaves the table full of bounds, and this solver needs an
+exact value and a line.** `walk_pv()` re-searches each step and `replay_pv()`
+re-derives the trick counts from it and checks them against the value -- that is
+the project's strongest correctness evidence and it is not negotiable. A
+BOUND_LOWER entry saying "at least 465" does not answer a step that needs to know
+the value is exactly 465, so the walk re-searches, and on these three deals that
+cost 33.5M nodes on top of convergence.
+
+*The floor was measured too, and it is close.* Given the true value by oracle --
+a seed no driver can have -- merely proving it costs 65,720,110 nodes against
+the incumbent's 90,172,097 on `r11-0004`, the deal that owns that workload.
+**73%.** So the absolute ceiling of this family, with a free perfect seed and
+free PV recovery, is about 1.37x on the deal that matters, and every real driver
+pays for both.
+
+*Why the ceiling is that low, which is the part to carry forward.* Patches 22
+and 23 already took most of what MTD(f) offers. Narrowing means the root's alpha
+rises to near the true value after its first child, so every later child is
+already searched with a near-null window; the presolve already excludes half the
+support before the first node. What is left for a repeated-probe driver to
+capture is the first child's window and the ordering of the probes, and that is
+worth 12-26% -- against a PV recovery that costs more.
+
+*What would revive it.* Only a way to recover an exact value and a canonical
+line from a bound-valued table without re-searching. That is not a tweak to this
+item; it is a different item, and item 31's winning-rank entries would not supply
+it either.
 
 **The fast-mode table cap, lowered to 64 MiB.** The other half of item 28c,
 measured alongside the full-mode cap in patch 32 and declined. The curve says
@@ -1503,7 +1551,7 @@ Control arm `--no-target-bounds` on both tools, `NIL_FLAG_NO_TARGET_BOUNDS`
 across the ABI, `+notarget` on full-mode bench rows, and `corpus_target` with
 `--check-pv` on every build.
 
-### 34. Repeated null-window search for `MODE_FULL` — ⭐⭐⭐⭐⭐ — **from DDS §1 and [Plaat et al.]**
+### ~~34. Repeated null-window search for `MODE_FULL`~~ — ⊘ **built, measured and rejected in patch 34**
 
 §1 closes by noting that the boolean search does not say how many tricks a side
 takes, and that DDS gets the count by *repeated calls* with different targets.
@@ -1538,8 +1586,20 @@ seven probes that each cost a fifth of the current search is a win, seven that
 each cost half is not. Measure the probe count before optimising anything about
 it.
 
-Full mode at 13 cards is the slowest thing left in the solver, so this is the
-largest remaining lever bar item 31.
+**This entry rated it five stars and that was wrong.** The write-up above is
+kept because its arithmetic held up exactly -- the support count, the probe
+count, all of it -- and because the reason the conclusion failed is the useful
+part. See "Evaluated and rejected" for the measurements. The short version:
+patches 22 and 23 had already captured most of what this offers, and a converged
+run leaves a table of bounds that cannot answer the exact-value walk the PV and
+the replay check require, so the recovery costs more than the convergence
+saves.
+
+The star rating was assigned from the size of the prize rather than from any
+measurement, on a list whose whole discipline is the opposite. Full mode at 13
+cards being the slowest thing left made it *look* like the largest remaining
+lever; being the slowest thing left is not evidence that a particular lever
+moves it.
 
 ### 35. Suit-mixed move ordering — ⭐⭐⭐ — **from DDS §5**
 
@@ -2241,11 +2301,17 @@ say so.
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 (MTD(f)) → 29b (single-suit) → 31 (winning ranks) → 35 → 9 → 32 → 10 → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 29b (single-suit) → 31 (winning ranks) → 35 → 9 → 32 → 10 → measure → 11..14
 ```
 
-**Item 34 is next**, and it is the first item since patch 22 with a claim on the
-same order as that one. It follows because full mode at 13 cards is the slowest thing left and
+**Item 29b is next**, item 34 having been built and refuted. What that costs the
+plan is worth stating: the two largest remaining items are now 31 and 29b, and
+neither has a measured target the way 34 appeared to. The lesson from 34 is to
+get one before building, not after -- its own decisive number, the 73% floor
+under an oracle seed, took twenty minutes and would have closed the item without
+writing a driver at all.
+
+*What the old text said, kept for the record.* It followed because full mode at 13 cards is the slowest thing left and
 because patch 31 is its prerequisite in fact if not in form: a cheaper node makes
 a repeated-probe driver affordable, and the support count that makes bisection
 tractable at all is now written down.
