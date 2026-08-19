@@ -384,6 +384,7 @@ void usage(const char* argv0) {
               << "                    evaluating it (same answer, more nodes)\n"
               << "  --tt-stats        also report transposition table behaviour\n"
               << "  --rank-stats      also report the winning-rank mask histogram\n"
+              << "  --nilset-stats    also report forced-trick proof coverage\n"
               << "  --quiet           only print the summary and any failures\n"
               << "\n"
               << "--check-pv compares against the PV a corpus row recorded, so it means\n"
@@ -460,6 +461,7 @@ int main(int argc, char** argv) {
     bool check_moves = false;
     bool tt_stats = false;
     bool rank_stats = false;
+    bool nilset_stats = false;
     // --mode both: solve every position in the other mode as well and require
     // the two to agree on nil_fails.
     bool cross_check_modes = false;
@@ -559,6 +561,9 @@ int main(int argc, char** argv) {
             check_moves = true;
         } else if (arg == "--check-pv") {
             check_pv = true;
+        } else if (arg == "--nilset-stats") {
+            nilset_stats = true;
+            opts.track_nilset = true;
         } else if (arg == "--rank-stats") {
             rank_stats = true;
             opts.track_rank_masks = true;
@@ -670,6 +675,7 @@ int main(int argc, char** argv) {
     // The winning-rank histogram accumulates across every solve in the run, so
     // it starts from zero here rather than per position.
     if (rank_stats) nil::reset_rank_mask_stats();
+    if (nilset_stats) nil::reset_nil_set_stats();
 
     for (const Item& item : items) {
         nil::Solution sol;
@@ -913,6 +919,27 @@ int main(int argc, char** argv) {
                           << "     pruned answer held against an unpruned, oracle-checked one.)\n";
             }
         }
+    }
+
+    if (nilset_stats) {
+        const nil::NilSetStats& ns = nil::nil_set_stats();
+        const auto pc = [&](std::uint64_t part) {
+            std::ostringstream os;
+            os << std::fixed << std::setprecision(2)
+               << (ns.boundaries ? 100.0 * static_cast<double>(part) /
+                                       static_cast<double>(ns.boundaries)
+                                 : 0.0)
+               << "%";
+            return os.str();
+        };
+        std::cout << "\n  forced-trick proof at trick boundaries (roadmap item 32)\n"
+                  << "    boundaries with a nil spade  " << commas(ns.boundaries) << "\n"
+                  << "    proof fires today            " << std::setw(12)
+                  << commas(ns.proof_fires) << "   " << pc(ns.proof_fires) << "\n"
+                  << "    adversarial ceiling adds     " << std::setw(12)
+                  << commas(ns.ceiling_only) << "   " << pc(ns.ceiling_only) << "\n"
+                  << "    neither                      " << std::setw(12) << commas(ns.neither)
+                  << "   " << pc(ns.neither) << "\n";
     }
 
     if (rank_stats) {

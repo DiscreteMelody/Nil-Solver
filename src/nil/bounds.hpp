@@ -212,6 +212,49 @@ inline int cover_deficit_depth(Hand mine, Hand theirs, int suit) {
 // does not make the nil bidder set when a higher one is sitting on the table
 // waiting to be dumped on.  Hence: trick boundaries only, and no trick to pass
 // in.
+// MEASUREMENT ONLY (roadmap item 32).  Deliberately permissive: this is a
+// CEILING on how often an adversarial nil-set proof could fire, not the proof.
+//
+// nil_must_take_a_trick counts covers by Hall: the j-th of the nil bidder's
+// spades from the top needs j outstanding spades above it, and every spade not
+// in the nil bidder's hand counts the same regardless of who holds it.  That is
+// the wrong question.  A cover only covers if it lands on the SAME TRICK as the
+// card it beats, and the hand holding it chooses when to spend it -- an
+// opponent holding ♠AQJ against ♠K2 will never lead the ace, because the nil
+// bidder would simply throw the king under it.  It leads the jack, takes the
+// deuce, then leads the queen into a bare king.  Hall calls that holding
+// covered.  It is forced.
+//
+// So ask it the way DDS §4 asks LaterTricks: can the side that did not lead
+// force a trick later, against best defence.  The opponents lead their m
+// smallest spades in increasing order; the nil bidder must follow each time and
+// survives the j-th lead only if it still holds a spade below it, which needs
+// at least j of its spades below that lead.
+//
+// WHY THIS OVER-FIRES, and why that is the point.  It ignores the partner's
+// spades entirely, and the partner is cooperative -- it can overtake and rescue
+// a trick the nil bidder would otherwise win.  It also ignores whether the
+// opponents can actually get the lead often enough, and whether spades are
+// broken.  Every one of those makes it claim "forced" where the real proof
+// could not, so the count it produces is an UPPER BOUND on the population.  If
+// the ceiling is small the item closes without anyone writing the real proof;
+// only if the ceiling is large is the sound version worth the work.
+inline bool nil_forced_ceiling(const Hand hands[4], int nil_seat) {
+    const Hand mine = hands[nil_seat] & suit_mask(SUIT_SPADES);
+    if (!mine) return false;
+    const int m = count_cards(mine);
+    const Hand opp =
+        (hands[(nil_seat + 1) & 3] | hands[(nil_seat + 3) & 3]) & suit_mask(SUIT_SPADES);
+    int j = 0;
+    for (Hand bit = card_bit(make_card(SUIT_SPADES, 2));
+         bit <= card_bit(make_card(SUIT_SPADES, 14)); bit <<= 1) {
+        if (!(opp & bit)) continue;
+        if (++j > m) break;  // the nil bidder has run out of spades to be forced with
+        if (count_cards(mine & (bit - 1)) < j) return true;
+    }
+    return false;
+}
+
 inline bool nil_must_take_a_trick(const Hand hands[4], int nil_seat) {
     const Hand mine = hands[nil_seat] & suit_mask(SUIT_SPADES);
     // The overwhelmingly common case for a nil bidder, and one mask test.

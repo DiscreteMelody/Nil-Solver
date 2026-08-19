@@ -38,6 +38,7 @@ expensive node. Read items 11 and 31 in that light.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ⊘ | Adversarial nil-set proof (item 32) | patch 38 | **measured, not built.** The population is large -- 54% of the positions where today's forced-trick proof stays silent are genuinely forced and an adversarial spade count spots them -- but no static count reaches it soundly. The most conservative variant tested at **96.2% precision**, which is a bug that passes testing rather than a proof. Counterexample and the full table in item 32; `--nilset-stats` and `tools/nilset_population.py` shipped so the next attempt starts from evidence |
 | ✅ | ~~Winning-rank backup and the `need` histogram~~ | patch 36 | DDS §6.1-6.2 and Ginsberg's partition search: record which cards won a trick **by rank**, back them up through the tree, and read off `need` -- how many of a suit's live cards, counted from the top, an entry would have to pin. Merges follow the paper: union across siblings, **the cutting move alone** at a cutoff. `need` rides in `TTEntry::bound`'s spare bits, so the entry stays **24 bytes** and every node count this project has banked is unmoved -- verified byte-identical, 39,701 fast and 325,975 full on the corpus. Off by default, and **free when off**, which took a second attempt: carried as a runtime pointer -- an extra argument on a hot recursive function, a null test at every return path and a zero-initialised `Hand` per move -- it cost **4-8% of wall time with the feature disabled** on three workloads, patched slower in 11 of 11 interleaved paired runs against a pristine binary. Making `TRACK` a template parameter and instantiating both paths returns it to parity (11-card fast: 68.6 ms pristine against 67.6 ms patched, patched faster in 4 of 5). `--rank-stats` turns it on. Shipped once with an open-coded `__builtin_clz` that built clean on GCC and broke the MSVC leg of `scripts/build-and-test.cmd` outright, when `cards.hpp` already carried the four-compiler `highest_card()` (fixed, patch 37) -- **this repo has two toolchains and a Linux-only build is half a verification.** What it bought is the number item 31 was blocked on, and that number **closed the item** -- see 31b in "Evaluated and rejected" |
 | ⊘ | Masked table matching by canonical key (item 31b) | patch 36 | **built, refuted by counterexample.** DDS §6.3 stores a mask beside each entry and linear-scans; folding the mask into the key instead -- sorting the don't-care region's owner bits, which is a normal form for the multiset a mask leaves visible -- keeps the probe at one hash and one bucket, and would have been strictly better than the paper's scheme. It is **unsound**, and not marginally: a card's rank can matter without that card ever winning a trick by rank, so the criterion under-approximates. Two reproducible counterexamples below. Nothing shipped |
 | ✅ | ~~Suit-mixed move ordering~~ | patch 35 | DDS §5 puts the best card of **each** present suit at the head of the move list, and says why: *"good mixture of moves (i.e. not all cards from the same suit first) in case the heuristic is not good for a particular set-up"*. This loop promoted one card and then enumerated suit-major -- every spade, then every heart -- which is the shape the paper warns against. A hedge, not a bet: the same moves are searched and nothing is spent to decide the order, which is what separates it from the rejected 6c. **−5.4% to −9.0% nodes at 11 and 13 cards in fast mode, −7.9% at 11 in full.** It *costs* nodes on easy deals (+11.5% at 9 cards) and wall time is a much weaker result than nodes -- see the measurement section, which is the honest version |
@@ -1842,62 +1843,56 @@ leaves: `need <= 3` covers 96.5% of entries at 8 cards remaining and 22.8% at
 28 and 34 found, and it is now the fourth independent time that a lever with a
 large theoretical class has come back concentrated in the shallow end.
 
-### 32. An adversarial nil-set proof — ⭐⭐⭐ — **from DDS §4**
+### 32. An adversarial nil-set proof — ⭐⭐⭐ → ⭐⭐ — **population measured, patch 38; proof NOT built, and the reason is worth reading**
 
 `nil_must_take_a_trick` proves the nil bidder wins a trick *whatever all four
-players do*. Fast mode does not need that much. Its window is `[0, 1]` and a
-return of 1 is a lower bound on the game value, so the opponents — who are the
-maximisers, and who want the nil broken — may be assumed hostile rather than
-cooperative. The proof discharges a strictly heavier obligation than the search
-asks of it, which is why it fires on 0.98% of trick-boundary nodes.
+players do*. Fast mode does not need that much: its window is `[0, 1]`, a return
+of 1 is a lower bound, and the opponents are the maximisers, so they may be
+assumed hostile rather than cooperative. DDS §4's `LaterTricks` is the same
+question asked the right way round.
 
-DDS's `LaterTricks` is the same question asked the right way round: *can the
-side that did not lead force a trick later*, against best defence.
+**The population is real.** At 7 cards, over positions where the nil bidder holds
+a spade: the proof fires today on 31.5%, and of the 68.5% where it stays silent,
+**54.0% are genuinely forced and an adversarial spade count spots them.** That is
+a large addressable population and it is why this item was worth measuring
+rather than guessing at.
 
-**A case the current proof misses.** The nil bidder holds ♠K and ♠2; one
-opponent holds ♠A, ♠Q and ♠J; nobody else has a spade. Hall's condition holds —
-one spade above the K, three above the 2 — so `cover_deficit_depth` reports the
-holding covered and the proof stays silent. The nil is forced anyway. The
-opponent leads ♠J. If the nil bidder plays the K it wins the trick immediately,
-because the ace is in the leader's own hand and cannot appear on the same trick;
-if it plays the 2, the ♠Q lead that follows leaves it holding nothing but the K.
-**Cover cards concentrated in one hand can only be spent one per trick, and the
-hand that holds them chooses the order.** The current count treats three covers
-in one hand as interchangeable with three covers in three hands, and they are
-not.
+**And no static spade count reaches it soundly.** Three variants, against the
+solver as ground truth (`nil_fails` in MODE_FAST *is* "the opponents can force a
+trick", so the truth is exact rather than sampled):
 
-Scope carefully before building. The population is the question: this fires
-where Hall holds but concentration is extreme, and nothing here has measured how
-often that is. Do that first — instrument the three-way outcome at trick
-boundaries the way the condition-1 investigation did — because a proof that is
-correct and fires on 0.1% of nodes is a correct proof nobody should ship.
+| variant | precision | population |
+|---|---|---|
+| ignore the partner's spades | 77.6% | 54.0% |
+| require the partner void in spades | **96.2%** | 10.5% |
+| let each partner spade overtake the highest nil spade below it | 89.5% | 39.7% |
 
-**It also has a second use.** Item 8 is currently downgraded on the grounds that
-quick-trick analysis bounds what a *side* takes and the nil question is about a
-*seat*. This is the seat-level version, and if it works it is what is left of
-item 8 rather than a neighbour of it.
+A proof returns a lower bound that cuts the search off. 96.2% is not a proof;
+it is a bug that passes testing. **That middle row is the most dangerous number
+on this page** -- the most conservative variant, one false alarm in twenty-six,
+and it would have survived the corpus.
 
+**The counterexample, which is the mirror of this item's own insight.**
+`N:KQ75.4.9.3 .J96.J.762 J3.5.K76.4 4.T82.2.Q5`, West bids nil holding a bare
+♠4, East is void in spades, and the nil holds. The forcing story says an
+opponent leads ♠3 and the ♠4 is stranded with no lower card to duck with. What
+it misses is that **the other opponent must follow suit too, and North holding
+♠KQ75 is compelled to play a card that beats the ♠4 and rescues the nil.** The
+item's own example is that covers concentrated in one hand can be spent only one
+per trick, which hurts the nil bidder; this is the same fact pointing the other
+way, an opponent with only high spades forced to save the nil it is trying to
+break. A pooled count cannot see either, and seeing one without the other is
+worse than seeing neither.
 
-**Downgraded: item 4 took the part of this that applies.** The nil-set proof is
-forced-trick analysis for the one seat the question is about, and the safe-nil
-proof is its complement; what is left here is the general side-level version.
+**What a sound version would have to do**, and why that is no longer ⭐⭐⭐: model
+concentration in both directions, and then model tempo -- whether the opponents
+can win enough tricks to lead spades the required number of times before the
+hand runs out. Entry analysis is a different and much larger item than a
+counting rule, and item 9's void map is a prerequisite rather than a neighbour.
 
-Weaker here than in a trick-maximizing double-dummy solver. Quick tricks bound
-"how many tricks can this side take"; the nil question is "can one trick be
-forced onto *this seat*". A side taking six tricks says nothing about whether
-the nil bidder took one of them.
-
-Rises to ⭐⭐⭐⭐ in `nil_already_set` mode, where the problem degenerates to
-ordinary trick maximization and the standard analysis applies directly.
-
-**And that is the one place in the DDS paper that transfers verbatim.** Every
-other borrowing on this list had to be reinterpreted for a question about one
-SEAT rather than one SIDE -- the quick-trick check became the two proofs in
-bounds.hpp, `LaterTricks` became item 32, the move-ordering weights became item
-6's four seat-specific rules. With the nil already broken there is nothing to
-reinterpret: §3's QuickTricks and §4's LaterTricks are the algorithms this mode
-wants, as written. The work is transcription, not translation, which makes it
-the cheapest ⭐⭐⭐⭐ on the list per unit of thinking.
+**Shipped:** `--nilset-stats`, the three-way count at trick boundaries inside a
+real search, and `tools/nilset_population.py`, which is what produced the table
+above. Anyone reopening this should start from the false alarm, not from §4.
 
 ### 9. Suit and void analysis — ⭐⭐⭐
 
@@ -2434,7 +2429,7 @@ say so.
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 29b (single-suit) → 9 → 32 → 10 → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 29b (single-suit) → 9 → 10 → measure → 11..14
 ```
 
 **Item 29b is next**, and it is now the largest remaining item outright: 34 was

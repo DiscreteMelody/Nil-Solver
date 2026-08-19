@@ -468,6 +468,14 @@ struct SearchOptions {
     // default, because it costs throughput and buys the search nothing.
     bool track_rank_masks = false;
 
+    // Count the three-way outcome of the forced-trick proof at trick
+    // boundaries: fires today, would fire only under an adversarial reading, or
+    // neither.  Roadmap item 32 asks for this population BEFORE the proof is
+    // written, and the number it produces is a ceiling -- see
+    // nil_forced_ceiling in bounds.hpp for why it over-fires on purpose.
+    // Off by default and free when off.
+    bool track_nilset = false;
+
 
     // Return the canonically lowest of the equally-best lines, rather than
     // whichever one the move ordering happened to reach first.
@@ -653,6 +661,19 @@ void release_transposition_table();
 // when nothing did.  See nil/ranks.hpp for what the numbers mean.
 const RankMaskStats& rank_mask_stats();
 void reset_rank_mask_stats();
+
+// Where the forced-trick proof stands at trick boundaries where the nil bidder
+// still holds a spade.  `both` fires today; `ceiling_only` is what an
+// adversarial proof could add AT MOST.
+struct NilSetStats {
+    std::uint64_t boundaries = 0;     // trick boundaries with a spade in the nil hand
+    std::uint64_t proof_fires = 0;    // nil_must_take_a_trick says forced
+    std::uint64_t ceiling_only = 0;   // silent today, the permissive test says forced
+    std::uint64_t neither = 0;
+};
+
+const NilSetStats& nil_set_stats();
+void reset_nil_set_stats();
 
 std::string format_pv_compact(const Solution& sol);       // "N:D2 E:DA S:D5 W:D7"
 std::string format_pv(const Position& pos, const Solution& sol);  // one line per trick

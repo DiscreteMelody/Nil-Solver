@@ -37,6 +37,11 @@ RankMaskStats& rank_mask_stats_storage() {
     return stats;
 }
 
+NilSetStats& nil_set_stats_storage() {
+    static thread_local NilSetStats stats;
+    return stats;
+}
+
 // Stand-ins for "no window at all", used by MODE_FULL.  No value the objective
 // can produce comes within several orders of magnitude of either, so every
 // cutoff test in search() is dead on that path: full mode is still exhaustive
@@ -113,7 +118,20 @@ struct Ctx {
     // this is set, and every merge is guarded on it.  See nil/ranks.hpp.
     bool track_ranks = false;
     RankMaskStats* rank_stats = nullptr;
+    NilSetStats* nilset_stats = nullptr;  // roadmap item 32, measurement only
 };
+
+// Roadmap item 32's population count.  Split out so the expression at the call
+// site stays one line: the measurement must not reshape the branch it measures.
+inline void count_nilset_outcome(NilSetStats& stats, const Hand hands[4], int nil_seat) {
+    if (nil_must_take_a_trick(hands, nil_seat)) {
+        ++stats.proof_fires;
+    } else if (nil_forced_ceiling(hands, nil_seat)) {
+        ++stats.ceiling_only;
+    } else {
+        ++stats.neither;
+    }
+}
 
 // Any legal move, for a static cutoff to hand back.  Both proofs in bounds.hpp
 // hold down EVERY line from the position, so no move is better placed than any
@@ -555,7 +573,11 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
                     *essential = ranks_read_by_safety_proof(st.hands, ctx.nil_seat);
                 return 0;
             }
-        } else if (beta <= 1 && nil_must_take_a_trick(st.hands, ctx.nil_seat)) {
+        } else if (ctx.nilset_stats
+                       ? (++ctx.nilset_stats->boundaries,
+                          count_nilset_outcome(*ctx.nilset_stats, st.hands, ctx.nil_seat),
+                          beta <= 1 && nil_must_take_a_trick(st.hands, ctx.nil_seat))
+                       : (beta <= 1 && nil_must_take_a_trick(st.hands, ctx.nil_seat))) {
             // A lower bound of one is only a legal fail-soft return when one is
             // at or above beta; below it the caller is entitled to an exact
             // value, and a nil bidder about to take three tricks would be
@@ -1032,6 +1054,7 @@ void configure(Ctx& ctx, int nil_seat, const SearchOptions& opts,
     // case, so every merge in the tree is a branch that is never taken.
     ctx.track_ranks = opts.track_rank_masks;
     if (ctx.track_ranks) ctx.rank_stats = &rank_mask_stats_storage();
+    if (opts.track_nilset) ctx.nilset_stats = &nil_set_stats_storage();
 
     const std::size_t table_mb =
         opts.tt_megabytes == TT_AUTO ? TT_DEFAULT_MEGABYTES : opts.tt_megabytes;
@@ -1374,6 +1397,10 @@ void release_transposition_table() { shared_table().resize(0); }
 const RankMaskStats& rank_mask_stats() { return rank_mask_stats_storage(); }
 
 void reset_rank_mask_stats() { rank_mask_stats_storage() = RankMaskStats(); }
+
+const NilSetStats& nil_set_stats() { return nil_set_stats_storage(); }
+
+void reset_nil_set_stats() { nil_set_stats_storage() = NilSetStats(); }
 
 bool solve_moves(const Position& pos, int nil_seat, const SearchOptions& opts, Solution& out,
                  std::vector<MoveScore>& moves_out, std::string& err) {
