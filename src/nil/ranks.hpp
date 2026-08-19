@@ -106,7 +106,7 @@ inline KeepVector essential_to_keep(Hand essential, const SuitProfile& profile) 
         if (!in_suit) continue;  // nothing in this suit mattered: keep[s] = 0
         const CardId lowest = lowest_card(in_suit);
         const std::uint32_t below = (1u << (lowest & 15)) - 1u;
-        const int slot = count_cards(profile.present[s] & below);
+        const int slot = count_cards(static_cast<Hand>(profile.present[s] & below));
         keep = keep_set(keep, s, profile.length[s] - slot);
     }
     return keep;
@@ -121,12 +121,16 @@ inline Hand keep_to_essential(KeepVector keep, const SuitProfile& profile) {
         int want = keep_of(keep, s);
         if (want <= 0) continue;
         if (want > profile.length[s]) want = profile.length[s];
-        std::uint32_t live = profile.present[s];
         // Peel from the top: the pinned region is the highest `want` slots.
+        // highest_card() rather than a bit-scan intrinsic spelled out here --
+        // cards.hpp already carries the four-compiler version of this, and an
+        // open-coded __builtin_clz compiled fine on GCC and broke the MSVC leg
+        // of the build outright.
+        Hand live = static_cast<Hand>(profile.present[s]);
         for (int i = 0; i < want && live; ++i) {
-            const int top = 31 - __builtin_clz(live);
+            const int top = highest_card(live);
             essential |= card_bit(s * 16 + top);
-            live &= ~(1u << top);
+            live &= ~(1ull << top);
         }
     }
     return essential;
