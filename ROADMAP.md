@@ -38,6 +38,7 @@ expensive node. Read items 11 and 31 in that light.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ✅ | ~~Later tricks: the opponents' and the nil side's forced trump tricks~~ | patch 39 | DDS §4 wired into patch 31's simplex. `top_spade_run()` finds the hand holding the top outstanding spade and counts its run from the top; that hand wins exactly that many tricks **down every line of play**, because each card is played eventually, one hand plays one card per trick so the tricks are distinct, spades is trump so a trick carrying a spade goes to the highest spade on it, and the only spades above it sit in the same hand. Which constraint it adds depends on whose hand it is -- three cases, three vertices each, no cards searched. **−16.73% nodes at 13 cards on seed 3** (1.396G -> 1.163G over eight deals), and the deal that dominates that workload -- 1.11 **billion** nodes, 79.8% of the tree -- takes **−19.69%**, so the gain lands on the slowest position rather than beside it. Wall follows nodes almost exactly (181,512 ms -> 150,140 ms, **1.21x**) because throughput is flat: 7.69M nodes/sec against 7.74M, i.e. the predicate is free per node. **Seed 42 gets essentially nothing** (−0.27% over eight deals, two deals slightly worse) and **11 cards is a wash** (+0.02%) -- the variance is deal-to-deal, not size-to-size, and no account of what separates them. `MODE_FAST` byte-identical and provably so. All 560 oracle-pinned values AND principal variations reproduce; 800 random deals agree with `--no-later-tricks` on value, split and PV while node counts differ on 777 of them |
 | ⊘ | Adversarial nil-set proof (item 32) | patch 38 | **measured, not built.** The population is large -- 54% of the positions where today's forced-trick proof stays silent are genuinely forced and an adversarial spade count spots them -- but no static count reaches it soundly. The most conservative variant tested at **96.2% precision**, which is a bug that passes testing rather than a proof. Counterexample and the full table in item 32; `--nilset-stats` and `tools/nilset_population.py` shipped so the next attempt starts from evidence |
 | ✅ | ~~Winning-rank backup and the `need` histogram~~ | patch 36 | DDS §6.1-6.2 and Ginsberg's partition search: record which cards won a trick **by rank**, back them up through the tree, and read off `need` -- how many of a suit's live cards, counted from the top, an entry would have to pin. Merges follow the paper: union across siblings, **the cutting move alone** at a cutoff. `need` rides in `TTEntry::bound`'s spare bits, so the entry stays **24 bytes** and every node count this project has banked is unmoved -- verified byte-identical, 39,701 fast and 325,975 full on the corpus. Off by default, and **free when off**, which took a second attempt: carried as a runtime pointer -- an extra argument on a hot recursive function, a null test at every return path and a zero-initialised `Hand` per move -- it cost **4-8% of wall time with the feature disabled** on three workloads, patched slower in 11 of 11 interleaved paired runs against a pristine binary. Making `TRACK` a template parameter and instantiating both paths returns it to parity (11-card fast: 68.6 ms pristine against 67.6 ms patched, patched faster in 4 of 5). `--rank-stats` turns it on. Shipped once with an open-coded `__builtin_clz` that built clean on GCC and broke the MSVC leg of `scripts/build-and-test.cmd` outright, when `cards.hpp` already carried the four-compiler `highest_card()` (fixed, patch 37) -- **this repo has two toolchains and a Linux-only build is half a verification.** What it bought is the number item 31 was blocked on, and that number **closed the item** -- see 31b in "Evaluated and rejected" |
 | ⊘ | Masked table matching by canonical key (item 31b) | patch 36 | **built, refuted by counterexample.** DDS §6.3 stores a mask beside each entry and linear-scans; folding the mask into the key instead -- sorting the don't-care region's owner bits, which is a normal form for the multiset a mask leaves visible -- keeps the probe at one hash and one bucket, and would have been strictly better than the paper's scheme. It is **unsound**, and not marginally: a card's rank can matter without that card ever winning a trick by rank, so the criterion under-approximates. Two reproducible counterexamples below. Nothing shipped |
@@ -1843,6 +1844,135 @@ leaves: `need <= 3` covers 96.5% of entries at 8 cards remaining and 22.8% at
 28 and 34 found, and it is now the fourth independent time that a lever with a
 large theoretical class has come back concentrated in the shallow end.
 
+### 36. ~~Later tricks: the forced trump tricks~~ — ⭐⭐⭐ — **done, patch 39; from DDS §4**
+
+Patch 31 answers a node from the tricks that are left, and reads **no cards at
+all** to do it: a trick is worth `per_nil` to the bidder, `per_partner` to the
+cover and nothing to either opponent, so a subtree with `t` tricks left is worth
+`per_nil*n + per_partner*p` over `n + p <= t`. Linear over a simplex, extremes
+at its vertices. That is its virtue and its ceiling — it has to allow every one
+of the `t` tricks to fall wherever the simplex permits, and on most positions
+some of them provably cannot move at all.
+
+**The predicate.** `top_spade_run()` returns the hand holding the highest
+outstanding spade and how many of the top spades it holds consecutively from the
+top. That hand wins at least that many of the remaining tricks **in every line
+of play**:
+
+* every card is played eventually, so each `si` is played at some trick `Ti`;
+* one hand plays one card per trick, so `T1..Tk` are **k distinct tricks**;
+* spades is trump, so a trick carrying a spade is won by the highest spade on it;
+* the only spades above `si` are `s1..s(i-1)`, which are in this same hand and
+  therefore not on trick `Ti`.
+
+**"In every line" is the load-bearing phrase, not "can force".** The simplex
+ranges over every leaf without assuming anybody plays well, so what it can
+consume is a floor that holds down every branch, good and bad alike. A bound on
+optimal play would be the wrong shape and would be unsound here.
+
+**Why one hand, anchored at the top.** Both halves are doing work:
+
+* **Split fails.** `A` and `K` in the two opponents' hands is *not* two tricks —
+  both may be void in the led suit and both may ruff the same trick, collapsing
+  the pair into one. A side-wide count is therefore conditional on play.
+* **Un-anchored fails.** A hand holding `KQ` under an outstanding `A` is
+  promised nothing; the ace plays over it.
+
+**This is not item 32 reopened, and the difference is exactly what makes it
+sound.** Item 32 had to prove that a *named seat* takes a trick, from a *pooled*
+count, and no such count reached it — its counterexample is an opponent
+compelled to play a high spade and rescue the nil. A rescuing spade still wins
+the trick for the hand that played it, which is all this counts. Confining the
+claim to a single hand steps around the concentration failure rather than into
+it, and 32's 96.2%-precision variant is what that failure looks like when it is
+not stepped around.
+
+**Three cases, one scan.** Which constraint the run adds depends on whose hand
+it is. Each is still a linear function over a triangle, so each is still three
+vertex evaluations and a min and a max:
+
+| top run held by | constraint | vertices `(n,p)` |
+|---|---|---|
+| an opponent | `n + p <= t - k` | (0,0), (t−k,0), (0,t−k) |
+| the nil bidder | `n >= k` | (k,0), (k,t−k), (t,0) |
+| the cover partner | `p >= k` | (0,k), (0,t), (t−k,k) |
+
+The opponent case alone — the one DDS §4 states — was worth **−1.2% at 13
+cards**, which is thin. The other two came free with a scan already being paid
+for and took it to −3.6% on the same workload, then −16.7% once the sample
+widened. **The nil-bidder case overlaps `nil_must_take_a_trick`**, which pins
+`n >= 1`; this pins `n >= k`, so it is strictly stronger at `k >= 2` and the
+same claim at `k = 1`.
+
+Placed **after** the untightened test rather than before it, which is a cost
+decision: a node the cheap bound already answers wants nothing more computed,
+and it answers 7–11% of boundaries at 12 and 13 cards.
+
+**`MODE_FULL` only, and inert in fast mode twice over** — the reach bound it
+rides on is gated to full mode, and a count of the *opponents'* tricks does not
+bound a value that is the nil bidder's own trick count. Verified byte-identical
+against pristine HEAD on all three 13-card seeds.
+
+#### Measurements
+
+Nodes, `MODE_FULL`, interleaved on one binary against `--no-later-tricks`:
+
+| workload | with | control | |
+|---|---:|---:|---:|
+| corpus, 560 | 281,287 | 325,975 | −13.71% |
+| 9c ×20, seed 1 | 7,556,472 | 7,772,036 | −2.77% |
+| 11c ×6, seed 3 | 89,134,281 | 89,118,687 | **+0.02%** |
+| 12c ×6, seed 3 | 35,437,172 | 35,940,769 | −1.40% |
+| **13c ×8, seed 3** | 1,162,611,881 | 1,396,170,131 | **−16.73%** |
+| 13c ×8, seed 42 | 1,705,618,332 | 1,710,273,021 | −0.27% |
+| 13c ×3, seed 11 | 232,501,536 | 234,515,537 | −0.86% |
+
+Per-deal on the two widened 13-card samples, sorted by share of the control
+tree — the column that matters is the top row of each, because that deal *is*
+the workload:
+
+| seed 3 | control nodes | share | Δ | | seed 42 | control nodes | share | Δ |
+|---|---:|---:|---:|---|---|---:|---:|---:|
+| r13-0007 | 1,114,309,779 | 79.8% | **−19.69%** | | r13-0003 | 1,216,607,188 | 71.1% | −0.38% |
+| r13-0006 | 83,913,782 | 6.0% | −0.91% | | r13-0005 | 158,457,944 | 9.3% | −0.14% |
+| r13-0005 | 78,394,930 | 5.6% | −1.96% | | r13-0004 | 96,628,902 | 5.6% | **+0.83%** |
+| r13-0000 | 66,221,283 | 4.7% | −2.74% | | r13-0007 | 96,313,898 | 5.6% | −0.06% |
+| r13-0001 | 31,745,623 | 2.3% | −30.05% | | r13-0006 | 61,614,345 | 3.6% | **+1.38%** |
+| r13-0002 | 8,484,140 | 0.6% | −4.33% | | r13-0002 | 52,134,565 | 3.0% | −0.22% |
+| r13-0004 | 7,148,117 | 0.5% | −0.05% | | r13-0001 | 26,602,674 | 1.6% | −3.11% |
+| r13-0003 | 5,952,477 | 0.4% | −2.76% | | r13-0000 | 1,913,505 | 0.1% | −24.35% |
+
+Wall, seed 3 ×8: **150,140 ms against 181,512 ms, 1.21x**, on throughput of
+7,743,489 nodes/sec against 7,691,863 — **flat, marginally in the bound's
+favour**, so wall tracks nodes (−17.3% against −16.7%) instead of giving part of
+it back. That pair is one paired run rather than interleaved medians, because
+each arm is 2.5 minutes; the `×3` workloads did get interleaved reps — seed 3
+faster in 5 of 5, seed 11 in 3 of 3, seed 42 in 3 of 5.
+
+#### The two negatives, recorded
+
+**11 cards is a wash, and the population measurement predicted the opposite.**
+A floor sweep before any code was written said 11 cards had the *largest*
+new-firing population of any size — **4.97% of trick-boundary nodes against
+3.08% at 13** — and it returned +0.02%. Same shape as several entries in
+"Evaluated and rejected": **population is a weak predictor of savings**, because
+the nodes a bound newly answers are not drawn uniformly from the nodes that cost
+anything. Anyone reading a population number in this file should discount it
+accordingly.
+
+**Seed 42 gets essentially nothing**, and two of its eight deals get *worse*
+(+0.83%, +1.38%). The three-deal samples this item was first measured on were
+misleading in both directions: they showed −11.01% on seed 3 (against −16.73%
+widened) and −1.74% on seed 42 (against −0.27% widened). **Three deals is not a
+sample at 13 cards** — one deal routinely owns 70-80% of the tree, and which
+deal that is decides the headline.
+
+There is no account of what separates a −19.69% deal from a −0.38% one. The
+variance is **deal-to-deal, not size-to-size**: the −24.35% deal on seed 42 is
+0.1% of that tree and the −19.69% deal on seed 3 is 79.8% of its own, so it is
+not that the bound only pays on cheap positions. Finding the discriminator is
+open, and would be worth more than the patch was.
+
 ### 32. An adversarial nil-set proof — ⭐⭐⭐ → ⭐⭐ — **population measured, patch 38; proof NOT built, and the reason is worth reading**
 
 `nil_must_take_a_trick` proves the nil bidder wins a trick *whatever all four
@@ -2429,11 +2559,26 @@ say so.
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 29b (single-suit) → 9 → 10 → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 36 ✅ → 29b (single-suit) → 9 ⊘ → 10 ⊘ → measure → 11..14
 ```
 
-**Item 29b is next**, and it is now the largest remaining item outright: 34 was
-built and refuted, and 31 has followed it. Item 31 was taken out of order, ahead
+**Item 29b is next, and the case for it is now measured rather than argued.** A
+node-population sweep at 11 and 13 cards (fast and full) says **31-33% of
+branching nodes exhaust their move list without cutting**, and those all-nodes
+emit **54-56% of every child search in the tree** -- ~2.9-3.1 moves each against
+~1.15 for a cut node. Ordering cannot touch them by definition. The same sweep
+says **87-91% of cutoffs already land on the first move tried**, which caps
+items 9 and 10 and every other ordering idea low enough that they are struck
+from the sequence above: whatever is left for them lives in the 9-13% of
+cutoffs that do not cut immediately, a move or two apiece. **The remaining
+headroom is in bounds that convert an all-node into a cut node, not in ordering
+that reaches a cut sooner.** Item 36 is the first withdrawal against that
+reading and it paid; 29b is the large one. In fast mode an exhausted maximiser
+node *is* "nil survives this subtree" -- exactly what `nil_cannot_be_forced`
+proves when it fires, which it does on 2.9% of boundary nodes. **The gap between
+2.9% and ~31% is 29b's target population.**
+
+34 was built and refuted, and 31 has followed it. Item 31 was taken out of order, ahead
 of 29b, and the ordering argument that put it second was right for the wrong
 reason -- it said 31's first honest step was a population measurement, and the
 population measurement is indeed what closed it, but a counterexample closed it

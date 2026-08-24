@@ -345,6 +345,19 @@ struct SearchOptions {
     // On by default, off as the control arm.
     bool target_bounds = true;
 
+    // Tighten that reach bound with the tricks the opponents cannot be denied.
+    // DDS section 4's LaterTricks: where one opponent hand holds the top
+    // outstanding spades as a run, each of them wins the trick it is played on
+    // down every line, so the simplex the bound above ranges over shrinks from
+    // n + p <= t to n + p <= t - k.
+    //
+    // MODE_FULL only, and inert in MODE_FAST twice over -- the reach bound it
+    // rides on is gated to full mode, and a count of the OPPONENTS' tricks says
+    // nothing about a value that is the nil bidder's own trick count.
+    //
+    // On by default, off as the control arm.
+    bool later_tricks = true;
+
     // Put one card from each present suit at the head of the move list, in
     // rotation, before the canonical tail.  DDS section 5, whose stated aim is
     // "good mixture of moves (i.e. not all cards from the same suit first) in

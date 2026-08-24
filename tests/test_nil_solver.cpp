@@ -1125,6 +1125,79 @@ int main(int argc, char** argv) {
         }
     }
 
+    std::cout << "Later tricks control arm\n";
+    {
+        // top_spade_run() is a soundness lever, so the units below pin the two
+        // properties the proof leans on rather than only the speed-up: the run
+        // must be TOP-ANCHORED and confined to ONE hand.  Both failures are
+        // silent -- they widen the claim without widening the bound, so the
+        // search stays correct until the day a deal exercises the gap.
+        {
+            const Position pos = make_position("N:AKQ2... 3.234.. 4..234. 5...234", "N");
+            int run = -1;
+            check("the top run is found", nil::top_spade_run(pos.hands, run),
+                  static_cast<int>(nil::parse_seat("N")));
+            check("and counted to its end", run, 3);
+        }
+        {
+            // AK split across two hands is NOT two tricks: both may be void in
+            // the led suit and both may ruff the same trick.  Only the hand
+            // holding the top spade gets counted, and only for its own run.
+            const Position pos = make_position("N:A2.23.. K3..23. 45...23 67.45..", "N");
+            int run = -1;
+            check("a split top pair names the ace's hand", nil::top_spade_run(pos.hands, run),
+                  static_cast<int>(nil::parse_seat("N")));
+            check("and stops at the king it does not hold", run, 1);
+        }
+        {
+            // Un-anchored is worth nothing: KQ under an outstanding ace may be
+            // played over, so the hand holding them is promised no trick here.
+            const Position pos = make_position("N:KQ.23.. A3..23. 45...23 67.45..", "N");
+            int run = -1;
+            check("an un-anchored holding names the ace's hand instead",
+                  nil::top_spade_run(pos.hands, run), static_cast<int>(nil::parse_seat("E")));
+            check("and counts only the ace", run, 1);
+        }
+        {
+            const Position pos = make_position("N:.A32.. .K45.. .Q67.. .J89..", "N");
+            int run = -1;
+            check("no spades left, no claim", nil::top_spade_run(pos.hands, run), -1);
+            check("and the run is zero", run, 0);
+        }
+
+        // The differential.  MODE_FULL, because that is the only mode the bound
+        // is wired into, and the value rather than the boolean, because the
+        // whole point of full mode is the split between the two nil-side hands.
+        Rng rng;
+        int checked = 0;
+        int disagreed = 0;
+        long long with = 0;
+        long long without = 0;
+        for (int i = 0; i < 60; ++i) {
+            const Position pos = random_deal(rng, 5);
+            int which = 0;
+            for (const char* seat : SEAT_NAMES) {
+                SearchOptions on;
+                on.mode = nil::MODE_FULL;
+                on.minimise_own_tricks = (which++ % 2 != 0);
+                SearchOptions off = on;
+                off.later_tricks = false;
+                const Solution a = must_solve(pos, seat, on);
+                const Solution b = must_solve(pos, seat, off);
+                ++checked;
+                if (a.nil_tricks != b.nil_tricks || a.nil_side_tricks != b.nil_side_tricks) {
+                    ++disagreed;
+                }
+                with += static_cast<long long>(a.nodes);
+                without += static_cast<long long>(b.nodes);
+            }
+        }
+        check("later tricks never move the trick split", disagreed, 0);
+        check("and that sweep actually ran", checked, 240);
+        check("later tricks never cost nodes in aggregate", with <= without, true);
+        check("and they save some", with < without, true);
+    }
+
     std::cout << "Move ordering control arm\n";
     {
         // Patch 15 ships the switch, not the heuristics.  Everything below

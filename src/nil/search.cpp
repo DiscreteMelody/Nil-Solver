@@ -61,6 +61,7 @@ struct Ctx {
     bool last_trick = true;    // evaluate a forced final trick instead of searching it
     bool tt_boundaries_only = true;  // consult the table only at a trick boundary
     bool target_bounds = true;       // the arithmetic reach bound; MODE_FULL only
+    bool later_tricks = true;        // tighten that bound by DDS s4; MODE_FULL only
     bool suit_mix = true;            // one card per suit at the head of the move list
     // True when no remaining trick can lower the value, i.e. every weight is
     // non-negative.  That makes what is already banked a lower bound on the
@@ -651,6 +652,69 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
             best_move = first_legal_move(st);
             return lo;
         }
+
+        // LATER TRICKS (DDS section 4).  The bound above reads no cards, which
+        // is its virtue and its ceiling: it has to allow every one of the t
+        // remaining tricks to fall wherever the simplex permits, and on most
+        // positions some of them provably cannot move at all.
+        //
+        // top_spade_run() names one hand and a number of tricks that hand wins
+        // down EVERY line.  Which constraint that adds depends on whose hand it
+        // is, and the three cases are three different simplices -- but each is
+        // still a linear function over a triangle, so each is still three
+        // vertex evaluations and a min and a max.  Nothing here searches.
+        //
+        //   opponent   opponents take k, so the nil side splits at most t - k:
+        //              n + p <= t - k.  Vertices (0,0), (t-k,0), (0,t-k).
+        //   nil bidder n >= k.  Vertices (k,0), (k,t-k), (t,0).
+        //   partner    p >= k.  Vertices (0,k), (0,t), (t-k,k).
+        //
+        // The nil-bidder case overlaps `nil_must_take_a_trick` below, which
+        // pins n >= 1; this pins n >= k, so it is strictly stronger at k >= 2
+        // and the same claim at k = 1.  It sits here rather than there because
+        // it comes free with a scan the other two cases are paying for anyway.
+        //
+        // AFTER the untightened test rather than before it, which is a cost
+        // decision.  A node the cheap bound already answers wants nothing more
+        // computed, and it answers 7-11% of boundaries at 12 and 13 cards.
+        //
+        // MODE_FAST is unreachable here for the same reason the bound above is
+        // -- the gate is the mode.  This is a MODE_FULL item and the flag is
+        // documented as one.
+        if (ctx.later_tricks) {
+            int k = 0;
+            const int owner = top_spade_run(st.hands, k);
+            if (owner >= 0 && k > 0 && k <= t) {
+                const int per_nil =
+                    ctx.primary_weight + ctx.tertiary_weight + ctx.secondary_weight;
+                const int per_partner = ctx.secondary_weight;
+                int n0, p0, n1, p1, n2, p2;
+                if (owner == ctx.nil_seat) {
+                    n0 = k, p0 = 0, n1 = k, p1 = t - k, n2 = t, p2 = 0;
+                } else if (((owner ^ ctx.nil_seat) & 1) == 0) {
+                    n0 = 0, p0 = k, n1 = 0, p1 = t, n2 = t - k, p2 = k;
+                } else {
+                    n0 = 0, p0 = 0, n1 = t - k, p1 = 0, n2 = 0, p2 = t - k;
+                }
+                const int v0 = per_nil * n0 + per_partner * p0;
+                const int v1 = per_nil * n1 + per_partner * p1;
+                const int v2 = per_nil * n2 + per_partner * p2;
+                int hi2 = v0;
+                if (v1 > hi2) hi2 = v1;
+                if (v2 > hi2) hi2 = v2;
+                int lo2 = v0;
+                if (v1 < lo2) lo2 = v1;
+                if (v2 < lo2) lo2 = v2;
+                if (hi2 <= alpha) {
+                    best_move = first_legal_move(st);
+                    return hi2;
+                }
+                if (lo2 >= beta) {
+                    best_move = first_legal_move(st);
+                    return lo2;
+                }
+            }
+        }
     }
 
     // THE SAME TWO PROOFS, SPENT IN MODE_FULL (patch 29).
@@ -1030,6 +1094,7 @@ void configure(Ctx& ctx, int nil_seat, const SearchOptions& opts,
     ctx.last_trick = opts.last_trick_eval;
     ctx.tt_boundaries_only = opts.tt_boundaries_only;
     ctx.target_bounds = opts.target_bounds;
+    ctx.later_tricks = opts.later_tricks;
     ctx.suit_mix = opts.suit_mixed_order;
     // Canonicalise whenever the caller wants the canonical line -- and also,
     // whether they asked or not, whenever the value cannot pin nil_tricks on its

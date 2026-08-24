@@ -68,6 +68,8 @@ void usage(const char* argv0) {
         << "                          evaluating it (same answer, more nodes)\n"
         << "  --no-suit-mix           do not put one card per suit at the head of\n"
         << "                          the move list (same answer, more nodes)\n"
+        << "  --no-later-tricks       do not tighten that bound with the\n"
+        << "                          opponents' forced trump tricks\n"
         << "  --no-target-bounds      do not answer a node from the reachable\n"
         << "                          range of the tricks left (same answer,\n"
         << "                          more nodes; full mode only)\n"
@@ -165,6 +167,8 @@ int main(int argc, char** argv) {
             opts.tt_boundaries_only = false;
         } else if (arg == "--no-target-bounds") {
             opts.target_bounds = false;
+        } else if (arg == "--no-later-tricks") {
+            opts.later_tricks = false;
         } else if (arg == "--no-suit-mix") {
             opts.suit_mixed_order = false;
         } else if (arg == "--no-narrow") {

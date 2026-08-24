@@ -255,6 +255,73 @@ inline bool nil_forced_ceiling(const Hand hands[4], int nil_seat) {
     return false;
 }
 
+// ---------------------------------------------------------------------------
+// TRICKS ONE HAND CANNOT BE DENIED
+// ---------------------------------------------------------------------------
+// Returns the seat holding the top outstanding spade and, in `run`, how many of
+// the top outstanding spades it holds CONSECUTIVELY from the top.  That hand
+// wins at least `run` of the remaining tricks in EVERY line of play -- not
+// "can force `run`", which is a claim about optimal play and is the wrong shape
+// for what reads this.  The reach bound in search_impl() ranges over the whole
+// simplex n + p <= t without assuming anybody plays well, so what it can
+// consume is a floor that holds down every branch, good and bad alike.
+//
+// WHY THE RUN IS WON.  Let the outstanding spades be s1 > s2 > ... and let one
+// hand hold s1..sk from the top.  Then:
+//
+//   * every card is played eventually, so each si is played at some trick Ti;
+//   * one hand plays one card per trick, so T1..Tk are k DISTINCT tricks;
+//   * spades is trump, so a trick carrying a spade is won by the highest spade
+//     on it;
+//   * the only spades above si are s1..s(i-1), which are in this same hand and
+//     therefore not on trick Ti.
+//
+// So si wins Ti outright, and the k tricks are distinct.
+//
+// ONE HAND, ANCHORED AT THE TOP, and both halves are load-bearing.  s1 and s2
+// split across two hands of the same side can legally land on the SAME trick --
+// both void, both ruffing -- and collapse to one trick, so a side-wide count is
+// conditional on play and unusable here.  That is the concentration failure
+// item 32 died on, and confining the count to a single hand is what steps
+// around it rather than into it.  Un-anchored is worse: a hand holding s2 but
+// not s1 wins nothing it can rely on, because s1 may be played over it.
+//
+// This is DDS section 4's LaterTricks rules 1 and 2 in the only form the nil
+// question can use.  Section 4 asks about the opponents OF THE TRICK-LEADING
+// HAND, which changes seat every trick; the caller needs a claim about a fixed
+// hand, and the argument above is leader-independent, so nothing has to know
+// who is on lead.
+//
+// NOT item 32, and the difference is what makes this sound.  That item had to
+// prove a named SEAT takes a trick from a POOLED count and no such count
+// reached it -- its counterexample is an opponent compelled to play a high
+// spade and rescue the nil.  A rescuing spade still wins the trick for the hand
+// that played it, which is all this counts.
+//
+// A TRICK BOUNDARY ONLY.  Reads the four hands as the whole of the live cards,
+// which is true only when no card sits half-played on the table.
+//
+// Returns -1 when no spade is left, which is the common late-hand case and one
+// mask test.
+inline int top_spade_run(const Hand hands[4], int& run) {
+    run = 0;
+    Hand outstanding =
+        (hands[0] | hands[1] | hands[2] | hands[3]) & suit_mask(SUIT_SPADES);
+    if (!outstanding) return -1;
+    const CardId top = highest_card(outstanding);
+    int owner = 0;
+    while (owner < 4 && !(hands[owner] & card_bit(top))) ++owner;
+    if (owner == 4) return -1;
+    const Hand theirs = hands[owner];
+    do {
+        const CardId c = highest_card(outstanding);
+        if (!(theirs & card_bit(c))) break;
+        ++run;
+        outstanding &= ~card_bit(c);
+    } while (outstanding);
+    return owner;
+}
+
 inline bool nil_must_take_a_trick(const Hand hands[4], int nil_seat) {
     const Hand mine = hands[nil_seat] & suit_mask(SUIT_SPADES);
     // The overwhelmingly common case for a nil bidder, and one mask test.

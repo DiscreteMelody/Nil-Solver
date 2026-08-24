@@ -272,6 +272,20 @@ extern "C" {
  * control arm. */
 #define NIL_FLAG_NO_SUIT_MIX 0x20000u
 
+/* Do not tighten the reachable-range bound with the opponents' forced tricks.
+ *
+ * DDS section 4.  Where one opponent hand holds the top outstanding spades as a
+ * run from the top, each of those cards wins the trick it is played on however
+ * all four players play -- spades is trump, and the only spades above it sit in
+ * the same hand, which plays one card per trick.  Those tricks cannot fall to
+ * the nil side, so the range the reach bound ranges over shrinks and a node
+ * that the untightened bound could not answer may now be answered.
+ *
+ * Inert under NIL_FLAG_FAST_MODE, whose value is the nil bidder's own trick
+ * count: a count of the OPPONENTS' tricks does not bound it.  Same value and
+ * same principal variation; diagnostic and a control arm. */
+#define NIL_FLAG_NO_LATER_TRICKS 0x40000u
+
 /* Pass to nil_set_table_size to go back to letting the library choose the
  * table size, which is what a process that never calls it already gets.
  *
