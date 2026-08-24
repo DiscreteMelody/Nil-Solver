@@ -38,6 +38,7 @@ expensive node. Read items 11 and 31 in that light.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ⊘ | Ordering skipped on forced nodes | patch 40 | **built, measured, withdrawn.** 34-39% of all search nodes have exactly one legal move after equivalence collapse, and each ran the full ordering block to promote the only card there is. Gating it is provably tree-neutral and verifies byte-identical -- but it buys **nothing measurable**, and the first measurement saying it did was a methodology error worth more than the patch. See "Evaluated and rejected" |
 | ✅ | ~~Later tricks: the opponents' and the nil side's forced trump tricks~~ | patch 39 | DDS §4 wired into patch 31's simplex. `top_spade_run()` finds the hand holding the top outstanding spade and counts its run from the top; that hand wins exactly that many tricks **down every line of play**, because each card is played eventually, one hand plays one card per trick so the tricks are distinct, spades is trump so a trick carrying a spade goes to the highest spade on it, and the only spades above it sit in the same hand. Which constraint it adds depends on whose hand it is -- three cases, three vertices each, no cards searched. **−16.73% nodes at 13 cards on seed 3** (1.396G -> 1.163G over eight deals), and the deal that dominates that workload -- 1.11 **billion** nodes, 79.8% of the tree -- takes **−19.69%**, so the gain lands on the slowest position rather than beside it. Wall follows nodes almost exactly (181,512 ms -> 150,140 ms, **1.21x**) because throughput is flat: 7.69M nodes/sec against 7.74M, i.e. the predicate is free per node. **Seed 42 gets essentially nothing** (−0.27% over eight deals, two deals slightly worse) and **11 cards is a wash** (+0.02%) -- the variance is deal-to-deal, not size-to-size, and no account of what separates them. `MODE_FAST` byte-identical and provably so. All 560 oracle-pinned values AND principal variations reproduce; 800 random deals agree with `--no-later-tricks` on value, split and PV while node counts differ on 777 of them |
 | ⊘ | Adversarial nil-set proof (item 32) | patch 38 | **measured, not built.** The population is large -- 54% of the positions where today's forced-trick proof stays silent are genuinely forced and an adversarial spade count spots them -- but no static count reaches it soundly. The most conservative variant tested at **96.2% precision**, which is a bug that passes testing rather than a proof. Counterexample and the full table in item 32; `--nilset-stats` and `tools/nilset_population.py` shipped so the next attempt starts from evidence |
 | ✅ | ~~Winning-rank backup and the `need` histogram~~ | patch 36 | DDS §6.1-6.2 and Ginsberg's partition search: record which cards won a trick **by rank**, back them up through the tree, and read off `need` -- how many of a suit's live cards, counted from the top, an entry would have to pin. Merges follow the paper: union across siblings, **the cutting move alone** at a cutoff. `need` rides in `TTEntry::bound`'s spare bits, so the entry stays **24 bytes** and every node count this project has banked is unmoved -- verified byte-identical, 39,701 fast and 325,975 full on the corpus. Off by default, and **free when off**, which took a second attempt: carried as a runtime pointer -- an extra argument on a hot recursive function, a null test at every return path and a zero-initialised `Hand` per move -- it cost **4-8% of wall time with the feature disabled** on three workloads, patched slower in 11 of 11 interleaved paired runs against a pristine binary. Making `TRACK` a template parameter and instantiating both paths returns it to parity (11-card fast: 68.6 ms pristine against 67.6 ms patched, patched faster in 4 of 5). `--rank-stats` turns it on. Shipped once with an open-coded `__builtin_clz` that built clean on GCC and broke the MSVC leg of `scripts/build-and-test.cmd` outright, when `cards.hpp` already carried the four-compiler `highest_card()` (fixed, patch 37) -- **this repo has two toolchains and a Linux-only build is half a verification.** What it bought is the number item 31 was blocked on, and that number **closed the item** -- see 31b in "Evaluated and rejected" |
@@ -490,6 +491,48 @@ Full mode is unchanged by this patch, and that is checked rather than asserted:
 ---
 
 ## Evaluated and rejected
+
+**Skipping move ordering on forced nodes (patch 40).** Built, measured twice,
+withdrawn -- and the *reason the two measurements disagreed* is the part worth
+keeping.
+
+*The population is real.* A node-population sweep says **34-39% of all search
+nodes have exactly one legal move** after equivalence collapse, at 11 and 13
+cards, in both modes. Every one of them ran the ordering block to promote the
+only card available: `nil_bidder_discard`'s move loop, a `relevant_cards`, and
+up to four `cover_deficit_depth` scans, reaching a conclusion the move loop
+reaches for free. Gating on `(moves & (moves - 1)) != 0` is **provably
+tree-neutral** -- the promoted card would be the only card -- and verifies so:
+node counts byte-identical on every workload, fast and full, 11 through 13.
+
+*First measurement: faster in 7 of 7, ~1.2% at 13 cards.* **This was wrong.** It
+compared a pristine binary against a separately compiled patched binary. Two
+builds of a program this size differ in code layout -- alignment, inlining
+decisions, branch placement -- and those differences move wall time by 1-2% on
+their own, which is larger than the effect being measured. Interleaving the runs
+does nothing about it: the confound is in the binaries, not in the schedule.
+
+*Second measurement: the same binary, guard toggled at runtime.* **Faster in 2
+of 7**, medians 2,835 ms against 2,804 ms. A wash, if anything slightly
+negative -- which is explicable, since the guard trades ordering work on 36% of
+nodes for a branch test on 100% of them.
+
+*The lesson generalises past this patch.* **A cross-binary comparison is not a
+measurement of a sub-percent change.** This repo's convention of putting every
+heuristic behind a control-arm flag exists for exactly this reason, and patch
+39 was measured correctly *because* it had `--no-later-tricks` and both arms
+came from one binary. Patch 40 had no flag -- the change is meant to be
+unconditional, being tree-neutral -- and so it skipped the convention and got a
+false positive. **A change with no control arm needs one built temporarily
+before it can be timed at all**, even when shipping it as a switch would make no
+sense.
+
+*What would revive it.* Nothing at this size; the work removed is real but too
+small to see. It becomes interesting only as part of the larger version --
+flattening a forced ply into a loop rather than a `search_impl` frame, removing
+the stack frame and the node-counter increment as well as the ordering. That
+spends `MODE_FULL`'s and `MODE_FAST`'s node-count fixed points and is a separate
+decision, and it should be measured with a runtime toggle from the first run.
 
 **Masked table matching (item 31b), by canonical key.** The largest structural
 gap between this solver and the literature, and it is closed the other way: the
