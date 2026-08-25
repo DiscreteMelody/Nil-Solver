@@ -62,6 +62,7 @@ struct Ctx {
     bool tt_boundaries_only = true;  // consult the table only at a trick boundary
     bool target_bounds = true;       // the arithmetic reach bound; MODE_FULL only
     bool later_tricks = true;        // tighten that bound by DDS s4; MODE_FULL only
+    bool tt_narrow = true;           // spend a partial table match on the cutoff bound
     bool suit_mix = true;            // one card per suit at the head of the move list
     // True when no remaining trick can lower the value, i.e. every weight is
     // non-negative.  That makes what is already banked a lower bound on the
@@ -807,29 +808,79 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
     SuitProfile profile;
     std::uint64_t hash = 0;
     bool keyed = false;
+    // The ranks a partial match pinned, when one supplied the cutoff bound.
+    // They are part of why this node's answer is what it is, exactly as a
+    // searched move's are, so they are unioned into the essential set at the end
+    // -- see the merge below.
+    [[maybe_unused]] Hand narrow_essential = 0;
+    // The bound this node's fail-soft cutoff test reads, when a partial table
+    // match has supplied a tighter one than the window carries.  It is NOT the
+    // window: children are searched under `alpha` and `beta` unchanged.
+    int cut_bound = 0;
+    bool have_cut_bound = false;
     if (ctx.tt && (st.trick_len == 0 || !ctx.tt_boundaries_only)) {
         keyed = encode_state_key(st.hands, st.leader, st.broken, st.trick, st.trick_len, key,
                                  profile);
         if (keyed) {
             hash = mix_key(key);
-            // The table hands back an entry only when it settles this window;
-            // see tt.hpp.  A bound recorded under a wider window is still a
-            // fact about the position, so it is reusable -- what changes with
-            // pruning is that not every stored fact is enough.
-            if (const TTEntry* hit = ctx.tt->probe(key, hash, ctx.tt_tag, alpha, beta)) {
-                best_move = from_relative(hit->move, profile);
-                // The answer is the stored subtree's, so the essential set is
-                // its too.  It rides in the bound byte as ONE number applied to
-                // all four suits rather than four -- see tt.hpp for why there is
-                // no room for the vector, and why one number is the safe way to
-                // be short of room.
+            // A bound recorded under a wider window is still a fact about the
+            // position; what changes with pruning is that not every stored fact
+            // is enough to END the node.  The table therefore hands back what it
+            // has and says separately whether it settles this window.
+            bool answers = false;
+            if (const TTEntry* hit = ctx.tt->probe(key, hash, ctx.tt_tag, alpha, beta, answers)) {
+                // The essential set of whatever the entry contributes -- the
+                // whole answer when it settles the node, the narrowing fact when
+                // it does not.  It rides in the bound byte as ONE number applied
+                // to all four suits rather than four -- see tt.hpp for why there
+                // is no room for the vector, and why one number is the safe way
+                // to be short of room.
+                [[maybe_unused]] Hand entry_essential = 0;
                 if constexpr (TRACK) {
                     KeepVector keep = 0;
                     const int need = bound_need(hit->bound);
                     for (int su = 0; su < 4; ++su) keep = keep_set(keep, su, need);
-                    *essential = keep_to_essential(keep, profile);
+                    entry_essential = keep_to_essential(keep, profile);
                 }
-                return hit->value;
+                if (answers) {
+                    best_move = from_relative(hit->move, profile);
+                    // The answer is the stored subtree's, so the essential set
+                    // is its too.
+                    if constexpr (TRACK) *essential = entry_essential;
+                    return hit->value;
+                }
+                // PARTIAL (roadmap item 41).  The entry bounds the value on one
+                // side without settling the window.  Spend it on the CUTOFF
+                // BOUND -- the one this node's own fail-soft test reads -- and
+                // nowhere else.  The window the children are searched under is
+                // left exactly as the caller gave it.
+                //
+                // That restriction is the whole item, and it was measured
+                // rather than reasoned: narrowing alpha and beta themselves, so
+                // that the tightening propagates down the subtree, costs 3.6% of
+                // the tree at 13 cards and 5.5% at 11.  See ROADMAP.md item 41
+                // for the sweep.  A tighter window makes descendants store
+                // one-sided bounds where they would have stored BOUND_EXACT, and
+                // an exact entry answers EVERY window where a bound answers
+                // almost none; on a table running an 80% hit rate at five probes
+                // per store, that trade is heavily negative.
+                //
+                // Only one of the two bounds can produce a cutoff here -- beta
+                // at a maximiser, alpha at a minimiser -- so only the entry kind
+                // matching this node's own direction is of any use, and the
+                // other is exactly the one whose only effect would have been to
+                // propagate.  Hence one test rather than two.
+                if (ctx.tt_narrow) {
+                    const int value = hit->value;
+                    const std::uint8_t kind = bound_kind(hit->bound);
+                    const bool max_here = ((st.to_play() ^ ctx.nil_seat) & 1) != 0;
+                    if (max_here ? (kind == BOUND_UPPER && value < beta)
+                                 : (kind == BOUND_LOWER && value > alpha)) {
+                        cut_bound = value;
+                        have_cut_bound = true;
+                        if constexpr (TRACK) narrow_essential = entry_essential;
+                    }
+                }
             }
         }
     }
@@ -855,6 +906,13 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
     // sets alpha to best exactly.
     const int alpha_asked = alpha;
     const int beta_asked = beta;
+
+    // The threshold the fail-soft cutoff below tests against.  Computed once,
+    // because it does not move: loop narrowing raises a maximiser's alpha and
+    // lowers a minimiser's beta, and each leaves alone the OTHER bound, which is
+    // the one tested here.  A partial table match (item 41) overrides it when it
+    // offers a tighter one.
+    const int cut_at = have_cut_bound ? cut_bound : (maximizing ? beta : alpha);
 
     int best = 0;
     bool have_best = false;
@@ -974,26 +1032,44 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
         // will never choose this node once it is this bad; symmetrically at a
         // minimiser reaching alpha.  Either way the moves not looked at cannot
         // change the answer the parent came for.
-        if (maximizing ? best >= beta : best <= alpha) {
+        if (maximizing ? best >= cut_at : best <= cut_at) {
             cut_off = true;
             break;
         }
     }
-    // The move that reached beta is the move that just ran: the test runs after
-    // every move, so an earlier one that had already reached it would have
+    // The move that reached `cut_at` is the move that just ran: the test runs
+    // after every move, so an earlier one that had already reached it would have
     // broken then.  `best` therefore came from this move, and this move's set is
     // the whole witness the bound needs.
-    if constexpr (TRACK) *essential = cut_off ? cut_move_essential : all_moves_essential;
+    // ...and the ranks behind the cutoff bound, in either case: a cutoff taken
+    // against a table entry's bound rests on that entry just as much as on the
+    // move that reached it, so dropping its ranks here would leave the witness
+    // smaller than the claim it witnesses.
+    if constexpr (TRACK)
+        *essential = (cut_off ? cut_move_essential : all_moves_essential) | narrow_essential;
 
     if (keyed) {
         const RelMove rel = best_move == NO_CARD ? REL_NO_MOVE : to_relative(best_move, profile);
         // Which of these three the node earned follows from where `best` landed
         // relative to the window it was GIVEN -- alpha_asked and beta_asked,
         // not the live pair, which narrowing may have moved underneath it.
-        // Breaking out of the loop above implies best >= beta_asked at a
-        // maximiser (narrowing never moves beta there) and best <= alpha_asked
-        // at a minimiser, so a cut node can never be recorded as the bound
-        // belonging to the other side.
+        // Breaking out of the loop above implies best >= cut_at at a maximiser
+        // (narrowing never moves beta there) and best <= cut_at at a minimiser,
+        // so a cut node can never be recorded as the bound belonging to the
+        // other side: a partial match only ever offers a `cut_at` STRICTLY
+        // inside the asked window -- that is what failing to answer means -- so
+        // a maximiser's cut lands above alpha_asked and a minimiser's below
+        // beta_asked either way.
+        //
+        // Which leaves the case item 41 introduced: a cut at `best` between
+        // alpha_asked and beta_asked, recorded BOUND_EXACT although the node
+        // stopped early.  That is the truth rather than an over-claim, and the
+        // entry is why.  Take a maximiser whose entry pins V <= y and which
+        // stopped at the first best >= y.  The move that produced `best` was
+        // searched under the untouched window and came back above alpha, so it
+        // came back EXACT and V >= best; with V <= y <= best that forces
+        // V = best.  The value is squeezed exact by the same fact that
+        // shortened the search.  Symmetrically at a minimiser.
         const std::uint8_t kind = best <= alpha_asked  ? BOUND_UPPER
                                   : best >= beta_asked ? BOUND_LOWER
                                                        : BOUND_EXACT;
@@ -1095,6 +1171,7 @@ void configure(Ctx& ctx, int nil_seat, const SearchOptions& opts,
     ctx.tt_boundaries_only = opts.tt_boundaries_only;
     ctx.target_bounds = opts.target_bounds;
     ctx.later_tricks = opts.later_tricks;
+    ctx.tt_narrow = opts.tt_narrow_window;
     ctx.suit_mix = opts.suit_mixed_order;
     // Canonicalise whenever the caller wants the canonical line -- and also,
     // whether they asked or not, whenever the value cannot pin nil_tricks on its

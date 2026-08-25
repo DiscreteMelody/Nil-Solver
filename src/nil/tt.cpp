@@ -43,7 +43,8 @@ void TranspositionTable::new_search() {
 }
 
 const TTEntry* TranspositionTable::probe(const StateKey& key, std::uint64_t hash, std::uint8_t tag,
-                                         int alpha, int beta) {
+                                         int alpha, int beta, bool& answers) {
+    answers = false;
     if (!buckets_) return nullptr;
     ++stats_.probes;
     const TTEntry* bucket = &table_[(hash & mask_) * WAYS];
@@ -57,13 +58,16 @@ const TTEntry* TranspositionTable::probe(const StateKey& key, std::uint64_t hash
         // search whose beta is at or below X, and nothing narrower.
         const int value = e.value;
         const std::uint8_t kind = bound_kind(e.bound);
-        const bool answers = kind == BOUND_EXACT || (kind == BOUND_LOWER && value >= beta) ||
-                             (kind == BOUND_UPPER && value <= alpha);
-        if (!answers) {
+        answers = kind == BOUND_EXACT || (kind == BOUND_LOWER && value >= beta) ||
+                  (kind == BOUND_UPPER && value <= alpha);
+        // Either way the entry comes back.  A match that does not answer is a
+        // one-sided bound on this position, which is worth strictly more to the
+        // caller than a miss even though it cannot end the node; see the header.
+        if (answers) {
+            ++stats_.hits;
+        } else {
             ++stats_.partial;
-            return nullptr;
         }
-        ++stats_.hits;
         return &e;
     }
     return nullptr;

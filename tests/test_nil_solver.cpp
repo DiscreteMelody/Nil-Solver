@@ -760,35 +760,53 @@ int main(int argc, char** argv) {
         // about anything up to 5 and nothing beyond it; symmetrically for an
         // upper bound.  This is the one piece of new table logic, so it gets
         // tested directly rather than only through the search.
+        //
+        // probe() reports two things since item 41 and they are not the same
+        // question: whether the table HOLDS this position, and whether what it
+        // holds SETTLES the window.  A match that does not settle is a partial,
+        // and it comes back rather than being thrown away, because a one-sided
+        // bound is still a fact the caller can spend.  Both halves are pinned
+        // below -- the second column is the one that used to be the whole test.
         nil::TranspositionTable table;
         table.resize(1);
         nil::StateKey key;
         key.lo = 0x0123456789ABCDEFull;
         key.hi = 0x00000000000000FFull;
         const std::uint64_t hash = nil::mix_key(key);
+        bool answers = false;
+        const auto matched = [&](int alpha, int beta, std::uint8_t tag = nil::TAG_FAST) {
+            return table.probe(key, hash, tag, alpha, beta, answers) != nullptr;
+        };
 
         table.store(key, hash, 5, 3, 8, nil::BOUND_LOWER, nil::TAG_FAST);
-        check("a lower bound answers a window it sits above",
-              table.probe(key, hash, nil::TAG_FAST, 4, 5) != nullptr, true);
-        check("a lower bound does not answer a window above it",
-              table.probe(key, hash, nil::TAG_FAST, 5, 6) != nullptr, false);
+        check("a lower bound answers a window it sits above", matched(4, 5), true);
+        check("and says so", answers, true);
+        check("a lower bound still MATCHES a window above it", matched(5, 6), true);
+        check("but does not answer it", answers, false);
 
         table.store(key, hash, 5, 3, 8, nil::BOUND_UPPER, nil::TAG_FAST);
-        check("an upper bound answers a window it sits below",
-              table.probe(key, hash, nil::TAG_FAST, 5, 6) != nullptr, true);
-        check("an upper bound does not answer a window below it",
-              table.probe(key, hash, nil::TAG_FAST, 3, 4) != nullptr, false);
+        check("an upper bound answers a window it sits below", matched(5, 6), true);
+        check("and says so", answers, true);
+        check("an upper bound still MATCHES a window below it", matched(3, 4), true);
+        check("but does not answer it", answers, false);
 
         table.store(key, hash, 5, 3, 8, nil::BOUND_EXACT, nil::TAG_FAST);
-        check("an exact value answers any window",
-              table.probe(key, hash, nil::TAG_FAST, 0, 1) != nullptr, true);
+        check("an exact value answers any window", matched(0, 1), true);
+        check("and says so", answers, true);
 
         // The second lock on the door between the two objectives.  A fast-mode
         // 1 and a full-mode 1 are different numbers; what normally keeps them
         // apart is that every solve bumps the generation, and this is what
         // catches a future change that lets two objectives share one.
-        check("an entry is invisible to the other objective",
-              table.probe(key, hash, nil::TAG_FULL, 0, 1) != nullptr, false);
+        //
+        // A tag mismatch is not a partial: it is not this position's entry at
+        // all, so the pointer must be null AND `answers` false.  Item 41 makes
+        // that distinction worth stating -- a caller that reached for the value
+        // behind a non-null pointer without checking the tag would be reading
+        // the other objective's scale.
+        check("an entry is invisible to the other objective", matched(0, 1, nil::TAG_FULL),
+              false);
+        check("and offers it nothing to narrow with", answers, false);
     }
     {
         // The boolean search now has a self-check that does not go through full
@@ -1196,6 +1214,89 @@ int main(int argc, char** argv) {
         check("and that sweep actually ran", checked, 240);
         check("later tricks never cost nodes in aggregate", with <= without, true);
         check("and they save some", with < without, true);
+    }
+
+    std::cout << "Cutoff bound from a partial table match (item 41)\n";
+    {
+        // A partial match is an entry that describes this position but does not
+        // settle the window.  It still bounds the value on one side, and this
+        // arm checks that spending it on the cutoff threshold moves nothing
+        // except the node count.
+        //
+        // The PRINCIPAL VARIATION is checked here as well as the value, which
+        // the ordering arms above deliberately do not do.  The reason is the
+        // soundness argument this item rests on: an earlier cutoff is allowed
+        // only because the value it stops at is squeezed exact between the
+        // entry's bound and fail-soft's.  If that ever stopped holding, a node
+        // would return a bound where the PV walk expects a value, and the line
+        // -- not the value -- is where it would show first.
+        Rng rng;
+        int checked = 0;
+        int value_moved = 0;
+        int line_moved = 0;
+        int counts_differ = 0;
+        long long with = 0;
+        long long without = 0;
+        for (int deal = 0; deal < 40; ++deal) {
+            const Position pos = random_deal(rng, 5);
+            int which = 0;
+            for (const char* seat : SEAT_NAMES) {
+                SearchOptions on;
+                on.mode = nil::MODE_FULL;
+                on.minimise_own_tricks = (which++ % 2 != 0);
+                SearchOptions off = on;
+                off.tt_narrow_window = false;
+                const Solution a = must_solve(pos, seat, on);
+                const Solution b = must_solve(pos, seat, off);
+                ++checked;
+                if (a.value != b.value || a.nil_tricks != b.nil_tricks ||
+                    a.nil_side_tricks != b.nil_side_tricks) {
+                    ++value_moved;
+                }
+                if (a.pv.size() != b.pv.size()) {
+                    ++line_moved;
+                } else {
+                    for (std::size_t i = 0; i < a.pv.size(); ++i) {
+                        if (a.pv[i].seat != b.pv[i].seat || a.pv[i].card != b.pv[i].card) {
+                            ++line_moved;
+                            break;
+                        }
+                    }
+                }
+                if (a.nodes != b.nodes) ++counts_differ;
+                with += static_cast<long long>(a.nodes);
+                without += static_cast<long long>(b.nodes);
+            }
+        }
+        check("the cutoff bound never moves the value or the split", value_moved, 0);
+        check("nor the principal variation", line_moved, 0);
+        check("and that sweep actually ran", checked, 160);
+        check("it never costs nodes in aggregate", with <= without, true);
+        check("and it saves some", with < without, true);
+        // The arm has to be doing something, or the three checks above pass on
+        // a flag that is not plumbed through -- which is how patch 15's inert
+        // control arm would have looked if it had claimed not to be inert.
+        check("and it is reached on real positions", counts_differ > 0, true);
+
+        // MODE_FAST is untouched, and by arithmetic rather than by a gate: its
+        // window is [0, 1] at every node and every value it stores is a bound at
+        // one end or the other, so every entry that matches settles the window
+        // and there are no partials to spend.  Node counts must therefore be
+        // IDENTICAL, not merely no worse.
+        long long fast_on = 0;
+        long long fast_off = 0;
+        for (int deal = 0; deal < 12; ++deal) {
+            const Position pos = random_deal(rng, 6);
+            for (const char* seat : SEAT_NAMES) {
+                SearchOptions on;
+                on.mode = nil::MODE_FAST;
+                SearchOptions off = on;
+                off.tt_narrow_window = false;
+                fast_on += static_cast<long long>(must_solve(pos, seat, on).nodes);
+                fast_off += static_cast<long long>(must_solve(pos, seat, off).nodes);
+            }
+        }
+        check("MODE_FAST has no partial entries to spend", fast_on, fast_off);
     }
 
     std::cout << "Move ordering control arm\n";

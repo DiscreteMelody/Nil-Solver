@@ -142,7 +142,41 @@ namespace NilSolver
         /// nodes in full mode. Same value and same principal variation; diagnostic and a
         /// control arm. Inert under <see cref="FastMode"/>.
         /// </summary>
-        NoTargetBounds = 0x10000u
+        NoTargetBounds = 0x10000u,
+
+        /// <summary>
+        /// Do not put one card from each present suit at the head of the move list. By
+        /// default the solver tries one card from every suit it may legally choose among
+        /// before returning to the canonical order, which is DDS section 5's "good
+        /// mixture of moves (i.e. not all cards from the same suit first)". It spends
+        /// nothing to decide the order -- the same moves are searched -- and is worth
+        /// 5.4% to 9.0% of nodes at 11 to 13 cards. Applies in both modes, and inert on a
+        /// seat following suit. Same value and, in full mode, the same principal
+        /// variation; diagnostic and a control arm.
+        /// </summary>
+        NoSuitMix = 0x20000u,
+
+        /// <summary>
+        /// Do not tighten the reachable-range bound with the opponents' forced tricks.
+        /// DDS section 4: where one hand holds the top outstanding spades as a run from
+        /// the top, each of those cards wins the trick it is played on however all four
+        /// players play, so those tricks cannot fall to the other side and the range the
+        /// reach bound covers shrinks. Same value and same principal variation;
+        /// diagnostic and a control arm. Inert under <see cref="FastMode"/>.
+        /// </summary>
+        NoLaterTricks = 0x40000u,
+
+        /// <summary>
+        /// Do not let a transposition-table entry that matches the position without
+        /// settling the window shorten the node. By default such a match supplies the
+        /// threshold the node's own cutoff test reads, when it is tighter than the one
+        /// the window carries: beta at a maximising node, alpha at a minimising one. The
+        /// window itself is untouched, so children are searched under exactly what the
+        /// caller asked. Worth 0.5% to 1.2% of nodes in full mode, most of it at 13
+        /// cards. Same value and same principal variation; diagnostic and a control arm.
+        /// Inert under <see cref="FastMode"/>, which has no partial entries.
+        /// </summary>
+        NoTtNarrow = 0x80000u
     }
 
     /// <summary>Return codes. <see cref="Ok"/> is success; everything else is negative.</summary>

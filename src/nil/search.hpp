@@ -358,6 +358,58 @@ struct SearchOptions {
     // On by default, off as the control arm.
     bool later_tricks = true;
 
+    // Spend a transposition-table entry that matches the position but does not
+    // settle it on this node's CUTOFF BOUND.
+    //
+    // tt.hpp calls such a match PARTIAL and used to report it as a miss.  It is
+    // not a miss: BOUND_LOWER at x says the value is at least x and BOUND_UPPER
+    // at x says it is at most x, and both are true of the position whatever
+    // window happens to be asking.  This solver has never used them, because
+    // probe() threw the entry away.
+    //
+    // WHAT IS *NOT* DONE, AND WHY.  The textbook move here is the tighten-the-
+    // window half of alpha-beta-with-memory (Plaat et al.): raise alpha onto a
+    // lower bound, lower beta onto an upper one, and let the tighter window
+    // carry down the whole subtree.  That was built first and it is a LOSS --
+    // 5.5% more nodes at 11 cards, 3.6% at 13.  The mechanism is worth carrying
+    // forward past this item: a tighter window makes descendants record
+    // one-sided bounds where they would have recorded BOUND_EXACT, and an exact
+    // entry answers every window while a bound answers almost none.  This
+    // table runs an 80% hit rate at roughly five probes per store, so entry
+    // QUALITY is worth more than window tightness, and by a wide margin.  The
+    // full sweep -- both directions, one direction, and depth-gated -- is in
+    // ROADMAP.md item 41, and it is monotone: every increment of propagation
+    // costs.
+    //
+    // WHAT IS DONE.  Only one of the two bounds can end this node -- beta at a
+    // maximiser, alpha at a minimiser -- so the entry is compared against that
+    // bound alone and, if it is tighter, it becomes the cutoff threshold.
+    // `alpha` and `beta` are untouched, so children are searched under exactly
+    // the window the caller gave and their entries stay as exact as they were.
+    // The benefit is kept and the cost is not paid.
+    //
+    // WHY THE EARLIER CUTOFF IS SOUND.  Take a maximiser whose entry pins
+    // V <= y and which stops at the first `best >= y`.  The move that produced
+    // `best` was searched under the untouched window, so if `best` is above
+    // alpha it came back exact and V >= best; with V <= y <= best that forces
+    // V = best, and an exact value is entitled to end a node under any window.
+    // If instead `best` is at or below alpha the node has failed low against the
+    // caller's own window, which it is entitled to report as it always was.
+    // Symmetrically at a minimiser.  The value is squeezed exact by the very
+    // fact that shortened the search.
+    //
+    // So MODE_FULL's principal variation survives: walk_pv() and
+    // canonical_move_for() identify the canonical move by comparing child values
+    // for equality, and every child value they compare is still the true one.
+    //
+    // MODE_FULL only, by arithmetic rather than by a gate: MODE_FAST asks every
+    // node about [0, 1] and every value it stores is BOUND_UPPER at 0 or
+    // BOUND_LOWER at 1, so every match settles its window and `partial` is
+    // identically zero.  Patch 12 measured that and it is still true.
+    //
+    // On by default, off as the control arm.
+    bool tt_narrow_window = true;
+
     // Put one card from each present suit at the head of the move list, in
     // rotation, before the canonical tail.  DDS section 5, whose stated aim is
     // "good mixture of moves (i.e. not all cards from the same suit first) in

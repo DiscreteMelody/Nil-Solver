@@ -33,21 +33,36 @@
 // only which side of its window the value lies on, so `bound` says which:
 // BOUND_LOWER for a fail-high, BOUND_UPPER for a fail-low, BOUND_EXACT for a
 // node that looked at everything.  probe() therefore needs the window it is
-// being asked about -- an entry answers it only when the entry is exact, or
-// when the bound already falls outside it.  An entry that matches the position
-// but merely narrows the window is counted as `partial` and reported as a miss,
-// so that `hits` keeps meaning "nodes answered from the table".
+// being asked about -- an entry ANSWERS it only when the entry is exact, or
+// when the bound already falls outside it.
+//
+// An entry that matches the position but does not answer the window is a
+// PARTIAL match, and it is still a fact: "the value is at least x", or "at most
+// x", is true of the position however wide the window asking happens to be.
+// probe() hands it back with `answers` false so the caller can narrow its own
+// window onto it before searching -- roadmap item 41.  `hits` still counts only
+// the probes the table ANSWERED, so that statistic keeps meaning what it always
+// did, and `partial` still counts the rest.
+//
+// A partial can never close the window it narrows.  `answers` is false at a
+// BOUND_LOWER exactly when its value is below beta, so raising alpha onto it
+// leaves alpha below beta; symmetrically for BOUND_UPPER above alpha.  The
+// caller therefore has one fewer degenerate case to handle than the general
+// alpha-beta-with-memory shape suggests.
 //
 // (Roadmap item 5 wanted the stored MOVE off those partial entries for
 // ordering, and this comment used to say probe() should be widened to hand them
-// back.  It should not be: there are no partial entries to widen onto.  In
-// MODE_FAST every node is asked about [0, 1] and every stored value is either
+// back.  It is now widened -- for the BOUND, which is a different thing.  Item
+// 5 was closed twice on measurement: first because `partial` was identically
+// zero (patch 12), then, once patch 22 gave it a population, because the stored
+// move is a worse hint than what it displaces (patch 26).  Neither result says
+// anything about the stored bound, which is not a hint at all.
+//
+// `partial` is still identically zero in MODE_FAST, and for the reason patch 12
+// gave: every node there is asked about [0, 1] and every stored value is either
 // BOUND_UPPER at 0 or BOUND_LOWER at 1, so an entry that matches the position
-// always settles the window -- a node that finds an entry returns without
-// searching, and a node that searches never found one.  `partial` is therefore
-// identically zero there, which is the population item 5 would have ordered.
-// Patch 12 closes the item on that argument; see ROADMAP.md.  If a later item
-// varies the window, `partial` goes non-zero and the item comes back.)
+// always settles the window.  Narrowing is therefore a MODE_FULL item by
+// arithmetic rather than by a gate.)
 //
 // TAGS
 // ----
@@ -154,12 +169,19 @@ public:
     std::size_t buckets() const { return buckets_; }
     std::size_t bytes() const { return table_.size() * sizeof(TTEntry); }
 
-    // Returns null unless a live entry for `key` with this `tag` settles the
-    // question "where does the value sit relative to [alpha, beta)?".  A match
-    // that only narrows the window counts as `partial` and returns null too.
+    // Returns a live entry for `key` with this `tag` if the table holds one,
+    // and sets `answers` to say whether it settles the question "where does the
+    // value sit relative to [alpha, beta)?".
+    //
+    //   non-null, answers true    the caller may return the entry's value
+    //   non-null, answers false   a PARTIAL match: a one-sided bound the caller
+    //                             may narrow its window onto, counted in
+    //                             `partial` and not in `hits`
+    //   null                      no entry for this position
+    //
     // The pointer is valid until the next store().
     const TTEntry* probe(const StateKey& key, std::uint64_t hash, std::uint8_t tag, int alpha,
-                         int beta);
+                         int beta, bool& answers);
 
     void store(const StateKey& key, std::uint64_t hash, int value, RelMove move, int depth,
                std::uint8_t bound, std::uint8_t tag);

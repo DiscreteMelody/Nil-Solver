@@ -268,6 +268,18 @@ if(NIL_SOLVER_BUILD_TESTS)
                      --slowest 0)
     set_tests_properties(corpus_target PROPERTIES TIMEOUT 900)
 
+    # The control arm for the cutoff bound taken off a partial table match
+    # (roadmap item 41), carrying --check-pv on the corpus_narrow model.  It
+    # earns the PV check rather than merely inheriting it: the item cuts a node
+    # short on the strength of a stored bound, and the argument that this is
+    # allowed is that the value it stops at is squeezed exact.  A search that
+    # returned a bound where the PV walk expects a value would still produce the
+    # right number at the root and the wrong line under it.
+    add_test(NAME corpus_tt_narrow
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --no-tt-narrow --check-pv --quiet
+                     --slowest 0)
+    set_tests_properties(corpus_tt_narrow PROPERTIES TIMEOUT 900)
+
     add_test(NAME corpus_tt_plies_fast
              COMMAND nil_bench --corpus "${NIL_CORPUS}" --mode fast --tt-all-plies --quiet
                      --slowest 0)

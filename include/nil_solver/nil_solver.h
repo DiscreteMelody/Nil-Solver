@@ -286,6 +286,23 @@ extern "C" {
  * same principal variation; diagnostic and a control arm. */
 #define NIL_FLAG_NO_LATER_TRICKS 0x40000u
 
+/* Do not let a transposition-table entry that matches the position without
+ * settling it shorten the node.
+ *
+ * By default such a match -- the table calls it a PARTIAL -- supplies the
+ * threshold the node's own cutoff test reads, when it is tighter than the one
+ * the window carries: beta at a maximising node, alpha at a minimising one.
+ * The window itself is untouched, so children are searched under exactly what
+ * the caller asked and nothing about their stored entries changes.  Tightening
+ * the window instead, which is what the textbook form of this does, was
+ * measured and is a loss; see ROADMAP.md item 41.
+ *
+ * Inert under NIL_FLAG_FAST_MODE, and by arithmetic rather than by a gate:
+ * every fast node is asked about [0, 1] and every value it stores is a bound at
+ * 0 or at 1, so every match settles its window and there are no partials.  Same
+ * value and same principal variation; diagnostic and a control arm. */
+#define NIL_FLAG_NO_TT_NARROW 0x80000u
+
 /* Pass to nil_set_table_size to go back to letting the library choose the
  * table size, which is what a process that never calls it already gets.
  *

@@ -38,6 +38,7 @@ expensive node. Read items 11 and 31 in that light.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ✅ | ~~The cutoff bound from a partial table match~~ | patch 41 | `probe()` found an entry, saw that its one-sided bound did not settle the window, counted it in `partial` and **threw it away** — 6.8% of 26.6M probes at 13 cards. It is not a miss: "the value is at least x" is a fact about the POSITION, true whatever window is asking. Spent on the threshold this node's own fail-soft test reads — beta at a maximiser, alpha at a minimiser — and **on nothing else**. **−0.48% to −1.21% nodes across seven full-mode workloads, largest at 13 cards**, and `MODE_FAST` byte-identical because it has no partials to spend. Wall follows weakly: medians 0.5-0.7%, faster in 3 of 5 interleaved reps on two 13-card seeds, one binary with the arm toggled at runtime. Sound because the value an early cutoff stops at is **squeezed exact** between the entry's bound and fail-soft's, so `walk_pv` still compares true values; all 560 oracle-pinned values AND principal variations reproduce. **The textbook version of this item is a LOSS and that is the more valuable result** — see "Evaluated and rejected" for the sweep and the mechanism |
 | ⊘ | Ordering skipped on forced nodes | patch 40 | **built, measured, withdrawn.** 34-39% of all search nodes have exactly one legal move after equivalence collapse, and each ran the full ordering block to promote the only card there is. Gating it is provably tree-neutral and verifies byte-identical -- but it buys **nothing measurable**, and the first measurement saying it did was a methodology error worth more than the patch. See "Evaluated and rejected" |
 | ✅ | ~~Later tricks: the opponents' and the nil side's forced trump tricks~~ | patch 39 | DDS §4 wired into patch 31's simplex. `top_spade_run()` finds the hand holding the top outstanding spade and counts its run from the top; that hand wins exactly that many tricks **down every line of play**, because each card is played eventually, one hand plays one card per trick so the tricks are distinct, spades is trump so a trick carrying a spade goes to the highest spade on it, and the only spades above it sit in the same hand. Which constraint it adds depends on whose hand it is -- three cases, three vertices each, no cards searched. **−16.73% nodes at 13 cards on seed 3** (1.396G -> 1.163G over eight deals), and the deal that dominates that workload -- 1.11 **billion** nodes, 79.8% of the tree -- takes **−19.69%**, so the gain lands on the slowest position rather than beside it. Wall follows nodes almost exactly (181,512 ms -> 150,140 ms, **1.21x**) because throughput is flat: 7.69M nodes/sec against 7.74M, i.e. the predicate is free per node. **Seed 42 gets essentially nothing** (−0.27% over eight deals, two deals slightly worse) and **11 cards is a wash** (+0.02%) -- the variance is deal-to-deal, not size-to-size, and no account of what separates them. `MODE_FAST` byte-identical and provably so. All 560 oracle-pinned values AND principal variations reproduce; 800 random deals agree with `--no-later-tricks` on value, split and PV while node counts differ on 777 of them |
 | ⊘ | Adversarial nil-set proof (item 32) | patch 38 | **measured, not built.** The population is large -- 54% of the positions where today's forced-trick proof stays silent are genuinely forced and an adversarial spade count spots them -- but no static count reaches it soundly. The most conservative variant tested at **96.2% precision**, which is a bug that passes testing rather than a proof. Counterexample and the full table in item 32; `--nilset-stats` and `tools/nilset_population.py` shipped so the next attempt starts from evidence |
@@ -491,6 +492,75 @@ Full mode is unchanged by this patch, and that is checked rather than asserted:
 ---
 
 ## Evaluated and rejected
+
+**Narrowing the window onto a partial table match (item 41, first version).**
+Built, measured across three axes, refuted -- and the mechanism is worth more
+than the patch that eventually shipped, because it prices several other items on
+this list.
+
+*The population is real.* A partial match is an entry that describes the
+position and does not settle the window. `--tt-stats`, 13 cards, full mode,
+three deals on seed 3: **26,599,749 probes, 80.1% hits, 6.8% partial**. Patch 12
+closed item 5 on `partial` being identically zero; patch 22 gave it a
+population, and this is the size of it.
+
+*What was built.* The textbook move -- alpha-beta with memory as Plaat writes
+it: raise alpha onto a `BOUND_LOWER`, lower beta onto a `BOUND_UPPER`, search
+the node under the tightened window. It **cost 20.3% of the tree** at 11 cards.
+
+*The first mechanism, and it is fixable.* The node then stores its own entry
+classified against the TIGHTENED window, so results that would have been
+`BOUND_EXACT` come out as one-sided bounds. Snapshotting the asked window BEFORE
+the probe instead recovers most of it -- **+20.3% becomes +5.5%** -- and is sound
+by a squeeze: if the entry pins `V >= x` and the node comes back at or below `x`,
+fail-soft gives `V <= best` and the entry gives `V >= x >= best`, so `V = best`
+and EXACT is the truth rather than an over-claim.
+
+*The second mechanism, and it is not.* What is left is the tightened window
+propagating DOWN the subtree, where descendants store weaker entries for the
+same reason and no squeeze is available to them -- a child does not know why its
+window is tight. **An exact entry answers every window; a bound answers almost
+none.** This table runs an 80% hit rate at roughly five probes per store, so
+entry QUALITY is worth more than window tightness, and by a wide margin.
+
+*The sweep.* 11 cards, full mode, seed 3, six deals, all arms from one binary:
+
+| variant | nodes | vs off |
+|---|---:|---:|
+| off | 89,134,281 | -- |
+| both bounds, every depth | 94,063,649 | **+5.53%** |
+| cutoff-side bound only | 91,173,026 | +2.29% |
+| both bounds, `t <= 5` | 93,024,453 | +4.36% |
+| both bounds, `t <= 4` | 91,595,863 | +2.76% |
+| both bounds, `t <= 3` | 89,895,365 | +0.85% |
+| both bounds, `t <= 2` | 89,117,003 | -0.02% |
+
+**Monotone on both axes.** Every increment of propagation costs, and the only
+gate that breaks even is the one narrow enough to do nothing. That is what makes
+this a refutation rather than one bad arm: there is no tuning left to try.
+
+*And the sign flips with hand size, the wrong way.* The propagating version is a
+**win** on the 4-6 card corpus -- 277,853 nodes against 281,287, -1.2% -- and a
+loss at 11 and 13. Entries at four cards are cheap to rebuild and barely reused;
+entries at eleven are neither. A change that pays at the small end and charges at
+the large one is the exact shape this project's standing rule rejects.
+
+*What survived.* Only one of the two bounds can end a node -- beta at a
+maximiser, alpha at a minimiser -- and the other is precisely the one whose only
+effect is to propagate. Taking the first as a CUTOFF THRESHOLD while leaving
+`alpha` and `beta` untouched keeps the benefit and pays none of the cost. That
+is patch 41; see Done and item 41 below.
+
+*The general lesson, which is the part to carry forward.* Four items have now
+been measured against the transposition table and three lost: table move
+ordering twice (patches 12 and 26), two-tier replacement (patch 20), and this.
+The one that won -- patch 30, confining the table to trick boundaries -- won by
+making the table CHEAPER rather than by asking more of it. **On this solver the
+table's value is concentrated in its exact entries, and anything that trades
+entry quality for anything else should be assumed negative until measured.** The
+next attempt at anything table-shaped owes a population measurement AND an
+entry-quality measurement, not just the first. Items 29b and 32 are unaffected:
+both add proofs and neither touches the table.
 
 **Skipping move ordering on forced nodes (patch 40).** Built, measured twice,
 withdrawn -- and the *reason the two measurements disagreed* is the part worth
@@ -2016,6 +2086,77 @@ variance is **deal-to-deal, not size-to-size**: the −24.35% deal on seed 42 is
 not that the bound only pays on cheap positions. Finding the discriminator is
 open, and would be worth more than the patch was.
 
+### 41. ~~The cutoff bound from a partial table match~~ — ⭐⭐⭐ — **done, patch 41; from [Plaat et al.]**
+
+`tt.hpp` carried the admission for as long as the table has had bounds in it: a
+match that does not settle the window *"is counted as `partial` and reported as
+a miss, so that `hits` keeps meaning nodes answered from the table"*. Reported
+as a miss and then discarded — and it is not a miss. `BOUND_LOWER` at x says the
+value is at least x, `BOUND_UPPER` at x says it is at most x, and both are facts
+about the POSITION, true whatever window happens to be asking.
+
+**Not item 5, twice over.** That item wanted the stored MOVE off a partial entry
+for move ordering, and it was closed twice — patch 12 because `partial` was
+identically zero, patch 26 because once patch 22 gave it a population the move
+turned out to be a worse hint than what it displaces. Neither result says
+anything about the stored BOUND, which is not a hint at all but a proof.
+
+**What it does.** Only one of the two bounds can end a node — beta at a
+maximiser, alpha at a minimiser — so the entry is compared against that bound
+alone and, when tighter, becomes the node's cutoff threshold. `alpha` and `beta`
+are untouched, so children are searched under exactly the window the caller
+gave and nothing about their stored entries changes.
+
+**That restriction is the item.** Tightening the window itself, which is what
+the textbook form does, was built first and is a **loss** — +5.5% at 11 cards
+after the classification fix, +20.3% before it. See "Evaluated and rejected"
+for the sweep, which is monotone across both the direction and the depth axis,
+and for the mechanism: a tighter window makes descendants record one-sided
+bounds where they would have recorded `BOUND_EXACT`, and an exact entry answers
+every window while a bound answers almost none.
+
+**Why the early cutoff is sound.** Take a maximiser whose entry pins `V <= y`
+and which stops at the first `best >= y`. The move that produced `best` was
+searched under the untouched window, so if `best` sits above alpha it came back
+exact and `V >= best`; with `V <= y <= best` that forces `V = best`. The value is
+squeezed exact by the same fact that shortened the search, so `walk_pv` and
+`canonical_move_for` still compare true values and MODE_FULL's principal
+variation is unmoved. Symmetrically at a minimiser. A partial also can never
+close the window — failing to answer means the bound sits strictly inside it —
+so there is no degenerate case to handle.
+
+**Measured**, both arms from one binary, `--no-tt-narrow` as the control:
+
+| workload | off | on | nodes |
+|---|---:|---:|---:|
+| corpus 560, full | 281,287 | 279,941 | −0.48% |
+| corpus 560, fast | 39,701 | 39,701 | **identical** |
+| random 9c x20, seed 1 | 7,556,472 | 7,477,320 | −1.05% |
+| random 11c x6, seed 3 | 89,134,281 | 88,491,025 | −0.72% |
+| random 12c x6, seed 3 | 35,437,172 | 35,059,198 | −1.07% |
+| random 13c x3, seed 3 | 94,727,951 | 93,581,425 | **−1.21%** |
+| random 13c x3, seed 11 | 232,501,536 | 231,122,364 | −0.59% |
+| random 13c x3, seed 42 | 79,246,073 | 78,767,161 | −0.60% |
+
+Nothing gets worse and the gain is largest at 13 cards, which is the right shape
+— though it is **not provably monotone** and the entry should not be read as
+claiming so: a node that cuts earlier stores a different entry, and the table
+couples workloads that the flag otherwise separates.
+
+**Wall time is a weaker result than nodes and this says so.** Interleaved
+medians on two 13-card seeds: 3390.8 ms against 3406.7 (seed 3) and 2807.0
+against 2827.4 (seed 42) — 0.5% and 0.7%, faster in 3 of 5 reps on each. Per
+patch 40's lesson this was measured with the arm toggled at runtime on ONE
+binary; a cross-binary comparison could not have resolved a change this size.
+Throughput is flat because the change adds no per-node work: `cut_at` is
+loop-invariant (loop narrowing moves the OTHER bound) and hoists out of the move
+loop, which is where the old `maximizing ? beta : alpha` was being re-evaluated.
+
+`MODE_FAST` is inert by arithmetic rather than by a gate — its window is `[0, 1]`
+at every node and every value it stores is a bound at one end or the other, so
+every match settles its window. The test suite pins that as an equality, not an
+inequality.
+
 ### 32. An adversarial nil-set proof — ⭐⭐⭐ → ⭐⭐ — **population measured, patch 38; proof NOT built, and the reason is worth reading**
 
 `nil_must_take_a_trick` proves the nil bidder wins a trick *whatever all four
@@ -2602,7 +2743,7 @@ say so.
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 36 ✅ → 29b (single-suit) → 9 ⊘ → 10 ⊘ → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 36 ✅ → 41 ✅ → 29b (single-suit) → 9 ⊘ → 10 ⊘ → measure → 11..14
 ```
 
 **Item 29b is next, and the case for it is now measured rather than argued.** A

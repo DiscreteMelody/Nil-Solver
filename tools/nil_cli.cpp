@@ -70,6 +70,10 @@ void usage(const char* argv0) {
         << "                          the move list (same answer, more nodes)\n"
         << "  --no-later-tricks       do not tighten that bound with the\n"
         << "                          opponents' forced trump tricks\n"
+        << "  --no-tt-narrow          do not take the cutoff threshold from a\n"
+        << "                          table entry that matches but does not\n"
+        << "                          settle the window (same answer, more\n"
+        << "                          nodes; full mode only)\n"
         << "  --no-target-bounds      do not answer a node from the reachable\n"
         << "                          range of the tricks left (same answer,\n"
         << "                          more nodes; full mode only)\n"
@@ -169,6 +173,8 @@ int main(int argc, char** argv) {
             opts.target_bounds = false;
         } else if (arg == "--no-later-tricks") {
             opts.later_tricks = false;
+        } else if (arg == "--no-tt-narrow") {
+            opts.tt_narrow_window = false;
         } else if (arg == "--no-suit-mix") {
             opts.suit_mixed_order = false;
         } else if (arg == "--no-narrow") {

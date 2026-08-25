@@ -607,6 +607,25 @@ whether or not it collects: it is a 3% tax on positions where the nil fails, and
 worth it because the tax is bounded by one fast search while the saving is not.
 Gated off below eight tricks, where it was measured as pure overhead.
 
+`--no-tt-narrow` is the control arm for the cutoff bound taken off a partial
+table match (roadmap item 41). A partial is an entry that describes the position
+but does not settle the window — "the value is at least x" asked about a window
+reaching past x. The solver used to discard it; it now spends it on the
+threshold the node's own cutoff test reads, when that is tighter than the one
+the window carries. The window itself is left alone, so children are searched
+under exactly what the caller asked and nothing about their stored entries
+changes. That restriction is the whole item and it was measured, not reasoned:
+tightening the window so that it propagates down the subtree costs 5.5% of the
+tree at 11 cards. Both arms must agree on the value **and** the line, so
+`corpus_tt_narrow` carries `--check-pv` — the item cuts a node short on the
+strength of a stored bound, and the argument that this is allowed is that the
+value it stops at is squeezed exact between that bound and fail-soft's. A search
+that returned a bound where the PV walk expects a value would still produce the
+right number at the root and the wrong line under it. Inert in fast mode, which
+has no partial entries at all: every node there is asked about `[0, 1]` and
+every value it stores is a bound at one end or the other, so every match settles
+its window.
+
 The harness generates random positions — random leader, random nil seat, random
 broken flag, and roughly a third of them resumed mid-trick — and compares three
 things: the bool, the exact trick count, and the **principal variation, card for

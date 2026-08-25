@@ -376,6 +376,9 @@ void usage(const char* argv0) {
               << "                    move list (same answer, more nodes)\n"
               << "  --no-later-tricks   do not tighten that bound with the opponents'\n"
               << "                    forced trump tricks (full mode only)\n"
+              << "  --no-tt-narrow    do not take the cutoff threshold from a table\n"
+              << "                    entry that matches but does not settle the\n"
+              << "                    window (same answer, more nodes; full mode only)\n"
               << "  --no-target-bounds  do not answer a node from the reachable range\n"
               << "                    of the tricks left (same answer, more nodes;\n"
               << "                    full mode only)\n"
@@ -430,6 +433,7 @@ std::string memo_label(const nil::SearchOptions& opts) {
     // would split one history into two groups holding identical numbers.
     if (!opts.target_bounds && opts.mode == nil::MODE_FULL) suffix += "+notarget";
     if (!opts.later_tricks && opts.mode == nil::MODE_FULL) suffix += "+nolatertricks";
+    if (!opts.tt_narrow_window && opts.mode == nil::MODE_FULL) suffix += "+nottnarrow";
     // Both modes: order_moves runs in full mode too, so full-mode rows move
     // under this arm as well and a fast-only suffix would silently merge two
     // different trees.
@@ -529,6 +533,8 @@ int main(int argc, char** argv) {
             opts.target_bounds = false;
         } else if (arg == "--no-later-tricks") {
             opts.later_tricks = false;
+        } else if (arg == "--no-tt-narrow") {
+            opts.tt_narrow_window = false;
         } else if (arg == "--no-suit-mix") {
             opts.suit_mixed_order = false;
         } else if (arg == "--no-narrow") {
