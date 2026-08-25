@@ -32,7 +32,7 @@ echo "=== Benchmark ==="
 
 if [ "${NIL_SKIP_WORST:-0}" != "1" ]; then
     echo
-    echo "=== Worst case (13 cards, ~543M nodes, about a minute) ==="
+    echo "=== Worst case (13 cards, ~290M nodes, about half a minute) ==="
     # --cards-only 13 selects the three 13-card rows and nothing else.  Their
     # answers are PINNED FROM THIS SOLVER, not from nil_oracle.py, which cannot
     # reach 13 cards: a mismatch here means something CHANGED, not necessarily
@@ -40,8 +40,15 @@ if [ "${NIL_SKIP_WORST:-0}" != "1" ]; then
     #
     # Baselines to compare against, deterministic and machine independent:
     #   c13-0000     60,020,405 nodes
-    #   c13-0001    379,357,462 nodes   <- the hardest deal in the repo
-    #   c13-0002    104,316,206 nodes
+    #   c13-0001    184,547,569 nodes   <- the hardest deal in the repo
+    #   c13-0002     45,408,575 nodes
+    #
+    # All three run the MAX tie-break, matching the rest of the file.  Worth
+    # knowing before you read a win off them: min is the more expensive
+    # direction, 2.06x on c13-0001 and 2.30x on c13-0002, measured on one build
+    # with only the flag moved.  These rows are the milder of the two worst
+    # cases.  If the application ever solves for bag avoidance, the deals users
+    # actually wait on are about twice what this leg reports.
     "$BENCH" --corpus tests/corpus/large.txt --cards-only 13 --slowest 3 \
              --history bench-history.csv --note "worst-case 13c${NOTE:+ -- $NOTE}" || exit 1
 fi

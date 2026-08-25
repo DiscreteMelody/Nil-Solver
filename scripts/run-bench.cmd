@@ -33,7 +33,7 @@ if errorlevel 1 goto :fail
 
 if "%NIL_SKIP_WORST%"=="1" goto :skip_worst
 echo.
-echo === Worst case (13 cards, ~543M nodes, about a minute) ===
+echo === Worst case (13 cards, ~290M nodes, about half a minute) ===
 rem --cards-only 13 selects the three 13-card rows and nothing else.  Their
 rem answers are PINNED FROM THIS SOLVER, not from nil_oracle.py, which cannot
 rem reach 13 cards: a mismatch here means something CHANGED, not necessarily
@@ -41,8 +41,15 @@ rem that something broke.  Investigate rather than assume either way.
 rem
 rem Baselines to compare against, deterministic and machine independent:
 rem   c13-0000     60,020,405 nodes
-rem   c13-0001    379,357,462 nodes   ^<- the hardest deal in the repo
-rem   c13-0002    104,316,206 nodes
+rem   c13-0001    184,547,569 nodes   ^<- the hardest deal in the repo
+rem   c13-0002     45,408,575 nodes
+rem
+rem All three run the MAX tie-break, matching the rest of the file.  Worth
+rem knowing before you read a win off them: min is the more expensive
+rem direction, 2.06x on c13-0001 and 2.30x on c13-0002, measured on one build
+rem with only the flag moved.  These rows are the milder of the two worst
+rem cases.  If the application ever solves for bag avoidance, the deals users
+rem actually wait on are about twice what this leg reports.
 "%BENCH%" --corpus tests\corpus\large.txt --cards-only 13 --slowest 3 ^
           --history bench-history.csv --note "worst-case 13c %NOTE%"
 if errorlevel 1 goto :fail
