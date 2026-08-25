@@ -41,10 +41,12 @@ c8-0002 | N:T9..JT9853. A8.T54.Q76. K4.A32.A42. Q732.Q987.. | E | N | 1 | 0 |  |
 c9-0000 | N:J3.JT8765.6. A5.92.QJ842. Q9642.KQ3.T. KT87.4.AK95. | S | S | 1 | 1 |  | max | 0 | ? | ? |  | unverified
 c9-0001 | N:762.AKQ6.J3. Q.T9852.764. AJT4.3.AQT2. 9853.J74.85. | S | W | 1 | 0 |  | min | 0 | ? | ? |  | unverified
 c9-0002 | N:KT92.KT5.98. 54.AQ43.J62. A873.6.AT53. Q6.J87.KQ74. | W | E | 0 | 0 |  | min | 0 | ? | ? |  | unverified
-#   c13-0000  solver did not finish within 5s
-#   c13-0001  solver did not finish within 5s
-c13-0000 | N:KQT5.QJ.6543.JT5 8743.KT8642.Q82. J62.A975.AK9.963 A9.3.JT7.AKQ8742 | E | S | 0 | 1 |  | max | 0 | ? | ? |  | unverified
-c13-0001 | N:Q532..A854.K8643 6.KT86.973.JT752 AKJT9.AQJ3.T2.Q9 874.97542.KQJ6.A | E | S | 1 | 1 |  | min | 0 | ? | ? |  | unverified
+#   c13-0000  60,020,405 nodes -- recorded unverified when it would not finish in 5s,
+#             pinned once patches 22-41 brought it inside a minute
+#   c13-0001  379,357,462 nodes -- recorded unverified when it would not finish in 5s,
+#             pinned once patches 22-41 brought it inside a minute
+c13-0000 | N:KQT5.QJ.6543.JT5 8743.KT8642.Q82. J62.A975.AK9.963 A9.3.JT7.AKQ8742 | E | S | 0 | 1 |  | max | 0 | 3 | 6 | E:HK S:H5 W:H3 N:HJ E:H2 S:H7 W:S9 N:HQ W:C2 N:C5 E:S3 S:C3 E:H4 S:H9 W:DT N:S5 N:D3 E:D2 S:DK W:D7 S:HA W:DJ N:ST E:H6 N:D4 E:D8 S:DA W:C4 S:D9 W:C7 N:D5 E:DQ E:S4 S:S2 W:SA N:SQ W:CQ N:CT E:H8 S:C6 W:C8 N:CJ E:S7 S:C9 E:S8 S:S6 W:CK N:SK N:D6 E:HT S:SJ W:CA | solver
+c13-0001 | N:Q532..A854.K8643 6.KT86.973.JT752 AKJT9.AQJ3.T2.Q9 874.97542.KQJ6.A | E | S | 1 | 1 |  | min | 0 | 4 | 9 | E:H6 S:H3 W:H2 N:D4 E:S6 S:S9 W:S4 N:S2 S:D2 W:D6 N:D5 E:D3 W:S7 N:SQ E:H8 S:ST N:D8 E:D7 S:DT W:DJ W:S8 N:S3 E:D9 S:SJ S:C9 W:CA N:C3 E:C5 W:H4 N:S5 E:HK S:HJ N:DA E:C7 S:HQ W:DQ N:CK E:CT S:CQ W:H5 N:C4 E:C2 S:HA W:H7 N:C6 E:CJ S:SK W:H9 S:SA W:DK N:C8 E:HT | solver
 #   c7-0006  2164523 nodes
 #   c7-0007  solver did not finish within 25s
 #   c7-0008  solver did not finish within 25s
@@ -53,3 +55,7 @@ c7-0006 | N:3.T.AT85.3 92.8.J9.T5 864.6.73.8 T.93.6.J72 | W | W | 0 | 1 |  | min
 c7-0007 | N:87..7542.2 K2.K.86.T9 .JT87.AT.7 AJ3.A32..J | E | E | 0 | 1 |  | min | 0 | ? | ? |  | unverified
 c7-0008 | N:A..T43.A63 842.7.A6.5 .93.K.Q987 KQ97..87.J | S | S | 1 | 1 |  | max | 0 | ? | ? |  | unverified
 c7-0009 | N:.87.A83.Q6 4.Q32.T2.9 KT2.A9.9.J J8.T.4.T54 | S | N | 0 | 0 |  | min | 0 | 0 | 5 | S:H9 W:HT N:H7 E:H2 W:D4 N:D3 E:D2 S:D9 S:HA W:C4 N:H8 E:H3 S:CJ W:C5 N:C6 E:C9 S:S2 W:SJ N:D8 E:S4 W:CT N:CQ E:HQ S:ST S:SK W:S8 N:DA E:DT | solver
+#   c13-0002  104,316,206 nodes, WORST of 24 finishers among 30 screened at 13 cards
+#             (cheapest finisher 2,300,668 -- a 45x spread; six more deals
+#             did not finish inside the 25s screening window at all)
+c13-0002 | N:KJ94.QJ6.9.QJT32 QT83.T432.AQ52.6 762.AK8.J873.K85 A5.975.KT64.A974 | W | W | 1 | 0 |  | min | 0 | 1 | 6 | W:S5 N:S4 E:S8 S:S2 E:C6 S:C5 W:C4 N:C2 E:H2 S:H8 W:H5 N:H6 S:S6 W:SA N:S9 E:S3 W:H7 N:HJ E:H3 S:HK S:S7 W:C9 N:SJ E:ST N:SK E:SQ S:HA W:CA N:HQ E:H4 S:D7 W:H9 N:D9 E:D2 S:DJ W:D4 S:D8 W:D6 N:C3 E:D5 S:D3 W:DT N:CT E:DQ E:HT S:C8 W:DK N:CJ E:DA S:CK W:C7 N:CQ | solver

@@ -38,6 +38,27 @@ deterministic, so they are what to compare against later.
   tools/make_large_corpus.py --cards 7 --verify 4 --out tests/corpus/large.txt
   tools/make_large_corpus.py --cards 8 --pin 3 --append --out tests/corpus/large.txt
   tools/make_large_corpus.py --cards 9 --timed 3 --append --out tests/corpus/large.txt
+
+WORST-CASE ROWS
+---------------
+--pin keeps the FIRST deal that finishes inside the screening window, which is
+what you want when the point is to get a verified answer cheaply.  It is the
+wrong end of the distribution when the point is to measure how long the solver
+takes on a bad day.  Cost varies by two orders of magnitude within a hand size,
+so an average 13-card deal says almost nothing about the tail, and the tail is
+where a user waits.
+
+--hardest N screens --tries candidates and keeps the N most EXPENSIVE that still
+finished, by node count.  Deals that blow the screening window are discarded
+rather than recorded: a row you cannot time is no use as a timing baseline, and
+--timed already exists for rows that are only there to be attempted.
+
+  tools/make_large_corpus.py --cards 13 --hardest 1 --solver-timeout 25 \
+      --tries 40 --append --out tests/corpus/large.txt
+
+Pick --solver-timeout for how long you are willing to wait every time the row is
+run, not for how hard you can make it.  A worst-case row that takes an hour will
+simply never be run, which makes it worth nothing.
 """
 
 from __future__ import annotations
@@ -204,6 +225,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                    help="emit N rows pinned from the solver (no oracle)")
     p.add_argument("--timed", type=int, default=0, metavar="N",
                    help="emit N rows with no recorded answer, for timing only")
+    p.add_argument("--hardest", type=int, default=0, metavar="N",
+                   help="screen --tries candidates and emit the N most expensive "
+                        "that still finished, pinned from the solver")
     p.add_argument("--solver-timeout", type=float, default=4.0,
                    help="wall-clock cap when screening for cheap positions [4]")
     p.add_argument("--oracle-node-budget", type=int, default=3000000,
@@ -231,13 +255,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     rng = random.Random(args.seed)
     want_verify, want_pin, want_timed = args.verify, args.pin, args.timed
+    # Candidates for --hardest, kept until every try is spent because the most
+    # expensive one cannot be known before the last screen.
+    hardest_pool: List[Dict[str, object]] = []
     lines: List[str] = []
     notes: List[str] = []
     index = args.start_index
     started = time.time()
 
     for attempt in range(args.tries):
-        if not (want_verify or want_pin or want_timed):
+        if not (want_verify or want_pin or want_timed or args.hardest):
             break
         spec = deal(rng, oracle, args.cards, args.trick_prob, args.suits)
         fields = run_solver(args.exe, spec, args.solver_timeout)
@@ -258,6 +285,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
         nodes = int(fields["nodes"])
         name = "c%d-%04d" % (args.cards, index)
+
+        if args.hardest:
+            # Every finisher is a candidate; the winner is not known until the
+            # last screen, so nothing is emitted here.  Node count rather than
+            # wall clock decides, because node counts are deterministic and the
+            # screening runs share a machine with whatever else is on it.
+            hardest_pool.append({"spec": spec, "fields": fields, "nodes": nodes})
+            if not args.quiet:
+                print("  candidate %3d  %12d nodes" % (attempt, nodes))
+            continue
 
         if want_verify and nodes <= args.oracle_node_budget and oracle is not None:
             t0 = time.time()
@@ -290,6 +327,30 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             want_pin -= 1
             if not args.quiet:
                 print("  %s  pinned from the solver (%d nodes)" % (name, nodes))
+
+    if args.hardest:
+        hardest_pool.sort(key=lambda c: -int(c["nodes"]))
+        if not hardest_pool:
+            print("make_large_corpus: no candidate finished inside %.0fs; either "
+                  "raise --solver-timeout or accept --timed rows" % args.solver_timeout,
+                  file=sys.stderr)
+            return 1
+        for chosen in hardest_pool[: args.hardest]:
+            spec, fields = chosen["spec"], chosen["fields"]
+            name = "c%d-%04d" % (args.cards, index)
+            lines.append(row(name, spec, fields["tricks"], fields["side_tricks"],
+                             fields["pv"], "solver"))
+            notes.append("#   %s  %d nodes, WORST of %d screened at %d cards"
+                         % (name, chosen["nodes"], len(hardest_pool), args.cards))
+            index += 1
+            if not args.quiet:
+                print("  %s  hardest of %d finishers (%d nodes)"
+                      % (name, len(hardest_pool), chosen["nodes"]))
+        if not args.quiet and len(hardest_pool) > 1:
+            spread = hardest_pool[0]["nodes"] / max(1, hardest_pool[-1]["nodes"])
+            print("  screened %d finishers, %d to %d nodes (%.0fx spread)"
+                  % (len(hardest_pool), hardest_pool[-1]["nodes"],
+                     hardest_pool[0]["nodes"], spread))
 
     if not lines:
         print("no rows produced in %d tries" % args.tries, file=sys.stderr)
