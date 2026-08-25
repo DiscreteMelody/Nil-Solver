@@ -608,7 +608,6 @@ int main(int argc, char** argv) {
         std::string name;
         nil::Position position;
         int nil_seat;
-        bool forced;
         bool minimise_own;
         bool nil_already_set;
         int expected;
@@ -631,7 +630,7 @@ int main(int argc, char** argv) {
         }
         for (const nil::CorpusEntry& e : entries) {
             if (cards_only && e.position.cards_per_hand() != cards_only) continue;
-            items.push_back(Item{e.name, e.position, e.nil_seat, e.break_on_forced_spade_lead,
+            items.push_back(Item{e.name, e.position, e.nil_seat,
                                  e.minimise_own_tricks, e.nil_already_set, e.expected_tricks,
                                  e.expected_side_tricks, e.expected_pv, nil::corpus_repro(e)});
         }
@@ -646,7 +645,7 @@ int main(int argc, char** argv) {
             nil::Position pos = random_position(rng, cards, nil_seat);
             std::ostringstream name;
             name << "r" << cards << "-" << std::setw(4) << std::setfill('0') << i;
-            items.push_back(Item{name.str(), pos, nil_seat, false, opts.minimise_own_tricks,
+            items.push_back(Item{name.str(), pos, nil_seat, opts.minimise_own_tricks,
                                  opts.nil_already_set, -1, -1, "", ""});
         }
     }
@@ -695,7 +694,6 @@ int main(int argc, char** argv) {
         for (int r = 0; r < repeat; ++r) {
             const Clock::time_point t0 = Clock::now();
             nil::SearchOptions run_opts = opts;
-            run_opts.break_on_forced_spade_lead = item.forced;
             run_opts.minimise_own_tricks = item.minimise_own;
             run_opts.nil_already_set = item.nil_already_set;
             if (!nil::solve(item.position, item.nil_seat, run_opts, sol, err)) {
@@ -740,7 +738,6 @@ int main(int argc, char** argv) {
         if (cross_check_modes && solved) {
             nil::SearchOptions full_opts = opts;
             full_opts.mode = nil::MODE_FULL;
-            full_opts.break_on_forced_spade_lead = item.forced;
             full_opts.minimise_own_tricks = item.minimise_own;
             full_opts.nil_already_set = item.nil_already_set;
             nil::Solution full;
@@ -773,7 +770,6 @@ int main(int argc, char** argv) {
         // over the whole corpus in either mode.
         if (check_moves && solved) {
             nil::SearchOptions move_opts = opts;
-            move_opts.break_on_forced_spade_lead = item.forced;
             move_opts.minimise_own_tricks = item.minimise_own;
             move_opts.nil_already_set = item.nil_already_set;
             nil::Solution msol;

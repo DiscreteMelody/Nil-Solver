@@ -49,11 +49,13 @@ namespace NilSolver
         /// <summary>Spades are already broken in the given position.</summary>
         SpadesBroken = 0x1u,
 
-        /// <summary>
-        /// Treat a forced spade lead (all-spade hand, spades unbroken) as breaking
-        /// spades. Off by default, which is the literal reading of the rule.
-        /// </summary>
-        BreakOnForcedSpadeLead = 0x2u,
+        // 0x2u is RETIRED and must not be reused. It used to select the literal
+        // reading of the break rule, under which a hand forced to lead a spade left
+        // spades unbroken. Playing a spade now always breaks spades, so there is
+        // nothing to select. The bit is burned rather than recycled: a caller built
+        // against an older build would otherwise pass 0x2 meaning one thing and have
+        // it read as another, and silently getting a different objective is worse
+        // than an unknown flag being ignored.
 
         /// <summary>Disable the transposition table. A diagnostic; orders of magnitude slower.</summary>
         NoMemo = 0x4u,

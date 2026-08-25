@@ -46,7 +46,6 @@ void usage(const char* argv0) {
         << "  --nil-already-set       the nil has already been broken; drop the\n"
         << "                          primary objective and optimise only the\n"
         << "                          secondary one\n"
-        << "  --break-on-forced-lead  a forced spade lead breaks spades (see README)\n"
         << "  --no-memo               disable the transposition table (same answer,\n"
         << "                          much slower)\n"
         << "  --no-collapse           generate every legal card rather than one per\n"
@@ -153,8 +152,6 @@ int main(int argc, char** argv) {
             }
         } else if (arg == "--nil-already-set") {
             opts.nil_already_set = true;
-        } else if (arg == "--break-on-forced-lead") {
-            opts.break_on_forced_spade_lead = true;
         } else if (arg == "--no-memo") {
             opts.use_memo = false;
         } else if (arg == "--no-collapse") {

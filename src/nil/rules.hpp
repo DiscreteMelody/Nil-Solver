@@ -24,18 +24,24 @@ inline Hand legal_moves(Hand hand, int trick_len, int led_suit, bool spades_brok
     return follow ? follow : hand;
 }
 
-// Updated "spades are broken" flag after `card_suit` is played onto a trick
-// that already holds `trick_len` cards of led suit `led_suit`.
+// Updated "spades are broken" flag once a card of `card_suit_` has been played.
 //
-// The forced-spade-lead case is the one genuine rule ambiguity; see the README.
-// `break_on_forced_lead == false` is the literal reading and matches the
-// oracle's default.
-inline bool spades_broken_after(bool spades_broken, int trick_len, int led_suit,
-                                int card_suit_, bool break_on_forced_lead) {
-    if (spades_broken || card_suit_ != SUIT_SPADES) return spades_broken;
-    if (trick_len == 0) return break_on_forced_lead;
-    // legal_moves guarantees a spade on a non-spade lead means a void.
-    return led_suit != SUIT_SPADES;
+// PLAYING A SPADE BREAKS SPADES.  There are no cases: a spade led when spades
+// are not broken can only be a forced lead, since legal_moves permits a
+// voluntary spade lead only once they are, and a spade played to a non-spade
+// lead is a ruff or a discard.  Every one of those puts a spade on the table.
+//
+// This used to be parameterised.  `break_on_forced_lead == false` -- the
+// literal reading, in which a hand forced to lead a spade somehow leaves them
+// unbroken -- was the default, and it produced positions where the whole rest
+// of the deal could be played out with spades still nominally unbroken.  It is
+// gone: it is not how the game is scored anywhere the application runs, it was
+// the one genuine rule ambiguity in the solver, and carrying both readings cost
+// a flag on every interface from the C ABI to the corpus format.  Also note the
+// trick_len and led_suit arguments are gone with it, because neither was ever
+// consulted for anything else.
+inline bool spades_broken_after(bool spades_broken, int card_suit_) {
+    return spades_broken || card_suit_ == SUIT_SPADES;
 }
 
 // Does `candidate` beat the current best card on the trick?  `incumbent` is

@@ -175,10 +175,6 @@ struct SearchOptions {
     // answer that carries its own evidence.
     SearchMode mode = MODE_FULL;
 
-    // See rules.hpp: false is the literal reading of the break rule and matches
-    // nil_oracle.py's default.
-    bool break_on_forced_spade_lead = false;
-
     // Direction of the tie-break.  false: each pair takes as many tricks as it
     // can.  true: each pair takes as few as it can (bag avoidance).
     bool minimise_own_tricks = false;
@@ -712,8 +708,8 @@ bool solve_moves(const Position& pos, int nil_seat, const SearchOptions& opts, S
 
 // Replays a PV, checking every play for legality and turn order, and reports
 // who took what.  Also useful for checking a PV produced elsewhere.
-bool replay_pv(const Position& pos, const std::vector<Play>& pv, int nil_seat,
-               bool break_on_forced_spade_lead, Tally& tally_out, std::string& err);
+bool replay_pv(const Position& pos, const std::vector<Play>& pv, int nil_seat, Tally& tally_out,
+               std::string& err);
 
 // The transposition table is kept between calls, because a corpus run solves
 // hundreds of positions and reallocating tens of megabytes for each one costs

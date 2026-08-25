@@ -31,7 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import crosscheck  # noqa: E402
 
 SEAT_CHARS = "NESW"
-FIELDS = ("name", "pbn", "leader", "nil", "broken", "forced", "trick",
+FIELDS = ("name", "pbn", "leader", "nil", "broken", "trick",
           "secondary", "nilset", "nil_tricks", "side_tricks", "pv", "provenance")
 
 
@@ -55,7 +55,6 @@ def recompute(oracle, record: Dict[str, str]):
     case.leader = SEAT_CHARS.index(record["leader"])
     case.nil_seat = SEAT_CHARS.index(record["nil"])
     case.spades_broken = record["broken"] == "1"
-    case.break_forced = record["forced"] == "1"
     case.secondary = record["secondary"]
     case.nil_already_set = record["nilset"] == "1"
     case.current_trick = tuple(

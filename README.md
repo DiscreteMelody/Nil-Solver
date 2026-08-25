@@ -756,16 +756,45 @@ Worth checking against the scratch position at the bottom of `nil_oracle.py`,
 which designates E: the oracle as written reports 2 tricks, and the nil question
 on the same layout is 1. Both are correct answers to different questions.
 
-## The rule ambiguity
+## The forced spade lead
 
 "Spades break when a spade is played on a trick where the player was void in the
 led suit." Read literally, a *forced spade lead* — a player holding nothing but
 spades leads one while spades are unbroken — does not break spades, because the
 leader is not void in the led suit. Many implementations break spades anyway.
 
-The literal reading is the default here, matching the oracle. Pass
-`--break-on-forced-lead` (or `NIL_FLAG_BREAK_ON_FORCED_SPADE_LEAD`) for the
-other convention. The cross-check exercises both.
+This used to be the one genuine ambiguity in the solver, selectable on both
+sides so the oracle and the C++ could be configured to agree. It is gone:
+**playing a spade breaks spades**, with no cases and nothing to select. A hand
+forced to lead a spade breaks them. The literal reading produced deals that
+could be played to the last trick with spades still nominally unbroken, which is
+not how the game is scored anywhere this runs, and carrying both readings cost a
+parameter on every interface from `spades_broken_after` to the C ABI to the
+corpus format. `NIL_FLAG_BREAK_ON_FORCED_SPADE_LEAD` is retired and its bit
+`0x2u` is burned rather than recycled, so an old caller passing it gets an
+ignored flag rather than a silently different objective.
+
+The re-derivation is recorded because it is a rules change and rules changes
+move answers: 261 of the 560 corpus rows were computed under the literal
+reading, and **none of their answers moved**. A forced spade lead needs a hand
+holding nothing but spades while on lead, which those constructed endings never
+reach. The `large.txt` rows did not move either.
+
+## Spades cannot be broken before a spade is played
+
+`validate()` rejects a position that claims broken spades while all thirteen are
+still in play — in the four hands plus the current trick. Breaking spades means
+one has been played, and a full 13-card deal has had no card played at all.
+Below thirteen the count proves nothing, because a smaller layout is a
+constructed ending rather than a played-down one: the absent spades were never
+dealt, so those positions may legitimately start broken.
+
+This is worth rejecting rather than tolerating, because such a position is not
+merely unreachable, it is expensive. Unbroken spades forbid a voluntary spade
+lead, which prunes hard near the root; setting the flag on a full deal throws
+that away and searches a game nobody can play. Three rows in `large.txt` carried
+it, including one at nine cards, and clearing them took the 13-card benchmark
+leg from 290M nodes to 163M without moving a single value.
 
 ## Equivalent cards
 

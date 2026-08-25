@@ -8,15 +8,16 @@
 // One record per line, fields separated by '|' and trimmed.  Blank lines and
 // lines starting with '#' are ignored.
 //
-//   name | pbn | leader | nil | broken | forced | trick | secondary | nilset |
+//   name | pbn | leader | nil | broken | trick | secondary | nilset |
 //   nil_tricks | side_tricks | pv | provenance
 //
 //   name        identifier for the record, e.g. "c5-0042"
 //   pbn         PBN deal string
 //   leader      N/E/S/W, seat that led the current trick
 //   nil         N/E/S/W, seat that bid nil
-//   broken      0 or 1, spades already broken
-//   forced      0 or 1, break_on_forced_spade_lead convention
+//   broken      0 or 1, spades already broken.  A layout still holding all
+//               thirteen spades cannot have them broken -- see validate() --
+//               so this is 0 on every full 13-card deal.
 //   trick       cards already on the trick, e.g. "H4 HK"; may be empty
 //   secondary   "max" or "min", the tie-break direction
 //   nilset      0 or 1, whether the nil is already broken
@@ -50,7 +51,6 @@ struct CorpusEntry {
     std::string trick_text; // as written in the file
     Position position;
     int nil_seat = 0;
-    bool break_on_forced_spade_lead = false;
     bool minimise_own_tricks = false;
     bool nil_already_set = false;
     int expected_tricks = -1;        // -1 when the file says "?"

@@ -193,18 +193,16 @@ int main(int argc, char** argv) {
     check("void may play anything",
           nil::legal_moves(H({"SA", "C3"}), 1, nil::SUIT_HEARTS, true), H({"SA", "C3"}));
 
-    check("ruff breaks spades",
-          nil::spades_broken_after(false, 1, nil::SUIT_HEARTS, nil::SUIT_SPADES, false), true);
+    // Playing a spade breaks spades, with no cases and no convention to pick.
+    check("ruff breaks spades", nil::spades_broken_after(false, nil::SUIT_SPADES), true);
     check("discarding a non-spade does not break",
-          nil::spades_broken_after(false, 1, nil::SUIT_HEARTS, nil::SUIT_CLUBS, false), false);
-    check("spade on a spade lead does not break",
-          nil::spades_broken_after(false, 1, nil::SUIT_SPADES, nil::SUIT_SPADES, false), false);
-    check("forced spade lead: literal reading does not break",
-          nil::spades_broken_after(false, 0, -1, nil::SUIT_SPADES, false), false);
-    check("forced spade lead: alternate convention breaks",
-          nil::spades_broken_after(false, 0, -1, nil::SUIT_SPADES, true), true);
+          nil::spades_broken_after(false, nil::SUIT_CLUBS), false);
+    check("a spade played on a spade lead breaks too",
+          nil::spades_broken_after(false, nil::SUIT_SPADES), true);
+    check("a forced spade lead breaks spades",
+          nil::spades_broken_after(false, nil::SUIT_SPADES), true);
     check("already broken stays broken",
-          nil::spades_broken_after(true, 1, nil::SUIT_HEARTS, nil::SUIT_CLUBS, false), true);
+          nil::spades_broken_after(true, nil::SUIT_CLUBS), true);
 
     check("highest of led suit wins", trick_winner_of("N", {"D2", "DA", "D5", "D7"}), 1);
     check("any spade beats any non-spade", trick_winner_of("N", {"DA", "S2", "DK", "DQ"}), 1);
@@ -1549,6 +1547,25 @@ int main(int argc, char** argv) {
 
     std::cout << "Validation\n";
     {
+        // Spades cannot be broken while every spade is still unplayed.  A full
+        // deal has had no card played at all, so the flag is claiming something
+        // that cannot have happened -- and the position it describes is not
+        // merely unreachable but expensive, since unbroken spades are what
+        // forbid a voluntary spade lead near the root.
+        std::string err;
+        Position full = make_position(
+            "N:KJ94.QJ6.9.QJT32 QT83.T432.AQ52.6 762.AK8.J873.K85 A5.975.KT64.A974", "W",
+            false);
+        check("a full deal with spades unbroken is valid", nil::validate(full, err), true);
+        full.spades_broken = true;
+        check("a full deal cannot have spades already broken", nil::validate(full, err), false);
+
+        // Below thirteen the count proves nothing: the absent spades were never
+        // dealt rather than played, so a constructed ending may start broken.
+        Position ending = make_position("N:..2. ..A. ..5. ..7.", "N", true);
+        check("a constructed ending may start broken", nil::validate(ending, err), true);
+    }
+    {
         Position pos;
         std::string err;
         nil::parse_pbn("N:A... A... .... ....", pos.hands, err);
@@ -1572,18 +1589,18 @@ int main(int argc, char** argv) {
         const Solution sol = must_solve(pos, "E");
         nil::Tally tally;
         std::string err;
-        check("good PV replays", nil::replay_pv(pos, sol.pv, 1, false, tally, err), true);
+        check("good PV replays", nil::replay_pv(pos, sol.pv, 1, tally, err), true);
         check("good PV replays to the same value", tally.nil_tricks, 1);
         check("replay tallies the nil's side", tally.nil_side_tricks, 1);
         check("replay tallies the opponents", tally.opponent_tricks, 0);
 
         std::vector<nil::Play> bad = sol.pv;
         std::swap(bad[0], bad[1]);
-        check("out-of-turn PV is rejected", nil::replay_pv(pos, bad, 1, false, tally, err),
+        check("out-of-turn PV is rejected", nil::replay_pv(pos, bad, 1, tally, err),
               false);
 
         std::vector<nil::Play> truncated(sol.pv.begin(), sol.pv.begin() + 2);
-        check("short PV is rejected", nil::replay_pv(pos, truncated, 1, false, tally, err),
+        check("short PV is rejected", nil::replay_pv(pos, truncated, 1, tally, err),
               false);
     }
 
@@ -1731,9 +1748,8 @@ int main(int argc, char** argv) {
             nil::Position child = pos;
             const int seat = (pos.leader + pos.trick_len) & 3;
             child.hands[seat] &= ~nil::card_bit(m.card);
-            child.spades_broken = nil::spades_broken_after(
-                pos.spades_broken, pos.trick_len, pos.trick_len ? nil::card_suit(pos.trick[0]) : -1,
-                nil::card_suit(m.card), opts.break_on_forced_spade_lead);
+            child.spades_broken =
+                nil::spades_broken_after(pos.spades_broken, nil::card_suit(m.card));
             if (pos.trick_len == 3) {
                 const nil::CardId played[4] = {pos.trick[0], pos.trick[1], pos.trick[2], m.card};
                 child.leader = nil::trick_winner(pos.leader, played, 4);

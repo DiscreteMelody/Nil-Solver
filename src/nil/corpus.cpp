@@ -50,10 +50,14 @@ bool load_corpus(const std::string& path, std::vector<CorpusEntry>& out, std::st
         const std::vector<std::string> f = split(trimmed, '|');
         std::ostringstream where;
         where << path << ":" << line_no << ": ";
-        if (f.size() < 11) {
+        if (f.size() < 10) {
             err = where.str() + "expected at least 11 '|' separated fields, got " +
                   std::to_string(f.size());
-            if (f.size() == 8 || f.size() == 9) {
+            if (f.size() == 11 || f.size() == 12 || f.size() == 13) {
+                err += " -- this looks like the old layout with a `forced` column"
+                       " sixth; that column is gone, because a forced spade lead"
+                       " now always breaks spades";
+            } else if (f.size() == 8 || f.size() == 9) {
                 err += ". This looks like a corpus from before the lexicographic "
                        "objective; regenerate it with tools/make_corpus.py";
             }
@@ -74,8 +78,7 @@ bool load_corpus(const std::string& path, std::vector<CorpusEntry>& out, std::st
             return false;
         }
         entry.position.spades_broken = (f[4] == "1");
-        entry.break_on_forced_spade_lead = (f[5] == "1");
-        entry.trick_text = f[6];
+        entry.trick_text = f[5];
         if (!entry.trick_text.empty()) {
             int count = 0;
             if (!parse_cards(entry.trick_text, entry.position.trick, 3, count, err)) {
@@ -84,16 +87,16 @@ bool load_corpus(const std::string& path, std::vector<CorpusEntry>& out, std::st
             }
             entry.position.trick_len = count;
         }
-        if (f[7] != "max" && f[7] != "min") {
-            err = where.str() + "secondary must be 'max' or 'min', got '" + f[7] + "'";
+        if (f[6] != "max" && f[6] != "min") {
+            err = where.str() + "secondary must be 'max' or 'min', got '" + f[6] + "'";
             return false;
         }
-        entry.minimise_own_tricks = (f[7] == "min");
-        entry.nil_already_set = (f[8] == "1");
-        entry.expected_tricks = (f[9] == "?") ? -1 : std::atoi(f[9].c_str());
-        entry.expected_side_tricks = (f[10] == "?") ? -1 : std::atoi(f[10].c_str());
-        if (f.size() > 11) entry.expected_pv = f[11];
-        if (f.size() > 12 && !f[12].empty()) entry.provenance = f[12];
+        entry.minimise_own_tricks = (f[6] == "min");
+        entry.nil_already_set = (f[7] == "1");
+        entry.expected_tricks = (f[8] == "?") ? -1 : std::atoi(f[8].c_str());
+        entry.expected_side_tricks = (f[9] == "?") ? -1 : std::atoi(f[9].c_str());
+        if (f.size() > 10) entry.expected_pv = f[10];
+        if (f.size() > 11 && !f[11].empty()) entry.provenance = f[11];
 
         if (!validate(entry.position, err)) {
             err = where.str() + err;
@@ -115,7 +118,6 @@ std::string corpus_repro(const CorpusEntry& entry, const std::string& exe) {
        << " --leader " << SEAT_CHARS[entry.position.leader] << " --nil "
        << SEAT_CHARS[entry.nil_seat];
     if (entry.position.spades_broken) os << " --spades-broken";
-    if (entry.break_on_forced_spade_lead) os << " --break-on-forced-lead";
     if (entry.minimise_own_tricks) os << " --secondary min";
     if (entry.nil_already_set) os << " --nil-already-set";
     if (!entry.trick_text.empty()) os << " --trick '" << entry.trick_text << "'";

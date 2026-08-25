@@ -91,7 +91,6 @@ class Case:
         self.leader = rng.randrange(4)
         self.nil_seat = rng.randrange(4)
         self.spades_broken = bool(rng.getrandbits(1))
-        self.break_forced = bool(rng.getrandbits(1))
         self.secondary = "min" if rng.getrandbits(1) else "max"
         # Weighted: the live-nil case is the one that matters most, but the
         # already-set case has to be exercised too or it will rot.
@@ -107,7 +106,7 @@ class Case:
                 )
                 card = rng.choice(legal)
                 broken = oracle.spades_broken_after(
-                    broken, tuple(trick), card, self.break_forced
+                    broken, tuple(trick), card
                 )
                 hands[seat].remove(card)
                 trick.append(card)
@@ -136,8 +135,6 @@ class Case:
         ]
         if self.spades_broken:
             args.append("--spades-broken")
-        if self.break_forced:
-            args.append("--break-on-forced-lead")
         if self.secondary == "min":
             args += ["--secondary", "min"]
         if self.nil_already_set:
@@ -176,7 +173,6 @@ def run_oracle(oracle, case: Case, use_memo: bool) -> Tuple[int, int, int, str]:
     solution = oracle.solve(
         rotated,
         designated=0,  # the nil bidder, now North, so N/S minimise as required
-        break_on_forced_spade_lead=case.break_forced,
         use_memo=use_memo,
         secondary=case.secondary,
         nil_already_set=case.nil_already_set,
@@ -277,7 +273,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.add_argument("--nil", default="N")
     p.add_argument("--trick", default="")
     p.add_argument("--spades-broken", action="store_true")
-    p.add_argument("--break-on-forced-lead", action="store_true")
     p.add_argument("--secondary", choices=("max", "min"), default="max")
     p.add_argument("--nil-already-set", action="store_true")
     args = p.parse_args(argv)
@@ -301,7 +296,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         case.leader = SEAT_CHARS.index(args.leader.upper()[0])
         case.nil_seat = SEAT_CHARS.index(args.nil.upper()[0])
         case.spades_broken = args.spades_broken
-        case.break_forced = args.break_on_forced_lead
         case.secondary = args.secondary
         case.nil_already_set = args.nil_already_set
         case.current_trick = tuple(

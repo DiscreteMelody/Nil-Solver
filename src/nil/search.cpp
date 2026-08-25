@@ -56,7 +56,6 @@ struct Ctx {
     int primary_weight = 0;    // K*K, or 0 when the nil is already set
     int secondary_weight = -1; // -K the nil side wants tricks, +K it wants rid of them
     int tertiary_weight = 0;   // 1 when the cover partner's share is what counts
-    bool break_forced = false;
     bool collapse = true;      // one move per class of rank-equivalent cards
     bool last_trick = true;    // evaluate a forced final trick instead of searching it
     bool tt_boundaries_only = true;  // consult the table only at a trick boundary
@@ -403,12 +402,10 @@ inline Hand ranks_read_by_set_proof(const Hand hands[4], int nil_seat) {
 // how a move list would come to disagree with the search that produced it.
 int advance(const Ctx& ctx, const State& st, CardId card, State& next) {
     const int seat = st.to_play();
-    const int led = st.led_suit();
 
     next = st;
     next.hands[seat] &= ~card_bit(card);
-    next.broken = spades_broken_after(st.broken, st.trick_len, led, card_suit(card),
-                                      ctx.break_forced);
+    next.broken = spades_broken_after(st.broken, card_suit(card));
 
     if (st.trick_len < 3) {
         next.trick[st.trick_len] = card;
@@ -1127,7 +1124,6 @@ void configure(Ctx& ctx, int nil_seat, const SearchOptions& opts,
     ctx.primary_weight = weights.primary;
     ctx.secondary_weight = weights.secondary;
     ctx.tertiary_weight = weights.tertiary;
-    ctx.break_forced = opts.break_on_forced_spade_lead;
     ctx.collapse = opts.collapse_equivalents;
     // Read off the weights rather than off the mode, because it is a fact about
     // the weights: with any of them negative a later trick could pull the value
@@ -1499,7 +1495,7 @@ bool solve(const Position& pos, int nil_seat, const SearchOptions& opts, Solutio
     // A solver that lies is worse than no solver.  Replaying recovers the trick
     // counts independently; re-packing them must land back on the search value.
     Tally tally;
-    if (!replay_pv(pos, out.pv, nil_seat, opts.break_on_forced_spade_lead, tally, err)) {
+    if (!replay_pv(pos, out.pv, nil_seat, tally, err)) {
         err = "internal inconsistency: " + err;
         return false;
     }
@@ -1733,7 +1729,7 @@ bool solve_moves(const Position& pos, int nil_seat, const SearchOptions& opts, S
         if (!child.empty() && !walk_pv(ctx, child, next_move, line, err)) return false;
 
         Tally tally;
-        if (!replay_pv(pos, line, nil_seat, opts.break_on_forced_spade_lead, tally, err)) {
+        if (!replay_pv(pos, line, nil_seat, tally, err)) {
             err = "internal inconsistency replaying " + card_to_string(ms.card) + ": " + err;
             return false;
         }
@@ -1784,7 +1780,7 @@ bool solve_moves(const Position& pos, int nil_seat, const SearchOptions& opts, S
     return true;
 }
 bool replay_pv(const Position& pos, const std::vector<Play>& pv, int nil_seat,
-               bool break_on_forced_spade_lead, Tally& tally_out, std::string& err) {
+               Tally& tally_out, std::string& err) {
     Hand hands[4];
     for (int s = 0; s < 4; ++s) hands[s] = pos.hands[s];
     int leader = pos.leader;
@@ -1825,8 +1821,7 @@ bool replay_pv(const Position& pos, const std::vector<Play>& pv, int nil_seat,
             return false;
         }
         hands[seat] &= ~card_bit(card);
-        broken = spades_broken_after(broken, trick_len, led, card_suit(card),
-                                     break_on_forced_spade_lead);
+        broken = spades_broken_after(broken, card_suit(card));
         trick[trick_len++] = card;
         if (trick_len == 4) {
             const int winner = trick_winner(leader, trick, 4);

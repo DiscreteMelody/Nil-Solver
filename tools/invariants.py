@@ -209,8 +209,6 @@ def cli_args(exe: str, spec: Dict, mode: str = "full", tt_mb: int = 0) -> List[s
         args += ["--mode", "fast"]
     if spec.get("broken") == "1":
         args.append("--spades-broken")
-    if spec.get("forced") == "1":
-        args.append("--break-on-forced-lead")
     if spec.get("secondary") == "min":
         args += ["--secondary", "min"]
     if spec.get("nilset") == "1":
@@ -306,7 +304,7 @@ def check(exe: str, spec: Dict, timeout: float, rng: random.Random,
 
 
 def from_corpus(path: str, cards: Optional[str]) -> List[Dict]:
-    fields = ("name", "pbn", "leader", "nil", "broken", "forced", "trick",
+    fields = ("name", "pbn", "leader", "nil", "broken", "trick",
               "secondary", "nilset", "nil_tricks", "side_tricks", "pv", "provenance")
     specs = []
     with open(path) as handle:
@@ -336,7 +334,6 @@ def from_random(rng: random.Random, count: int, cards: int, suits: int) -> List[
             "leader": SEAT_CHARS[rng.randrange(4)],
             "nil": SEAT_CHARS[rng.randrange(4)],
             "broken": str(rng.randrange(2)),
-            "forced": str(rng.randrange(2)),
             "trick": "",
             "secondary": rng.choice(("max", "min")),
             "nilset": "1" if rng.random() < 0.2 else "0",

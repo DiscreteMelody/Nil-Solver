@@ -82,7 +82,6 @@ std::int32_t prepare(const char* pbn, std::int32_t leader, const char* current_t
         return NIL_ERR_TOO_MANY_CARDS;
     }
 
-    opts.break_on_forced_spade_lead = (flags & NIL_FLAG_BREAK_ON_FORCED_SPADE_LEAD) != 0;
     opts.use_memo = (flags & NIL_FLAG_NO_MEMO) == 0;
     opts.collapse_equivalents = (flags & NIL_FLAG_NO_COLLAPSE) == 0;
     opts.use_static_bounds = (flags & NIL_FLAG_NO_STATIC_BOUNDS) == 0;

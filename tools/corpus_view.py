@@ -41,7 +41,7 @@ SUIT_CHARS = "SHDC"
 DEFAULT_CORPUS = os.path.join("tests", "corpus", "positions.txt")
 
 FIELDS = (
-    "name", "pbn", "leader", "nil", "broken", "forced", "trick",
+    "name", "pbn", "leader", "nil", "broken", "trick",
     "secondary", "nilset", "nil_tricks", "side_tricks", "pv", "provenance",
 )
 
@@ -131,8 +131,6 @@ def repro(record: Dict[str, str], exe, nil_flag: str = "--nil") -> List[str]:
              nil_flag, record["nil"]]
     if record["broken"] == "1":
         args.append("--spades-broken")
-    if record["forced"] == "1":
-        args.append("--break-on-forced-lead")
     if record["secondary"] == "min":
         args += ["--secondary", "min"]
     if record["nilset"] == "1":
@@ -156,8 +154,6 @@ def show(record: Dict[str, str], exe: Optional[str], oracle_path: Optional[str])
     print("Leader         %s" % record["leader"])
     print("Nil bidder     %s" % record["nil"])
     print("Spades broken  %s" % ("yes" if record["broken"] == "1" else "no"))
-    if record["forced"] == "1":
-        print("Break rule     a forced spade lead breaks spades")
     if record["trick"]:
         print("On the trick   %s   (already played, in order from the leader)" % record["trick"])
     print("Objective      %s" % describe(record))
@@ -258,7 +254,6 @@ def verify_with_oracle(record: Dict[str, str], oracle_path: str) -> int:
     case.leader = SEAT_CHARS.index(record["leader"])
     case.nil_seat = SEAT_CHARS.index(record["nil"])
     case.spades_broken = record["broken"] == "1"
-    case.break_forced = record["forced"] == "1"
     case.secondary = record["secondary"]
     case.nil_already_set = record["nilset"] == "1"
     case.current_trick = tuple(

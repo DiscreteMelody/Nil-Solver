@@ -202,6 +202,36 @@ bool validate(const Position& pos, std::string& err) {
             }
         }
     }
+    // Spades cannot be broken while every spade is still unplayed.
+    //
+    // Breaking spades means one has been played, and a played spade is one that
+    // is neither in a hand nor on the current trick.  So if all thirteen are
+    // still accounted for, the flag is claiming something that cannot have
+    // happened, and a full 13-card deal is exactly that case: no card has been
+    // played at all.
+    //
+    // Below thirteen the count says nothing, because a smaller layout is a
+    // constructed ending rather than a played-down one -- the absent spades
+    // were never dealt, not played -- so those positions may legitimately
+    // start with spades broken.
+    //
+    // This is worth rejecting rather than tolerating.  Such a position is not
+    // merely unreachable, it is EXPENSIVE: unbroken spades forbid a voluntary
+    // spade lead, which prunes hard near the root, and setting the flag on a
+    // full deal throws that away and searches a game nobody can play.
+    {
+        int spades_seen = 0;
+        for (int seat = 0; seat < 4; ++seat)
+            spades_seen += count_cards(pos.hands[seat] & suit_mask(SUIT_SPADES));
+        for (int i = 0; i < pos.trick_len; ++i)
+            if (card_suit(pos.trick[i]) == SUIT_SPADES) ++spades_seen;
+        if (pos.spades_broken && spades_seen == 13) {
+            err = "spades cannot be broken: all thirteen are still in play, so "
+                  "none has been played";
+            return false;
+        }
+    }
+
     return true;
 }
 

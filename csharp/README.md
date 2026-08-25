@@ -242,7 +242,6 @@ same answers, more work.
 | `SpadesBroken` | spades are already broken in this position. You will pass this most of the time |
 | `NilAlreadySet` | the nil has been broken in the real game. Drops the primary objective; `NilFails` then reads true because you said so |
 | `MinimiseOwnTricks` | tie-break direction: each pair sheds tricks rather than taking them |
-| `BreakOnForcedSpadeLead` | your table rules say an all-spades hand leading a spade breaks spades. Off by default, which is the literal reading |
 | `ForceLarge` | more than nine cards a hand |
 
 `NoMemo`, `NoCollapse`, `NoStaticBounds` and `NoOrdering` are diagnostics. They

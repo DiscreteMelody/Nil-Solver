@@ -49,17 +49,19 @@ Candidate moves are always enumerated in the canonical card order
 so among equal-valued moves the canonically lowest card wins.  The principal
 variation is therefore reproducible across runs and platforms.
 
-ONE GENUINE RULE AMBIGUITY
---------------------------
+THE FORCED SPADE LEAD
+---------------------
 The stated rule is "spades break when a spade is played on a trick where the
 player was void in the led suit."  Read literally, a *forced spade lead* (a
-player holding nothing but spades leads one while spades are unbroken) does
-NOT break spades, because the leader is not void in the led suit.  Many
-implementations break spades in that case anyway.  This module implements the
-literal reading by default; pass break_on_forced_spade_lead=True (CLI:
---break-on-forced-lead) for the other convention.  Check which one your C++
-patch implements before trusting a diff -- this is exactly the kind of thing
-that produces a one-card PV divergence deep in a hand.
+player holding nothing but spades leads one while spades are unbroken) does NOT
+break spades, because the leader is not void in the led suit.
+
+This module used to implement that reading, with the other convention behind a
+flag, and warned that picking the wrong one produces a one-card PV divergence
+deep in a hand.  Both readings are gone: playing a spade breaks spades, always.
+That is how the game is scored where this solver is used, it removes the only
+place two defensible answers existed, and it means the oracle and the C++
+solver can no longer be configured to disagree.
 """
 
 from __future__ import annotations
@@ -152,18 +154,14 @@ def spades_broken_after(
     spades_broken: bool,
     trick: Tuple[Card, ...],
     card: Card,
-    break_on_forced_spade_lead: bool,
 ) -> bool:
     """Update the broken flag after `card` is added to `trick`."""
-    if spades_broken or card.suit != SPADES:
-        return spades_broken
-    if not trick:
-        # A spade lead while unbroken can only be a forced lead (all-spade
-        # hand); see the module docstring for why this is configurable.
-        return break_on_forced_spade_lead
-    # A spade played on a non-spade lead means the player was void in the led
-    # suit (legal_moves guarantees it), so spades are now broken.
-    return trick[0].suit != SPADES
+    # Playing a spade breaks spades.  A spade led while they are unbroken can
+    # only be a forced lead, since legal_moves permits a voluntary one only once
+    # they are broken; a spade played to a non-spade lead is a ruff or discard.
+    # `trick` is unused and kept so callers read naturally at the call site.
+    del trick
+    return spades_broken or card.suit == SPADES
 
 
 def _beats(candidate: Card, incumbent: Card) -> bool:
@@ -375,7 +373,6 @@ def deal_to_pbn(hands: Sequence[Sequence[Card]], first_seat: int = 0) -> str:
 @dataclass
 class _Ctx:
     designated: int
-    break_on_forced_spade_lead: bool
     primary_weight: int          # K*K, or 0 when the nil is already set
     secondary_weight: int        # +/-K: N/S want their side's tricks, or want rid of them
     tertiary_weight: int         # 1 when the cover's share is what counts, else 0
@@ -475,7 +472,7 @@ def _search(
             for s, hand in enumerate(hands)
         )
         next_broken = spades_broken_after(
-            spades_broken, trick, card, ctx.break_on_forced_spade_lead
+            spades_broken, trick, card
         )
         played = trick + (card,)
 
@@ -532,7 +529,6 @@ class Solution:
 def solve(
     position: Position,
     designated: int,
-    break_on_forced_spade_lead: bool = False,
     use_memo: bool = False,
     secondary: str = "max",
     nil_already_set: bool = False,
@@ -571,7 +567,6 @@ def solve(
     )
     ctx = _Ctx(
         designated=designated,
-        break_on_forced_spade_lead=break_on_forced_spade_lead,
         primary_weight=primary_weight,
         secondary_weight=secondary_weight,
         tertiary_weight=tertiary_weight,
@@ -588,7 +583,7 @@ def solve(
     # Self-check: an oracle that lies is worse than no oracle.  Replaying the PV
     # recovers the trick counts independently, and re-encoding them must land
     # back on the value the search reported.
-    tally = replay_pv(position, list(pv), designated, break_on_forced_spade_lead)
+    tally = replay_pv(position, list(pv), designated)
     replayed = (
         (primary_weight + tertiary_weight) * tally.designated
         + secondary_weight * tally.designated_side
@@ -617,7 +612,6 @@ def replay_pv(
     position: Position,
     pv: Sequence[Play],
     designated: int,
-    break_on_forced_spade_lead: bool = False,
 ) -> Tally:
     """Independently replay a PV, checking every play for legality.
 
@@ -651,7 +645,7 @@ def replay_pv(
             )
         hands[seat].remove(card)
         broken = spades_broken_after(
-            broken, tuple(trick), card, break_on_forced_spade_lead
+            broken, tuple(trick), card
         )
         trick.append(card)
         if len(trick) == 4:
@@ -890,22 +884,17 @@ def selftest(verbose: bool = True) -> int:
     # Breaking.
     check(
         "ruff breaks spades",
-        spades_broken_after(False, (card_from_str("H2"),), card_from_str("S3"), False),
+        spades_broken_after(False, (card_from_str("H2"),), card_from_str("S3")),
         True,
     )
     check(
         "discarding a non-spade does not break",
-        spades_broken_after(False, (card_from_str("H2"),), card_from_str("C3"), False),
+        spades_broken_after(False, (card_from_str("H2"),), card_from_str("C3")),
         False,
     )
     check(
-        "forced spade lead: literal reading does not break",
-        spades_broken_after(False, (), card_from_str("S3"), False),
-        False,
-    )
-    check(
-        "forced spade lead: alternate convention breaks",
-        spades_broken_after(False, (), card_from_str("S3"), True),
+        "a forced spade lead breaks spades",
+        spades_broken_after(False, (), card_from_str("S3")),
         True,
     )
     # Trick winner.
@@ -1155,11 +1144,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "leader, e.g. 'H4 HK' (they must not appear in the hands)",
     )
     p.add_argument(
-        "--break-on-forced-lead",
-        action="store_true",
-        help="treat a forced spade lead as breaking spades (see module docstring)",
-    )
-    p.add_argument(
         "--secondary",
         choices=("max", "min"),
         default="max",
@@ -1230,7 +1214,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     solution = solve(
         position,
         designated,
-        break_on_forced_spade_lead=args.break_on_forced_lead,
         use_memo=args.memo,
         secondary=args.secondary,
         nil_already_set=args.nil_already_set,
