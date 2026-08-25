@@ -38,6 +38,7 @@ expensive node. Read items 11 and 31 in that light.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ⊘ | Side-suit canonicalization, re-measured | patch 42 | **rebuilt on the strength of an expired rejection, re-measured, rejected again.** Two of the three reasons the first attempt failed had genuinely lapsed -- patch 30 put the key on 38.6% of nodes instead of 100%, and patch 25's canonical re-derivation retires the tie-break hazard -- and the symmetry available is now LARGER, since a trick boundary pins no suit. The prediction was −5% to −8% of nodes. It is **−0.2% to −0.75%**, because the symmetry identifies only **0.53-0.66% of distinct positions**: a group of order six collapses six positions in a thousand. Bought at 3.2% of throughput in full mode and 9.6% in fast, **slower in 7 of 7 interleaved reps on both**. The first measurement's 5.3% came from a tree 20-300x larger made of cheap nearly-exhausted positions; what is left after patches 22-41 is made of hard ones. Closed on the size of its population rather than the price of its machinery, so no cheaper sort revives it. Verified correct before being timed -- 20,000 permuted pairs give bit-identical keys -- and nothing shipped |
 | ✅ | ~~The cutoff bound from a partial table match~~ | patch 41 | `probe()` found an entry, saw that its one-sided bound did not settle the window, counted it in `partial` and **threw it away** — 6.8% of 26.6M probes at 13 cards. It is not a miss: "the value is at least x" is a fact about the POSITION, true whatever window is asking. Spent on the threshold this node's own fail-soft test reads — beta at a maximiser, alpha at a minimiser — and **on nothing else**. **−0.48% to −1.21% nodes across seven full-mode workloads, largest at 13 cards**, and `MODE_FAST` byte-identical because it has no partials to spend. Wall follows weakly: medians 0.5-0.7%, faster in 3 of 5 interleaved reps on two 13-card seeds, one binary with the arm toggled at runtime. Sound because the value an early cutoff stops at is **squeezed exact** between the entry's bound and fail-soft's, so `walk_pv` still compares true values; all 560 oracle-pinned values AND principal variations reproduce. **The textbook version of this item is a LOSS and that is the more valuable result** — see "Evaluated and rejected" for the sweep and the mechanism |
 | ⊘ | Ordering skipped on forced nodes | patch 40 | **built, measured, withdrawn.** 34-39% of all search nodes have exactly one legal move after equivalence collapse, and each ran the full ordering block to promote the only card there is. Gating it is provably tree-neutral and verifies byte-identical -- but it buys **nothing measurable**, and the first measurement saying it did was a methodology error worth more than the patch. See "Evaluated and rejected" |
 | ✅ | ~~Later tricks: the opponents' and the nil side's forced trump tricks~~ | patch 39 | DDS §4 wired into patch 31's simplex. `top_spade_run()` finds the hand holding the top outstanding spade and counts its run from the top; that hand wins exactly that many tricks **down every line of play**, because each card is played eventually, one hand plays one card per trick so the tricks are distinct, spades is trump so a trick carrying a spade goes to the highest spade on it, and the only spades above it sit in the same hand. Which constraint it adds depends on whose hand it is -- three cases, three vertices each, no cards searched. **−16.73% nodes at 13 cards on seed 3** (1.396G -> 1.163G over eight deals), and the deal that dominates that workload -- 1.11 **billion** nodes, 79.8% of the tree -- takes **−19.69%**, so the gain lands on the slowest position rather than beside it. Wall follows nodes almost exactly (181,512 ms -> 150,140 ms, **1.21x**) because throughput is flat: 7.69M nodes/sec against 7.74M, i.e. the predicate is free per node. **Seed 42 gets essentially nothing** (−0.27% over eight deals, two deals slightly worse) and **11 cards is a wash** (+0.02%) -- the variance is deal-to-deal, not size-to-size, and no account of what separates them. `MODE_FAST` byte-identical and provably so. All 560 oracle-pinned values AND principal variations reproduce; 800 random deals agree with `--no-later-tricks` on value, split and PV while node counts differ on 777 of them |
@@ -294,7 +295,10 @@ three for wall and exact for nodes, 64 MiB fixed (256 in full mode):
 **This is the first patch on this list that is bought with nodes rather than
 with them**, and the entry is written that way on purpose. Every earlier
 rejection here — side-suit canonicalization, 8-way associativity, the mid-trick
-static proof — lost because it spent throughput to save nodes. This is the same
+static proof — lost because it spent throughput to save nodes. (Side-suit
+canonicalization was re-measured on top of this patch and lost again, for a
+different and stronger reason: on the tree patch 30 leaves there are barely any
+nodes there to save. See "Evaluated and rejected".) This is the same
 trade run backwards, and the reason it wins is that the thing being bought back
 is not small: throughput goes from 4,094,618 to 11,444,318 nodes/sec at 13
 cards, because `encode_state_key` walks every live card of every suit and it
@@ -690,11 +694,88 @@ it is off, or it is not measurement machinery, it is a tax.**
 
 **Side-suit canonicalization.** Hearts, diamonds and clubs are interchangeable,
 so canonicalizing them is a genuine symmetry worth up to 6x in theory. Built and
-measured: 5.3% fewer nodes at 6 cards, 7.7% at 7, bought at roughly 12% of
-throughput because the sort runs at every node. Net wall time came out *worse*.
-It also carries a live tie-break hazard, since the move order is suit-major and
-a move read back under a permuted labelling can be the other equally good card.
-Not worth revisiting unless the key computation gets much cheaper.
+measured twice, four patches apart, and rejected both times -- **for different
+reasons, which is the part worth reading.**
+
+*The first attempt, before patch 30.* 5.3% fewer nodes at 6 cards, 7.7% at 7,
+bought at roughly 12% of throughput because the sort ran at every node. Net wall
+time came out worse. The entry closed with *"not worth revisiting unless the key
+computation gets much cheaper"* -- and the key computation then got much cheaper.
+
+*Why it was reopened (patch 42).* Two of the three things that closed it had
+expired. Patch 30 confined the key to trick boundaries, which a node-population
+sweep puts at **38.6% of nodes**, so the same 12% is charged against two nodes in
+five rather than five in five. And patch 25's canonical re-derivation retires the
+tie-break hazard outright: `walk_pv` re-derives the line at every step, so a move
+read back under a permuted labelling can no longer reach the reported PV. Better
+still, the symmetry *available* is now strictly larger than it was: the old entry
+noted that a non-spade lead pins its suit and leaves a group of order two, and a
+trick boundary has no lead, so patch 30 deleted exactly the nodes where the group
+was small. The prediction was −5% to −8% of nodes for ~4.6% of throughput.
+
+*What the re-measurement found.* **The cost model was right and the benefit model
+was wrong, by an order of magnitude.**
+
+| workload | off | on | nodes |
+|---|---:|---:|---:|
+| corpus 560, full | 279,941 | 278,521 | −0.51% |
+| corpus 560, fast | 39,701 | 39,409 | −0.74% |
+| random 9c x20, seed 1, full | 7,477,320 | 7,420,903 | −0.75% |
+| random 11c x6, seed 3, full | 88,491,025 | 88,176,205 | −0.36% |
+| random 12c x6, seed 3, full | 35,059,198 | 34,861,862 | −0.56% |
+| random 13c x3, seed 3, full | 93,581,425 | 93,269,285 | **−0.33%** |
+| random 11c x10, seed 3, fast | 14,104,350 | 14,038,669 | −0.47% |
+| random 13c x10, seed 11, fast | 32,963,937 | 32,839,732 | −0.38% |
+| random 13c x10, seed 42, fast | 30,407,921 | 30,346,212 | −0.20% |
+
+Against a measured throughput cost of **3.2% in full mode and 9.6% in fast**
+(9,551,833 nodes/sec against 9,249,209; 10,198,993 against 9,218,182). Wall time
+is not close and does not need repeats to see: **slower in 7 of 7 interleaved
+reps on both**, medians 3343.6 ms against 3212.8 at 13 cards full and 339.1
+against 326.0 at 13 cards fast, and in the fast case the two arms' ranges do not
+overlap at all.
+
+*Why the collapse is so small, measured rather than guessed.* `--tt-stats`
+gives it directly: the number of DISTINCT positions stored, which is what a
+symmetry that identifies positions is supposed to reduce.
+
+| workload | stores off | stores on | collapsed |
+|---|---:|---:|---:|
+| corpus 560, full | 25,667 | 25,497 | −0.66% |
+| random 11c x6, seed 3, full | 5,114,147 | 5,082,570 | −0.62% |
+| random 13c x3, seed 3, full | 5,278,339 | 5,250,467 | −0.53% |
+| random 13c x10, seed 11, fast | 1,761,944 | 1,750,699 | −0.64% |
+
+**A group of order six identifies about six positions in a thousand.** The
+reason is the one the old entry gave second and which patch 30 did not touch:
+every player's holding in a suit is a subset of what they were dealt, so one
+line's residual hearts can only look like another line's residual diamonds once
+both suits are nearly exhausted -- and those subtrees are cheap. The first
+measurement's 5.3% came from a tree twenty to three hundred times larger, full of
+exactly those cheap nearly-exhausted positions; the tree that is left after
+patches 22 through 41 is made of hard ones.
+
+*What closes it permanently.* **0.53-0.66% is a ceiling on the benefit, not an
+artefact of this implementation.** It is the count of position pairs the symmetry
+identifies at all, so no cheaper sort can beat it -- and a perfect zero-cost
+implementation would therefore be worth under one percent, against a measured
+cost of three to ten. There is no version of this that pays. The item is closed
+on the size of its population rather than on the price of its machinery, which is
+the difference between "not worth revisiting unless X" and "not worth
+revisiting".
+
+*Correctness, recorded because the implementation was verified before it was
+timed and the result should not have to be re-established.* A permutation
+harness over 20,000 permuted pairs -- random deals, 1 to 6 cards each, all six
+side-suit permutations applied to the hands -- confirms every permuted pair
+produces a **bit-identical key**, so the collapse is complete and not merely
+partial. `to_relative`/`from_relative` round-trip to the literally permuted card
+in 19,958 of 20,000; the other 42 land in a suit that is bit-for-bit
+indistinguishable from the intended one (same length, same owner of every live
+slot), which is the tie-break case and is two names for one card rather than a
+bug. All 560 oracle-pinned values AND principal variations reproduce on both
+arms, with `--check-pv` and `--check-moves`. **The idea is sound and shippable;
+it is simply not worth its price.**
 
 **The safe-nil proof run mid-trick.** Unlike the set proof, the safe proof is
 sound at every ply, not only at a trick boundary — `relevant_cards` already
@@ -2743,7 +2824,7 @@ say so.
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 36 ✅ → 41 ✅ → 29b (single-suit) → 9 ⊘ → 10 ⊘ → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 36 ✅ → 41 ✅ → 42 ⊘ → 29b (single-suit) → 9 ⊘ → 10 ⊘ → measure → 11..14
 ```
 
 **Item 29b is next, and the case for it is now measured rather than argued.** A

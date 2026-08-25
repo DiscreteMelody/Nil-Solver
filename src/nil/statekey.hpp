@@ -68,30 +68,73 @@
 // ---------------------------------------------
 // Hearts, diamonds and clubs are interchangeable -- only spades are special --
 // so sorting the three side suits into a canonical order is a real symmetry of
-// the game and would collapse up to six more positions into one.  It was built
-// and measured, and it is not worth it:
+// the game and would collapse up to six more positions into one.  It has been
+// built and measured TWICE, once before patch 30 and again as patch 42, and it
+// is not worth it either time.  The two rejections do not share a reason, and
+// the second is the one that closes the item.
+//
+// FIRST MEASUREMENT, when the key was built at every node:
 //
 //     6 cards, corpus     44,309 -> 41,942 nodes/position   -5.3%
 //     7 cards, random    484,469 -> 447,316 nodes/position   -7.7%
 //
-// bought at roughly 12% throughput, because the sort runs at every node.  Net
-// wall time came out slightly WORSE.
+// bought at roughly 12% throughput, because the sort ran at every node.  Net
+// wall time came out slightly WORSE.  That is a verdict about the PRICE, and it
+// used to end with "not worth revisiting unless the key computation gets much
+// cheaper".
 //
-// Six times theoretical becomes seven percent actual for two reasons.  Every
-// player's holding in a suit is a subset of what they were dealt, so one line's
-// residual hearts can only look like another line's residual diamonds once both
-// suits are nearly exhausted -- which is exactly where the subtrees are cheap.
-// And when a non-spade is led that suit is pinned by the trick, leaving only
-// two free suits, so the group is of order two for most nodes rather than six.
+// It then got much cheaper, which is why this was reopened.  Patch 30 confined
+// the key to trick boundaries -- 38.6% of nodes -- so the same 12% is charged
+// against two nodes in five rather than five in five.  Patch 25's canonical
+// re-derivation retires the tie-break hazard below.  And the symmetry AVAILABLE
+// grew rather than shrank: a non-spade lead pins its suit and leaves a group of
+// order two, and a trick boundary has no lead, so patch 30 deleted exactly the
+// nodes where the group was small.  The prediction was -5% to -8% of nodes for
+// about 4.6% of throughput.
 //
-// There is a correctness cost on top of that.  The canonical move order is
-// suit-major, so the tie-break between two equally good cards in DIFFERENT
-// suits depends on which suit is which.  A move read back from an entry stored
-// under a permuted labelling can be the other equally good card: still legal,
-// still optimal, still replay-verified, but no longer the card nil_oracle.py
-// picks.  The measurement did not trip it -- 560 corpus positions and 150
-// random deals still agreed on the PV -- but not tripping it is not the same as
-// it being safe, and it is not a bug that would be easy to find later.
+// SECOND MEASUREMENT, patch 42, with all of that true:
+//
+//     13 cards, full     93,581,425 -> 93,269,285 nodes      -0.33%
+//     13 cards, fast     32,963,937 -> 32,839,732 nodes      -0.38%
+//
+// bought at 3.2% of throughput in full mode and 9.6% in fast, and slower in 7
+// of 7 interleaved reps on both.  **The cost model was right and the benefit
+// model was wrong by an order of magnitude.**
+//
+// WHY, and it is a ceiling rather than a fact about the implementation.
+// `--tt-stats` counts the DISTINCT POSITIONS STORED, which is exactly what a
+// symmetry that identifies positions is supposed to reduce.  Canonicalisation
+// reduces it by 0.53-0.66%, on every workload measured, in both modes.  A group
+// of order six identifies about six positions in a thousand.
+//
+// The reason is the first of the two this comment used to give, and patch 30
+// did not touch it: every player's holding in a suit is a subset of what they
+// were dealt, so one line's residual hearts can only look like another line's
+// residual diamonds once both suits are nearly exhausted -- which is exactly
+// where the subtrees are cheap.  The first measurement's 5.3% came from a tree
+// twenty to three hundred times larger, full of those cheap nearly-exhausted
+// positions.  The tree left after patches 22 through 41 is made of hard ones.
+//
+// So no cheaper sort revives this.  A perfect zero-cost implementation is worth
+// under one percent against a measured cost of three to ten, and the number
+// that says so is the collapse count rather than the timing.
+//
+// The correctness cost this comment recorded has, for the record, EXPIRED.  The
+// canonical move order is suit-major, so the tie-break between two equally good
+// cards in DIFFERENT suits depends on which suit is which, and a move read back
+// from an entry stored under a permuted labelling can be the other equally good
+// card: still legal, still optimal, still replay-verified, but no longer the
+// card nil_oracle.py picks.  Patch 25's canonical re-derivation walks the
+// principal variation and re-derives every step, so that move can no longer
+// reach the reported PV.  It is left written down because it is one of the
+// reasons the item looked reopenable, and because any future symmetry over this
+// key inherits the same hazard and the same fix.
+//
+// Patch 42's implementation was verified before it was timed, and the result is
+// worth keeping even though nothing shipped: a harness over 20,000 permuted
+// pairs -- random deals of one to six cards, all six side-suit permutations
+// applied to the hands -- confirms every permuted pair produces a bit-identical
+// key, so the 0.53-0.66% is the whole collapse and not a partial one.
 #ifndef NIL_STATEKEY_HPP
 #define NIL_STATEKEY_HPP
 
