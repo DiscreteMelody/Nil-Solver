@@ -208,7 +208,7 @@ def check_against(record: Dict[str, str], exe: str) -> int:
     if record["provenance"] == "unverified":
         print("\n  nothing recorded to check against")
         return 0
-    args = repro(record, exe) + ["--compact", "--force"]
+    args = repro(record, exe) + ["--compact"]
     proc = subprocess.run(args, capture_output=True, text=True)
     if proc.returncode != 0:
         print("\n  nil_cli FAILED: %s" % proc.stderr.strip())

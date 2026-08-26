@@ -204,7 +204,7 @@ def unmap_pv(pv: str, info: Dict) -> str:
 
 def cli_args(exe: str, spec: Dict, mode: str = "full", tt_mb: int = 0) -> List[str]:
     args = [exe, "--pbn", spec["pbn"], "--leader", spec["leader"], "--nil", spec["nil"],
-            "--compact", "--force"]
+            "--compact"]
     if mode == "fast":
         args += ["--mode", "fast"]
     if spec.get("broken") == "1":

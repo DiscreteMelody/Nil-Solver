@@ -80,7 +80,6 @@ void usage(const char* argv0) {
         << "                          one line per card with whether the nil\n"
         << "                          survives it and what it costs\n"
         << "  --compact               print only the machine-readable result\n"
-        << "  --force                 accepted and ignored; no longer needed\n"
         << "  --help                  this message\n";
 }
 
@@ -193,11 +192,6 @@ int main(int argc, char** argv) {
             list_moves = true;
         } else if (arg == "--compact") {
             compact = true;
-        } else if (arg == "--force") {
-            // Accepted and ignored.  There is no size gate any more, but three
-            // of the Python tools in tools/ pass this, so it stays a valid
-            // argument rather than an error.
-            (void)0;
         } else {
             std::cerr << "error: unknown argument '" << arg << "'\n";
             usage(argv[0]);

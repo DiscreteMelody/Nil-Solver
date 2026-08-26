@@ -161,9 +161,6 @@ def cli_args(exe: str, spec: Dict[str, object]) -> List[str]:
         args.append("--nil-already-set")
     if spec["trick_text"]:
         args += ["--trick", spec["trick_text"]]
-    # nil_cli refuses more than 7 cards per hand unless told to insist, which is
-    # exactly the situation this script exists for.
-    args.append("--force")
     return args
 
 
