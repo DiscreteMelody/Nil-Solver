@@ -118,13 +118,6 @@ extern "C" {
 #define NIL_FLAG_NONE 0x0u
 /* Spades are already broken in the given position. */
 #define NIL_FLAG_SPADES_BROKEN 0x1u
-/* 0x2u is RETIRED and must not be reused.  It used to select the literal
- * reading of the break rule, under which a hand forced to lead a spade left
- * spades unbroken.  Playing a spade now always breaks spades, so there is
- * nothing to select.  The bit is left burned rather than recycled: a caller
- * built against an older header would otherwise pass 0x2 meaning one thing and
- * have it read as another, and silently getting a different objective is worse
- * than an unknown flag being ignored. */
 /* The tie-break direction: each pair takes as FEW tricks as it can, rather
  * than as many.  Applies to both pairs at once, which is coherent because
  * their trick counts sum to a constant. */

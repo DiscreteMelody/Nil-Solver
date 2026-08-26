@@ -51,13 +51,9 @@ bool load_corpus(const std::string& path, std::vector<CorpusEntry>& out, std::st
         std::ostringstream where;
         where << path << ":" << line_no << ": ";
         if (f.size() < 10) {
-            err = where.str() + "expected at least 11 '|' separated fields, got " +
+            err = where.str() + "expected at least 10 '|' separated fields, got " +
                   std::to_string(f.size());
-            if (f.size() == 11 || f.size() == 12 || f.size() == 13) {
-                err += " -- this looks like the old layout with a `forced` column"
-                       " sixth; that column is gone, because a forced spade lead"
-                       " now always breaks spades";
-            } else if (f.size() == 8 || f.size() == 9) {
+            if (f.size() == 8 || f.size() == 9) {
                 err += ". This looks like a corpus from before the lexicographic "
                        "objective; regenerate it with tools/make_corpus.py";
             }
