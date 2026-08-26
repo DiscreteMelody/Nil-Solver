@@ -38,6 +38,7 @@ expensive node. Read items 11 and 31 in that light.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ✅ | ~~The random benchmark generator draws an impossible spades-broken flag~~ | patch 47 | **a measurement bug, and it has been eating the 13-card leg since patch 45.** `random_position()` set `pos.spades_broken` on a coin flip; patch 45's `validate()` rejects that flag while all thirteen spades are in play, which a 13-card deal ALWAYS is. The failing half never ran, and the summary line went on dividing by the requested count -- so `--cards 13 --count 8` reported **a third to a half of the work it claimed**: seed 3 869,633 against a real 1,996,445 (2.30x), seed 11 7,919,000 against 23,858,179 (3.01x), seed 42 4,759,514 against 10,433,275 (2.19x), fast mode. **12 cards loses 1-3 deals in 8 and 11 cards loses one on seed 42**, because 44 dealt cards can hold every spade. The coin is drawn either way and then masked, so the DEAL STREAM DOES NOT MOVE and every previously-passing deal reproduces byte-identical -- verified at 6, 9 and 11 cards on two seeds, and the corpus (39,701 fast / 279,895 full) and `large.txt` (164,156,179) are untouched because neither uses random deals. **Patch 45's verdict survives the repair**: rebuilt at `410a30c` and re-run on a full 8-deal sample, the three 13-card seeds go 62,013,835 -> 36,287,899, **−41.5% against the −44% that entry banked**. What does not survive is every PER-SEED 13-card figure taken since patch 45; those are on a truncated sample and must not seed the next A/B |
 | ✅ | ~~`--break-on-forced-lead` removed from every interface~~ | patch 46 | patch 45 made the rule universal but kept two pieces of scaffolding for callers that no longer exist: ABI bit `0x2u` was documented as retired-and-burned so an old caller would get an ignored flag rather than a silently different objective, and the corpus parser recognised the old thirteen-field layout to explain the missing `forced` column. Nothing ships against either, so both are gone and the call surface is one flag shorter. The old-layout branch was **dead code besides** -- it sat inside a `f.size() < 10` guard and tested for 11, 12 and 13, so it could never fire; an old row now fails where it always really failed, on the `forced` value not parsing as a trick. The stale `expected at least 11` in that same message is corrected to 10, which is what the guard has checked since the column went. **No behaviour change and no answers move**: 22/22 tests, all 560 corpus rows and all 19 large rows reproduce byte-identical. Earlier entries on this list still mention `--break-on-forced-lead` and are deliberately left alone -- they record what was verified at the time, and rewriting them would make the log claim a history it did not have |
 | ✅ | ~~A spade played always breaks spades; broken flag validated~~ | patch 45 | **a rules change, not an optimisation, and it pays like one.** `spades_broken_after` had a `break_on_forced_lead` parameter selecting whether a hand forced to lead a spade left spades unbroken -- the literal reading of the rule, and the default. It collapses to `broken \|\| suit == SPADES`, with the `trick_len` and `led_suit` arguments gone too since nothing else consulted them. Removed from `SearchOptions`, `Ctx`, `replay_pv`, the C ABI (bit `0x2u` **burned, not recycled**), both CLIs, `CorpusEntry`, the corpus format's sixth column, `nil_oracle.py` and seven Python tools. **261 of 560 corpus rows were computed under the literal reading and none of their answers moved**: a forced spade lead needs a hand holding nothing but spades while on lead, which constructed endings never reach. Separately, `validate()` now rejects a position claiming broken spades while all thirteen are still in play -- a full deal has had no card played, so no spade has. Three `large.txt` rows carried it, one at nine cards. Unbroken spades forbid a voluntary spade lead, which prunes hard near the root, so clearing them took the 13-card benchmark leg **from 290M nodes to 163M (−44%)** and c13-0001 from 184,547,569 to **71,253,358 (−61%)** with no value moving -- two principal variations did, and were re-pinned |
 | ⊘ | Side-suit canonicalization, re-measured | patch 42 | **rebuilt on the strength of an expired rejection, re-measured, rejected again.** Two of the three reasons the first attempt failed had genuinely lapsed -- patch 30 put the key on 38.6% of nodes instead of 100%, and patch 25's canonical re-derivation retires the tie-break hazard -- and the symmetry available is now LARGER, since a trick boundary pins no suit. The prediction was −5% to −8% of nodes. It is **−0.2% to −0.75%**, because the symmetry identifies only **0.53-0.66% of distinct positions**: a group of order six collapses six positions in a thousand. Bought at 3.2% of throughput in full mode and 9.6% in fast, **slower in 7 of 7 interleaved reps on both**. The first measurement's 5.3% came from a tree 20-300x larger made of cheap nearly-exhausted positions; what is left after patches 22-41 is made of hard ones. Closed on the size of its population rather than the price of its machinery, so no cheaper sort revives it. Verified correct before being timed -- 20,000 permuted pairs give bit-identical keys -- and nothing shipped |
@@ -498,6 +499,71 @@ Full mode is unchanged by this patch, and that is checked rather than asserted:
 ---
 
 ## Evaluated and rejected
+
+**Spending the FAILING branch of the presolve boolean (item 23b).** Item 23 runs
+a `MODE_FAST` presolve and spends the answer only when the nil is SAFE, where it
+closes beta onto `max_value_if_nil_safe`. The other branch looked like free
+money and is not.
+
+*The population is enormous.* At 13 cards on seed 3, **seven of eight deals are
+nil-fails, and the fast presolve settles them in 1 to 4 nodes** -- the static
+proof fires immediately. On all seven `root_beta` stays at `WINDOW_MAX`, so
+**99.6% of the full-mode maximise workload (380M of 385.8M nodes) sits behind a
+presolve that is silent by construction.**
+
+*It buys nothing.* `nil_fails` means the bidder takes at least one trick, so the
+value is above the whole nil-safe band and `root_alpha` can be raised to it.
+Measured: **385,799,941 -> 385,944,937, +0.04%.** The reason is the asymmetry
+between the two branches rather than anything about the population. On the safe
+branch beta closes ONTO a threshold that sits just above the true value; on the
+failing branch alpha lands at the BOTTOM of a range five hundred wide, and the
+root's own first child raises it past there within one move.
+
+*A trap found on the way, and it is the reusable part.* An earlier arm of this
+measured **−22.5%** and was an artifact: `walk_pv` and `canonical_move_for`
+inherit the root window, and an alpha derived from "the bidder takes a trick
+somewhere in this deal" is FALSE about the residual position after it already
+has. Two principal variations failed the replay check (`search says 465,
+replaying the PV gives 479`). Beta happens to stay valid down the PV and alpha
+does not, so item 23's shape is safe and its mirror image is not. **Anything
+that narrows alpha at the root has to hand the PV walk the sentinels.**
+
+*What would revive it.* Nothing about this branch. The bound is weak because it
+is anchored at the wrong end, not because it is spent badly.
+
+**The threshold ladder: pinning the primary exactly (item 23c).** The natural
+next move after 23b -- climb `MODE_FAST`-shaped searches at targets 1, 2, 3...
+until one answers no, and `nil_tricks` is pinned exactly. The packed value is
+then confined to `t + 1` values instead of `(t + 1)(t + 2) / 2`, which is 14
+instead of 105 at thirteen cards. Each rung costs on the order of a fast search,
+which is ~1/190 of the full one.
+
+**The ceiling was measured before anything was built, and it is −13.8%.** The
+root window was pinned by hand to the band where `nil_tricks` equals its true
+value -- the answer handed over free, no rungs paid for:
+
+| deal | n | control | pinned | ratio |
+|---|---:|---:|---:|---:|
+| r13-0000 | 2 | 14,165,782 | 4,521,184 | **0.319x** |
+| r13-0001 | 3 | 21,897,593 | 17,722,086 | 0.809x |
+| r13-0002 | 3 | 8,013,509 | 6,233,489 | 0.778x |
+| r13-0003 | 0 | 5,765,966 | 5,765,966 | 1.000x |
+| r13-0004 | 1 | 4,300,783 | 4,362,314 | 1.014x |
+| r13-0005 | 1 | 64,877,696 | 64,815,062 | **0.999x** |
+| r13-0006 | 3 | 82,611,444 | 79,335,184 | 0.960x |
+| r13-0007 | 2 | 184,167,168 | 149,973,234 | **0.814x** |
+| total | | 385,799,941 | 332,728,519 | **0.862x** |
+
+**The two deals that own the workload return 0.999x and 0.814x**, and together
+they are 65% of it. A −13.8% ceiling that has to pay for its own rungs is not a
+patch, and this is the MTD(f) floor measurement again: the mechanism does
+exactly what it says and the headroom is not there. Same lesson, third time --
+**get the ceiling before building the machine.**
+
+*What would revive it.* A rung that costs materially less than a fast search --
+the static proofs generalised to a target of k rather than 1 would settle rungs
+2 and 3 without searching, the way `nil_must_take_a_trick` settles rung 1 in
+one node. Even then the ceiling caps the whole item at 13.8%.
 
 **Narrowing the window onto a partial table match (item 41, first version).**
 Built, measured across three axes, refuted -- and the mechanism is worth more
@@ -2240,6 +2306,151 @@ at every node and every value it stores is a bound at one end or the other, so
 every match settles its window. The test suite pins that as an equality, not an
 inequality.
 
+### 43. QuickTricks — ⭐⭐⭐⭐ — **NEXT; from DDS §3**
+
+**The one primary cutoff in the paper this solver has never had.** §2 landed as
+patch 31 (−22.4% at 13 cards), §4 as patch 39 (−16.7%), and §3 is absent from
+the code and, until now, from this file.
+
+*The population is already measured and it is the whole point.* `--nilset-stats`
+on 13-card full-mode maximise: **the forced-trick proof fires on 3 of 51,231
+eligible boundaries — 0.01%**, while the adversarial ceiling identifies 70.4% of
+them as genuinely forced. `nil_must_take_a_trick` is a SINGLE-SUIT predicate --
+the spade run -- and `top_spade_run` feeding patch 31's simplex is the same
+card-set seen from another angle. **§3 counts sure tricks across all four suits,
+with entries, which is what makes `n >= k` reachable for `k >= 2`.**
+
+*The hook already exists.* The simplex vertices for "the nil bidder is forced to
+take k" are written and commented in `search.cpp` at the `owner == ctx.nil_seat`
+branch, alongside the cover-partner and opponent cases. What is missing is a
+predicate that returns a k bigger than 1 more than three times in fifty thousand.
+
+*The thing to be careful about, and it is not what §3 is careful about.* DDS
+counts tricks the side on lead **can cash**, which is a lower bound on what a
+maximiser can achieve and is exactly what a trick-maximising search wants. The
+bounds here range over the whole simplex **without assuming anybody plays well**,
+so what they can consume is a floor that holds down EVERY line, good and bad
+alike. §3's cashing count is the wrong shape and adapting it is the work.
+Read `top_spade_run`'s comment in `bounds.hpp` for the standard the predicate has
+to meet, and item 44 below for the closed form that already meets it.
+
+*Two smaller pieces of §3 in the same direction.* The **post-lead check** (Kuijf's
+addition -- re-run the sure-trick test after the leading card is played, where
+the winner is far more constrained), and the **opponents' sure tricks** as a cap
+on `n + p`, which is the opponent case of item 44 generalised off trump.
+
+### 44. The forced-trump floor for all four hands — ⭐⭐ — **BUILT, MEASURED, PARKED ON COST (not on soundness and not on nodes)**
+
+`top_spade_run` names one hand and one number. The same argument carried one
+step further gives a floor for **every** hand: with `o_i` the number of spades
+outside a hand ranked above that hand's i-th spade from the top,
+
+    forced(H) = max over i of (i - o_i)
+
+and H wins at least that many tricks down every line. *Why:* H's top i spades are
+played on i distinct tricks, one is lost only to a HIGHER spade landing on it, a
+higher spade in H cannot (one card per trick), so the spoiler is one of the `o_i`
+spades outside H above `r_i`, and each is played once so each spoils at most one.
+**DDS §4's rules 2 and 3 are the i <= 2 cases of this formula** -- rule 3, "the
+second highest trump plus at least one trump more behind the hand with the
+highest trump", is exactly i = 2, o = 1. At o_i = 0 it reproduces
+`top_spade_run`, so it is never weaker for the hand that one spoke about, and it
+speaks about the other three as well.
+
+**Summing across two hands is sound here**, which the `top_spade_run` comment
+denies for a side-wide count. What is unusable there is pooling a RUN across two
+hands, where s1 and s2 can land on one trick and collapse. Nothing is pooled
+here: each floor is proved on its own hand, and two hands cannot win the same
+trick, so the two opponents' floors ADD. The formula prices the collapse in by
+itself -- give s1 to West and s2 to East and East scores 1 - 1 = 0.
+
+That gives three constraints where there was one: `n >= kn`, `p >= kp`,
+`n + p <= t - ko`. Still a triangle, still three vertices.
+
+*Soundness first, per the lesson from 31b.* A counterexample hunter that
+enumerates **every legal play sequence** of a small deal and records the true
+minimum tricks each seat wins, then checks the floor against it, spades treated
+as already broken because that is the largest line set and so the smallest
+minimum. **18,800 checks at 3, 4 and 5 cards; zero counterexamples; ~5% of
+checks strictly beat `top_spade_run`.** The incumbent was checked alongside and
+also never failed.
+
+*And then the measurements, which are why it is parked:*
+
+| workload | control | arm | nodes | throughput |
+|---|---:|---:|---:|---:|
+| corpus 560, fast | 39,701 | 39,701 | **byte-identical** | — |
+| corpus 560, full | 279,895 | 273,596 | −2.25% | — |
+| `large.txt`, 19 rows | 164,156,179 | 153,846,448 | **−6.28%** | — |
+| random 13c x8, seed 3, full max | 385,799,941 | 380,858,610 | **−1.28%** | **8.30M -> 7.60M/s** |
+
+22/22 tests, all 560 corpus values under `--check-pv` and `--check-moves`, all 19
+`large.txt` values, fast mode byte-identical as predicted.
+
+**−1.28% of nodes against −8.4% of throughput is net SLOWER in wall time** at 13
+cards (46.5 s -> 50.1 s). The floors are one or two tricks against `t = 13`, so
+they barely narrow the simplex, while the predicate walks every outstanding spade
+with an owner search inside it on 38.6% of nodes. It is patch 39's shape -- gains
+where hands are short -- except the per-node price is no longer free, and **the
+standing preference on this project is for 13-card gains even at the cost of
+small hands.** On that criterion, as written, it fails.
+
+*What would revive it.* The predicate has to get near free. Two specific moves,
+neither tried: drop the owner-search inner loop for a per-seat popcount against
+an above-mask, and compute `ko` first so `per_nil * room <= alpha` can cut before
+`kn` and `kp` are ever touched. **The node result is real and the soundness is
+established** -- this is a cost problem and nothing else, which is a much better
+place to be parked than 31b or 32.
+
+### 45. Two more places the impossible spades-broken flag is generated — ⭐⭐⭐
+
+Patch 47 fixed `nil_bench`. **The same bug is live in three Python tools**, and
+one of them can bake a bad row into a committed file.
+
+*`tools/invariants.py`* -- `"broken": str(rng.randrange(2))`. At 13 cards **4 of
+8 generated specs are impossible and `nil_cli` rejects every one**. CMakeLists
+ships this at 4 and 6 cards, where it cannot fire, and its own comment says *"run
+it by hand at 11 or 12 cards when the search changes"* -- which is precisely the
+workflow that walks into it.
+
+*`tools/make_large_corpus.py`* and *`tools/crosscheck.py`* -- same coin, drawn
+before an optional partial trick is played out. This is the one that matters:
+patch 45 found **three `large.txt` rows already carrying the flag**, and this
+generator can produce more on any regeneration.
+
+**A coupled bug in `validate()` blocks the straightforward fix, and it is a
+rules bug rather than a harness one.** The check counts spades on the CURRENT
+TRICK towards `spades_seen`:
+
+```
+for (int i = 0; i < pos.trick_len; ++i)
+    if (card_suit(pos.trick[i]) == SUIT_SPADES) ++spades_seen;
+```
+
+but a spade sitting on the current trick is exactly the evidence that spades ARE
+broken -- it has left a hand. So a reachable position is rejected. Found by
+generating 3,000 twelve-card cases with a partial trick; **8 of them are all-13-
+spades-accounted-for with a spade on the trick and the flag legitimately set**,
+and `nil_cli` refuses all 8:
+
+```
+pbn:   N:A97642.T2.AQ9.A 53.K.652.KQ9843 JT.AJ83.T743.5 KQ.Q765..JT762
+trick: DJ S8            (a diamond led, ruffed -- spades are broken)
+error: spades cannot be broken: all thirteen are still in play, so none has been played
+```
+
+The rule wants to be *"broken is impossible only if all thirteen spades are
+still IN HANDS"*, i.e. the trick loop comes out. The converse still holds -- a
+spade played to a completed trick is gone from the hands, so it cannot be that
+all thirteen are in hands and spades are broken -- so dropping the loop does not
+weaken the check.
+
+**Sequenced together and after item 43**, because fixing the three generators
+without fixing `validate()` would make them emit positions the library refuses,
+and `validate()` is a library change that wants its own patch and its own
+`large.txt` regeneration. `nil_bench` was separable and went first precisely
+because `random_position()` never builds a current trick.
+
 ### 32. An adversarial nil-set proof — ⭐⭐⭐ → ⭐⭐ — **population measured, patch 38; proof NOT built, and the reason is worth reading**
 
 `nil_must_take_a_trick` proves the nil bidder wins a trick *whatever all four
@@ -2826,10 +3037,25 @@ say so.
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 36 ✅ → 41 ✅ → 42 ⊘ → 29b (single-suit) → 9 ⊘ → 10 ⊘ → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 36 ✅ → 41 ✅ → 42 ⊘ → 47 ✅ → 43 (QuickTricks, DDS §3) → 45 → 29b (single-suit) → 44 ⏸ → 9 ⊘ → 10 ⊘ → measure → 11..14
 ```
 
-**Item 29b is next, and the case for it is now measured rather than argued.** A
+**Patch 47 comes before all of it, and it is not an optimisation.** The random
+benchmark generator has been emitting an impossible spades-broken flag since
+patch 45, so 13-card runs silently dropped a third to a half of their deals and
+divided by the requested count anyway. Every per-seat 13-card figure banked
+since patch 45 is on a truncated sample. The repaired baselines are at the
+bottom of this file and **item 43's A/B must be taken against those**, not
+against anything above.
+
+**Item 43 (QuickTricks, DDS §3) is now next, ahead of 29b**, on a population
+that item 32's own instrumentation already measured: the forced-trick proof
+fires on **3 of 51,231** eligible boundaries in 13-card full mode, against 70.4%
+of them being genuinely forced. That is the same 2.9%-versus-31% shape the
+paragraph below describes for 29b, one order of magnitude worse, and against a
+predicate whose consumer is already built and commented.
+
+**Item 29b is next after it, and the case for it is measured rather than argued.** A
 node-population sweep at 11 and 13 cards (fast and full) says **31-33% of
 branching nodes exhaust their move list without cutting**, and those all-nodes
 emit **54-56% of every child search in the tree** -- ~2.9-3.1 moves each against
@@ -2975,6 +3201,37 @@ cards are in it, and five deals is not enough to average that out. And the
 millisecond column at the small sizes is mostly the one-off 32 MiB table
 allocation rather than search: at 7 cards a whole position is under two thousand
 nodes. Compare nodes, at a fixed seed and count, or compare nothing.
+
+### Repaired 13-card baselines, patch 47
+
+Everything above this heading that quotes a random 13-card figure was taken with
+the generator emitting an impossible spades-broken flag, so between one and six
+deals in eight never ran. These are the same seeds and the same deal stream with
+the flag masked, 8 deals, 256 MiB, single core. **Compare against these.**
+
+| workload | as HEAD reported | deals actually run | repaired, 8 deals |
+|---|---:|---:|---:|
+| 13c fast, seed 3 | 869,633 | 4 | **1,996,445** |
+| 13c fast, seed 11 | 7,919,000 | 5 | **23,858,179** |
+| 13c fast, seed 42 | 4,759,514 | 2 | **10,433,275** |
+| 13c full max, seed 3 | 118,288,512 | 4 | **385,799,941** (44.8 s) |
+| 13c full max, seed 11 | — | 5 | **689,596,598** (76.7 s) |
+| 13c full max, seed 42 | — | 2 | **340,175,206** (33.7 s) |
+
+Deals lost per run at HEAD, `--count 8`, by size and seed:
+
+| cards | seed 1 | seed 3 | seed 11 | seed 42 |
+|---|---:|---:|---:|---:|
+| 11 | 0 | 0 | 0 | 1 |
+| 12 | 2 | 2 | 1 | 3 |
+| 13 | 6 | 4 | 3 | 6 |
+
+12-card fast moves too -- seed 1 goes 8,137,206 -> 9,258,720, seed 42 goes
+11,980,993 -> 12,158,582 -- and 11-card seed 42 moves by one deal
+(6,537,357 -> 6,537,526). **Sizes at or below 11 on seeds 1, 3 and 11 are
+byte-identical**, verified at 6, 9 and 11 cards, which is the check that the
+deal stream did not move. The corpus and `large.txt` are untouched: neither
+draws a random deal.
 
 **Note on comparability.** The table is bounded, so node counts depend on
 `--tt-mb` once a search overflows it. `nil_bench` records the size in the

@@ -329,7 +329,23 @@ nil::Position random_position(Rng& rng, int cards, int& nil_seat) {
         for (int k = 0; k < cards; ++k) pos.hands[seat] |= nil::card_bit(deck[seat * cards + k]);
     }
     pos.leader = static_cast<int>(rng.below(4));
-    pos.spades_broken = (rng.below(2) != 0);
+    // Spades are broken only if one has been PLAYED, and validate() enforces
+    // it: a layout still holding all thirteen has had no spade leave a hand.
+    // A 13-card deal is always that layout, and a smaller one sometimes is --
+    // 44 dealt cards can contain every spade.  Drawing the coin unconditionally
+    // made those deals fail the solve outright while the summary line went on
+    // dividing by the requested count, so a 13-card run reported a THIRD to a
+    // HALF of the work it claimed to have done.
+    //
+    // The coin is drawn either way and then masked, so the deal stream does not
+    // move: a repaired run generates the same deals as before and differs only
+    // on the flag, which keeps it comparable with anything banked on deals that
+    // already had it false.
+    int spades_dealt = 0;
+    for (int seat = 0; seat < 4; ++seat)
+        spades_dealt += nil::count_cards(pos.hands[seat] & nil::suit_mask(nil::SUIT_SPADES));
+    const bool broken_coin = (rng.below(2) != 0);
+    pos.spades_broken = spades_dealt < 13 && broken_coin;
     nil_seat = static_cast<int>(rng.below(4));
     return pos;
 }
