@@ -300,6 +300,47 @@ extern "C" {
  * value and same principal variation; diagnostic and a control arm. */
 #define NIL_FLAG_NO_TT_NARROW 0x80000u
 
+/* Take the forced-trump floor from ALL FOUR hands rather than from the
+ * top-spade hand alone.  OFF by default: it is a node saving that costs more
+ * throughput than it buys.
+ *
+ * NIL_FLAG_NO_LATER_TRICKS above describes one hand holding the top outstanding
+ * spades as a run.  The same argument carried further gives a floor for EVERY
+ * hand: with o_i the number of spades outside a hand ranked above that hand's
+ * i-th spade from the top, the hand wins at least max_i (i - o_i) tricks down
+ * every line, because a spade above it is played once and so spoils at most one
+ * of the i tricks.  DDS section 4's rules 2 and 3 are the i <= 2 cases.
+ *
+ * With this set, all four floors are used at once: the nil bidder's and the
+ * cover partner's bound the range from below, and the two opponents' ADD -- two
+ * hands cannot win the same trick -- to bound it from above.  Never weaker than
+ * the default single-hand form, and measurably slower anyway; see ROADMAP.md
+ * item 44 for the numbers and for what would change them.
+ *
+ * Inert under NIL_FLAG_NO_LATER_TRICKS, which switches off the bound it rides
+ * on, and under NIL_FLAG_FAST_MODE for the same reason that one is.  Same value
+ * and same principal variation; diagnostic and a control arm. */
+#define NIL_FLAG_SPADE_MATRIX 0x100000u
+
+/* Do not spend the opponents' quick tricks.
+ *
+ * DDS section 3 counts what the side about to lead can cash immediately.  That
+ * is a claim about one STRATEGY rather than a floor that holds down every line,
+ * so it bounds a node only from the side that owns it: the opponents maximise,
+ * so their count says the nil side splits at most t - c and the value cannot
+ * fall below the worst corner of that.  Spent against beta, and only where the
+ * opponents are on lead.
+ *
+ * The mirror image -- the cover partner's count as an upper bound -- is not
+ * taken.  That claim is about a named hand rather than a side, and a nil bidder
+ * holding nothing but spades is forced to ruff its own partner's winner.
+ *
+ * Nearly disjoint from NIL_FLAG_NO_SPADE_MATRIX's arm in practice, which is why
+ * both exist and both are on.  Inert under NIL_FLAG_NO_LATER_TRICKS and under
+ * NIL_FLAG_FAST_MODE.  Same value and same principal variation; diagnostic and
+ * a control arm. */
+#define NIL_FLAG_NO_QUICK_TRICKS 0x200000u
+
 /* Pass to nil_set_table_size to go back to letting the library choose the
  * table size, which is what a process that never calls it already gets.
  *

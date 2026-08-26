@@ -406,8 +406,14 @@ void usage(const char* argv0) {
               << "  --tt-stats        also report transposition table behaviour\n"
               << "  --rank-stats      also report the winning-rank mask histogram\n"
               << "  --nilset-stats    also report forced-trick proof coverage\n"
-              << "  --quick-tricks-stats  also report what a DDS section 3\n"
-              << "                    quick-trick count would buy (item 43)\n"
+              << "  --spade-matrix    take the forced-trump floor from all four\n"
+              << "                    hands rather than the top-spade hand alone\n"
+              << "                    (same answer, fewer nodes, and SLOWER;\n"
+              << "                    roadmap item 44, off by default)\n"
+              << "  --no-quick-tricks   do not spend the opponents' can-cash\n"
+              << "                    floor (same answer, more nodes; full only)\n"
+              << "  --quick-tricks-stats  also report how often each later-tricks\n"
+              << "                    arm's gate opens and how often it cuts\n"
               << "  --quiet           only print the summary and any failures\n"
               << "\n"
               << "--check-pv compares against the PV a corpus row recorded, so it means\n"
@@ -451,6 +457,10 @@ std::string memo_label(const nil::SearchOptions& opts) {
     // would split one history into two groups holding identical numbers.
     if (!opts.target_bounds && opts.mode == nil::MODE_FULL) suffix += "+notarget";
     if (!opts.later_tricks && opts.mode == nil::MODE_FULL) suffix += "+nolatertricks";
+    if (opts.spade_matrix && opts.later_tricks && opts.mode == nil::MODE_FULL)
+        suffix += "+spadematrix";
+    if (!opts.quick_tricks && opts.later_tricks && opts.mode == nil::MODE_FULL)
+        suffix += "+noquicktricks";
     if (!opts.tt_narrow_window && opts.mode == nil::MODE_FULL) suffix += "+nottnarrow";
     // Both modes: order_moves runs in full mode too, so full-mode rows move
     // under this arm as well and a fast-only suffix would silently merge two
@@ -594,6 +604,10 @@ int main(int argc, char** argv) {
         } else if (arg == "--nilset-stats") {
             nilset_stats = true;
             opts.track_nilset = true;
+        } else if (arg == "--spade-matrix") {
+            opts.spade_matrix = true;
+        } else if (arg == "--no-quick-tricks") {
+            opts.quick_tricks = false;
         } else if (arg == "--quick-tricks-stats") {
             quick_tricks_stats = true;
             opts.track_quick_tricks = true;
@@ -987,20 +1001,14 @@ int main(int argc, char** argv) {
             std::cout << "    " << std::left << std::setw(30) << label << std::right
                       << std::setw(14) << commas(part) << "   " << pc(part) << "\n";
         };
-        std::cout << "\n  quick tricks at trick boundaries the reach bound left open"
-                  << " (roadmap item 43)\n"
+        std::cout << "\n  later-tricks arms at trick boundaries the reach bound left open"
+                  << " (roadmap items 43, 44)\n"
                   << "    boundaries still open        " << std::setw(14)
                   << commas(qs.boundaries) << "\n";
-        row("forced floor, some hand", qs.forced_any);
-        row("forced floor, the nil bidder", qs.forced_nil);
-        row("  ...would cut", qs.forced_cut);
-        row("nil side on lead", qs.lead_nil_side);
-        row("opponents on lead", qs.lead_opponents);
-        row("  can-cash would cut (sound)", qs.cash_cut_best);
-        row("  can-cash would cut (optimistic)", qs.cash_cut_sum);
-        row("  can-cash cuts, forced does not", qs.cash_only_cut);
-        row("  either mechanism cuts", qs.either_cut);
-        row("  cheap gate lets the walk run", qs.cash_gate_passes);
+        row("forced floor: gate opens", qs.gate_forced);
+        row("forced floor: cuts", qs.fire_forced);
+        row("can-cash: gate opens", qs.gate_cash);
+        row("can-cash: cuts", qs.fire_cash);
     }
 
     if (rank_stats) {

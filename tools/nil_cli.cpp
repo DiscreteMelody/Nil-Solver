@@ -170,6 +170,10 @@ int main(int argc, char** argv) {
             opts.target_bounds = false;
         } else if (arg == "--no-later-tricks") {
             opts.later_tricks = false;
+        } else if (arg == "--spade-matrix") {
+            opts.spade_matrix = true;
+        } else if (arg == "--no-quick-tricks") {
+            opts.quick_tricks = false;
         } else if (arg == "--no-tt-narrow") {
             opts.tt_narrow_window = false;
         } else if (arg == "--no-suit-mix") {

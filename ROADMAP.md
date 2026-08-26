@@ -38,6 +38,8 @@ expensive node. Read items 11 and 31 in that light.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ✅ | ~~QuickTricks: the opponents' can-cash floor~~ | patch 49 | DDS §3, spent in the one direction that is sound here. A can-cash count is a claim about one STRATEGY, so it bounds a node only from the side that owns it -- the opponents maximise, so theirs says the nil side splits at most `t - c` and the value cannot fall below the worst corner of that. Spent against beta, at a node where they are on lead, and nowhere else. **−0.14% to −1.16% nodes across the three 13-card seeds, −0.66% on the corpus, −0.46% on `large.txt`**, `MODE_FAST` byte-identical. **What made it shippable was one line of ordering**: the bound is strongest at `c = t`, which leaves the nil side nothing to split and floors the value at zero, so `beta > 0` refutes it in a SINGLE COMPARISON before a popcount is spent. Putting that ahead of the four-popcount longest-suit test flipped 12 cards from slower in 4 of 5 interleaved reps to faster in 3 of 5, with the node count provably unmoved (278,059 either way). Its gate then opens on **7.14% of boundaries against item 44's 71%**, and that ratio is the whole reason one ships and the other does not. **Wall time is much weaker than nodes and this entry says so**: interleaved medians, one binary, arms toggled at runtime -- 12c 484.3 -> 477.5 ms (3 of 5 faster), 13c seed 42 3598.1 -> 3584.7 (3 of 5), 13c seed 3 1055.5 -> 1074.6 (2 of 5), 11c 1280.4 -> 1293.5 (2 of 5). A wash, slightly positive. The cover partner's mirror image is NOT taken and bounds.hpp says why. 400 random deals x 3 arms in both tie-break directions agree on value, split and PV while 299 differ in node count; all 560 corpus values under `--check-pv` and `--check-moves`, all 19 `large.txt` rows |
+| ⏸ | The forced-trump floor for all four hands (item 44) | patch 49 | **built, gated, measured, SHIPPED OFF.** Every hand's forced floor in one walk, combining into `n >= kn`, `p >= kp`, `n + p <= t - ko` -- three constraints where `top_spade_run` gives one. Sound: an exhaustive-playout property test over 18,800 checks at 3, 4 and 5 cards finds no counterexample. **−1.28% nodes at 13 cards and −8.3% of throughput, so net slower.** A gate on three masked popcounts -- floors cannot exceed spade counts, and the triangle only shrinks as floors grow -- **bought essentially nothing (8.4% -> 8.3%), because it opens on 71% of boundaries**. Carried behind `--spade-matrix` / `NIL_FLAG_SPADE_MATRIX` rather than deleted: the node saving is real and it is **nearly disjoint from item 43**, which the corpus shows almost exactly additively -- 6,299 nodes saved alone plus 1,836 alone against 8,127 saved together. Both arms on is −2.44% at 13c seed 3. What it needs is a tighter gate or a cheaper walk |
 | ⊘ | QuickTricks, DDS §3 (item 43) | patch 48 | **measured, not built, and the measurement is the deliverable.** §3 counts what the side on lead CAN CASH, which bounds a node only from the side holding the option -- an upper bound when the minimising nil side holds it, a lower bound when the maximising opponents do. Both were evaluated against each node's own window at the boundaries the reach bound leaves open, and neither was applied. **The result that matters is that §3 and §4 are nearly DISJOINT**: the can-cash count cuts 1.57-4.07% of still-open boundaries and **97-98% of those cuts are at boundaries where the forced floor does not cut**, so the two add rather than overlap -- 2.90% to 8.11% together against 1.34-4.12% for the forced floor alone. Against item 44's calibration (4.12% would-cut bought −1.28% of nodes) that projects to roughly −2.5% at best, and the per-suit walk is dearer than the trump-only one it would sit beside. **A cheap necessary condition halves it and no more**: per_partner is negative, so the opponents' bound is at most zero and a positive beta refutes it in one comparison -- 48.90% of boundaries still let the walk run. Shipped: `forced_spade_tricks()` and `cashable_tricks()` in `bounds.hpp`, and `--quick-tricks-stats`, **free when off** and verified so (39,701 fast, 279,895 full, 164,156,179 on `large.txt`, 22/22). A soundness gap found on the way is recorded in the item and would have to be closed before any of it is spent |
 | ✅ | ~~The random benchmark generator draws an impossible spades-broken flag~~ | patch 47 | **a measurement bug, and it has been eating the 13-card leg since patch 45.** `random_position()` set `pos.spades_broken` on a coin flip; patch 45's `validate()` rejects that flag while all thirteen spades are in play, which a 13-card deal ALWAYS is. The failing half never ran, and the summary line went on dividing by the requested count -- so `--cards 13 --count 8` reported **a third to a half of the work it claimed**: seed 3 869,633 against a real 1,996,445 (2.30x), seed 11 7,919,000 against 23,858,179 (3.01x), seed 42 4,759,514 against 10,433,275 (2.19x), fast mode. **12 cards loses 1-3 deals in 8 and 11 cards loses one on seed 42**, because 44 dealt cards can hold every spade. The coin is drawn either way and then masked, so the DEAL STREAM DOES NOT MOVE and every previously-passing deal reproduces byte-identical -- verified at 6, 9 and 11 cards on two seeds, and the corpus (39,701 fast / 279,895 full) and `large.txt` (164,156,179) are untouched because neither uses random deals. **Patch 45's verdict survives the repair**: rebuilt at `410a30c` and re-run on a full 8-deal sample, the three 13-card seeds go 62,013,835 -> 36,287,899, **−41.5% against the −44% that entry banked**. What does not survive is every PER-SEED 13-card figure taken since patch 45; those are on a truncated sample and must not seed the next A/B |
 | ✅ | ~~`--break-on-forced-lead` removed from every interface~~ | patch 46 | patch 45 made the rule universal but kept two pieces of scaffolding for callers that no longer exist: ABI bit `0x2u` was documented as retired-and-burned so an old caller would get an ignored flag rather than a silently different objective, and the corpus parser recognised the old thirteen-field layout to explain the missing `forced` column. Nothing ships against either, so both are gone and the call surface is one flag shorter. The old-layout branch was **dead code besides** -- it sat inside a `f.size() < 10` guard and tested for 11, 12 and 13, so it could never fire; an old row now fails where it always really failed, on the `forced` value not parsing as a trick. The stale `expected at least 11` in that same message is corrected to 10, which is what the guard has checked since the column went. **No behaviour change and no answers move**: 22/22 tests, all 560 corpus rows and all 19 large rows reproduce byte-identical. Earlier entries on this list still mention `--break-on-forced-lead` and are deliberately left alone -- they record what was verified at the time, and rewriting them would make the log claim a history it did not have |
@@ -2307,7 +2309,7 @@ at every node and every value it stores is a bound at one end or the other, so
 every match settles its window. The test suite pins that as an equality, not an
 inequality.
 
-### 43. QuickTricks — ⭐⭐⭐⭐ → ⭐⭐⭐ — **population measured, patch 48; NOT built, and §3 turns out to be complementary to §4 rather than a replacement for it**
+### 43. ~~QuickTricks~~ — ⭐⭐⭐⭐ → ⭐⭐⭐ — **done, patch 49; population measured in patch 48, and §3 turned out to be complementary to §4 rather than a replacement for it**
 
 **The one primary cutoff in the paper this solver has never had.** §2 landed as
 patch 31 (−22.4% at 13 cards), §4 as patch 39 (−16.7%), and §3 is absent from
@@ -2413,7 +2415,7 @@ the population is real, the disjointness is real, and the arithmetic is cost.
 
 ---
 
-### 44. The forced-trump floor for all four hands — ⭐⭐ — **BUILT, MEASURED, PARKED ON COST (not on soundness and not on nodes)**
+### 44. The forced-trump floor for all four hands — ⭐⭐ — **built, gated, measured, SHIPPED OFF in patch 49; parked on cost, not on soundness and not on nodes**
 
 `top_spade_run` names one hand and one number. The same argument carried one
 step further gives a floor for **every** hand: with `o_i` the number of spades
@@ -2486,6 +2488,59 @@ arithmetic from two walks over one bound each. `forced_spade_tricks()` shipped i
 patch 48 as measurement machinery, so both predicates are already in
 `bounds.hpp` and the next attempt starts from working code rather than from this
 entry.
+
+## What patch 49 shipped, and what it did not
+
+**The two arms were built into one block and measured apart, and that is the
+only reason the right one shipped.** Built together they read as −2.44% of nodes
+and net slower, which would have been recorded as a single failure. Isolated:
+
+| arm at 13c seed 3, 8 deals | nodes | throughput |
+|---|---:|---:|
+| control (both off) | 385,799,941 | 10.82M/s |
+| **item 43 only** (can-cash) | 381,343,003 (**−1.16%**) | 10.81M/s (**flat**) |
+| item 44 only (forced floor) | 380,858,610 (−1.28%) | 9.92M/s (**−8.3%**) |
+| both | 376,385,611 (−2.44%) | 9.75M/s (−10.3%) |
+
+Nearly the same node saving; wildly different bills. Item 6's rule -- *heuristics
+measured together are heuristics not measured at all* -- earns its keep again.
+
+**The gate ratio is the whole result.** Both arms are a cheap test in front of an
+expensive walk, and what separates them is how often the test lets the walk run:
+
+| arm | gate opens | cuts |
+|---|---:|---:|
+| item 44, forced floor | **71.21%** | 18.90% |
+| item 43, can-cash | **7.14%** | 2.01% |
+
+Item 43's gate is one comparison and it is exact rather than heuristic: the
+bound is strongest at `c = t`, which floors the value at zero, so `beta > 0`
+refutes it outright. Item 44's gate is three popcounts and an arithmetic bound
+that is simply loose -- a hand's forced floor cannot exceed its spade count, and
+that ceiling is nowhere near tight enough to close 71% down to something a walk
+can be paid for out of.
+
+**The near-additivity is measured, not assumed.** On the corpus, item 43 alone
+saves 1,836 nodes and item 44 alone saves 6,299; together they save 8,127 against
+the 8,135 that adding them predicts. Patch 48 predicted this from the
+would-cut overlap (97-98% disjoint) and the node counts confirm it, which is why
+item 44 is carried behind a flag rather than deleted: **anything that makes its
+walk affordable gets its −1.28% on top of item 43's, not instead of it.**
+
+*Two things to try, neither attempted.* A tighter ceiling on `forced(H)` than the
+spade count -- `forced(H) <= a - o_1`, where `a` is the hand's spade count and
+`o_1` the number of spades above its highest, is one popcount and strictly
+tighter. And computing `ko` before `kn` and `kp`, so the opponent constraint
+alone can close the window before the other two floors are touched.
+
+*Also not attempted, and it is the larger of the two.* §3's other half -- the
+cover partner's can-cash count as an UPPER bound -- stays out on the soundness
+gap patch 48 found: the claim is about a named hand rather than a side, and a nil
+bidder holding nothing but spades is forced to ruff its own partner's winner.
+The guard is cheap to state (the nil bidder holds at least `b` cards in the
+cashed suit, or holds no spades at all) and the question is what it leaves of
+the population. That is a measurement, not a build, and it is the next thing to
+do on this item.
 
 ### 45. Two more places the impossible spades-broken flag is generated — ⭐⭐⭐
 
@@ -3122,7 +3177,7 @@ say so.
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 36 ✅ → 41 ✅ → 42 ⊘ → 47 ✅ → 43 ⊘ → 45 → 29b (single-suit) → 44 + 43 together ⏸ → 9 ⊘ → 10 ⊘ → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 36 ✅ → 41 ✅ → 42 ⊘ → 47 ✅ → 43 ⊘→✅ → 44 ⏸ → 45 → 29b (single-suit) → 9 ⊘ → 10 ⊘ → measure → 11..14
 ```
 
 **Patch 47 comes before all of it, and it is not an optimisation.** The random

@@ -421,24 +421,82 @@ inline void forced_spade_tricks(const Hand hands[4], int out[4]) {
 // shortening the guard that the next suit's count was computed against.  A
 // population measured between the two is a population known to within the
 // bracket, which is the honest thing to report before anything is wired to it.
-struct QuickTricks {
-    int best = 0;  // largest single suit -- sound
-    int sum = 0;   // every suit added -- optimistic
-};
+// Extremes of per_nil * n + per_partner * p over the triangle
+//
+//     n >= kn,   p >= kp,   n + p <= room
+//
+// A linear function over a triangle takes its extremes at the vertices, so
+// three evaluations settle it and nothing here searches.  Returns false when
+// the triangle is empty, which every caller reads as "make no claim".
+//
+// Signs are never assumed.  The two weights change sign with the tie-break
+// direction, so `hi` and `lo` are picked by comparison rather than by knowing
+// which vertex ought to win.
+inline bool triangle_bounds(int per_nil, int per_partner, int kn, int kp, int room, int& hi,
+                            int& lo) {
+    if (room < kn + kp) return false;
+    const int v0 = per_nil * kn + per_partner * kp;
+    const int v1 = per_nil * (room - kp) + per_partner * kp;
+    const int v2 = per_nil * kn + per_partner * (room - kn);
+    hi = v0;
+    lo = v0;
+    if (v1 > hi) hi = v1;
+    if (v2 > hi) hi = v2;
+    if (v1 < lo) lo = v1;
+    if (v2 < lo) lo = v2;
+    return true;
+}
 
-inline QuickTricks cashable_tricks(const Hand hands[4], int seat) {
-    QuickTricks q;
-    const int lho = (seat + 1) & 3;
-    const int rho = (seat + 3) & 3;
+// The lower end of the same objective over n + p <= room, with no floor on
+// either.  What the opponents' can-cash count buys: they take at least c, so
+// the nil side splits at most room = t - c, and the value cannot be below the
+// worst corner of that.
+inline int split_floor(int per_nil, int per_partner, int room) {
+    int lo = 0;
+    const int a = per_nil * room;
+    const int b = per_partner * room;
+    if (a < lo) lo = a;
+    if (b < lo) lo = b;
+    return lo;
+}
+
+// DDS section 3's count, for the OPPONENTS of the nil bidder.
+//
+// `leader` gains the lead and runs its winners from the top.  Per suit it holds
+// a run of r cards from the top of what is outstanding.  In the trump suit all
+// r cash -- the only spades above them are its own.  In a side suit a hand void
+// in the suit and holding a spade RUFFS, so only the rounds where both members
+// of the OTHER side must still follow are safe:
+//
+//     r' = r                                  if the other side holds no spade
+//     r' = min(r, shorter opposing length)    otherwise
+//
+// The leader's own partner is not consulted: a partner who ruffs still wins the
+// trick for this side, and the claim being made is about the SIDE's total.
+// That is the whole reason this direction is safe and the mirror image is not
+// -- see the note on the cover partner below.
+//
+// ONE SUIT ONLY, deliberately.  Cashing a first suit can force a hand void in
+// it to discard from a second, shortening the guard the second suit's count was
+// computed against, so summing across suits is optimistic.  Patch 48 measured
+// both and the sum is not worth the argument it would need: cash one suit and
+// stop is unconditionally sound.
+//
+// A CAN-CASH COUNT, not a forced one.  It is a claim about one strategy and it
+// bounds a node only from the side that owns the strategy, so it is spent
+// against beta at a node where these hands are ON LEAD and nowhere else.
+inline int side_cashable_tricks(const Hand hands[4], int leader) {
+    const int a = (leader + 1) & 3;
+    const int b = (leader + 3) & 3;
+    const Hand theirs = hands[a] | hands[b];
     const Hand live = hands[0] | hands[1] | hands[2] | hands[3];
-    const bool opps_have_trumps =
-        ((hands[lho] | hands[rho]) & suit_mask(SUIT_SPADES)) != 0;
+    const bool they_have_trumps = (theirs & suit_mask(SUIT_SPADES)) != 0;
+    int best = 0;
     for (int suit = 0; suit < 4; ++suit) {
         const Hand mask = suit_mask(suit);
-        Hand outstanding = live & mask;
-        if (!outstanding) continue;
-        const Hand mine = hands[seat] & mask;
+        const Hand mine = hands[leader] & mask;
         if (!mine) continue;
+        Hand outstanding = live & mask;
         int run = 0;
         while (outstanding) {
             const CardId c = highest_card(outstanding);
@@ -447,19 +505,32 @@ inline QuickTricks cashable_tricks(const Hand hands[4], int seat) {
             outstanding &= ~card_bit(c);
         }
         if (run == 0) continue;
-        int cashes = run;
-        if (suit != SUIT_SPADES && opps_have_trumps) {
-            const int a = count_cards(hands[lho] & mask);
-            const int b = count_cards(hands[rho] & mask);
-            const int shorter = a < b ? a : b;
-            if (shorter < cashes) cashes = shorter;
+        if (suit != SUIT_SPADES && they_have_trumps) {
+            const int la = count_cards(hands[a] & mask);
+            const int lb = count_cards(hands[b] & mask);
+            const int shorter = la < lb ? la : lb;
+            if (shorter < run) run = shorter;
         }
-        if (cashes <= 0) continue;
-        q.sum += cashes;
-        if (cashes > q.best) q.best = cashes;
+        if (run > best) best = run;
     }
-    return q;
+    return best;
 }
+
+// WHY THE COVER PARTNER'S CASH COUNT IS NOT HERE.
+//
+// The mirror of the above would let a cover partner on lead cash b tricks and
+// claim p >= b, bounding the value from above.  Patch 48 measured that
+// population alongside this one and then found the hole: the claim is about a
+// NAMED HAND rather than about a side, and if the nil bidder is void in the
+// cashing suit and holds nothing but spades it is FORCED to ruff its own
+// partner's winner.  The trick moves from p to n and the bound is wrong.
+//
+// The opponents' version above does not have the hole, because a partner who
+// ruffs is still on the same side and the constraint is n + p <= t - c either
+// way.  Closing the hole needs a guard -- the nil bidder holding at least b
+// cards in the cashed suit, or no spades at all -- which shrinks the population
+// that made the branch look worth having.  Deferred rather than guessed at; the
+// guard and the re-measurement are written up in ROADMAP.md item 43.
 
 inline bool nil_must_take_a_trick(const Hand hands[4], int nil_seat) {
     const Hand mine = hands[nil_seat] & suit_mask(SUIT_SPADES);

@@ -354,6 +354,46 @@ struct SearchOptions {
     // On by default, off as the control arm.
     bool later_tricks = true;
 
+    // Make that claim about ALL FOUR hands instead of one (roadmap item 44).
+    //
+    // top_spade_run() answers "which hand holds the top outstanding spades as a
+    // run, and how many" -- one constraint on one side of the simplex.
+    // forced_spade_tricks() answers "how many tricks is each hand forced to
+    // win" for every hand in one walk, using the closed form the paper's rules
+    // 2 and 3 are special cases of.  Three constraints instead of one, and the
+    // two opponents' floors ADD, because two hands cannot win the same trick.
+    //
+    // Never weaker than the incumbent, and gated on three masked popcounts so
+    // that the walk runs only where it could possibly reach the window.
+    //
+    // OFF BY DEFAULT, and the measurement is why.  It buys −1.28% of nodes at
+    // 13 cards and costs 8.3% of throughput, so it is net slower in wall time:
+    // the gate opens on 71% of boundaries, which is too often to pay for a walk
+    // down every outstanding spade.  It is carried rather than deleted because
+    // the node saving is real, the soundness is established by an exhaustive
+    // property test, and it is nearly disjoint from the arm below -- the two
+    // together are −2.44% of nodes.  What it needs is a tighter gate or a
+    // cheaper walk, and both are open.  See ROADMAP.md item 44.
+    //
+    // With it off the incumbent single-hand form runs instead, so turning it on
+    // is a one-flag differential on one binary.  Rides on later_tricks:
+    // MODE_FULL only, trick boundary only.
+    bool spade_matrix = false;
+
+    // DDS section 3, spent in the one direction that is sound here (item 43).
+    //
+    // A can-cash count is a claim about one STRATEGY, so it bounds a node only
+    // from the side owning it.  The opponents maximise, so their count is a
+    // lower bound, spent against beta at a node where they are on lead.  The
+    // cover partner's mirror image is deliberately not taken; see bounds.hpp.
+    //
+    // Patch 48 measured this against item 44 and found the two nearly
+    // disjoint -- 97-98% of these cuts land where the forced floor does not --
+    // which is why they ship together and each keeps its own switch.
+    //
+    // Rides on later_tricks.  On by default, off as the control arm.
+    bool quick_tricks = true;
+
     // Spend a transposition-table entry that matches the position but does not
     // settle it on this node's CUTOFF BOUND.
     //
@@ -537,9 +577,9 @@ struct SearchOptions {
     // Off by default and free when off.
     bool track_nilset = false;
 
-    // Collect roadmap item 43's quick-trick population.  Measurement only and
-    // free when off: the counter block is guarded on a null pointer that is set
-    // only when this is true.
+    // Report how often each arm's gate opens and each arm fires (items 43 and
+    // 44).  Measurement only and free when off: every counter is guarded on a
+    // null pointer that is set only when this is true.
     bool track_quick_tricks = false;
 
 
@@ -747,30 +787,13 @@ struct NilSetStats {
 // later-tricks tightening answering them.  Every other counter is a subset of
 // it, so each reads directly as a fraction of the population still open.
 struct QuickTrickStats {
-    std::uint64_t boundaries = 0;
-
-    // FORCED floors (bounds.hpp forced_spade_tricks): sound at any node, and
-    // the shape the reach bound actually wants.
-    std::uint64_t forced_any = 0;      // some hand has a floor above zero
-    std::uint64_t forced_nil = 0;      // the nil bidder's own floor is positive
-    std::uint64_t forced_cut = 0;      // the joint forced polytope would cut
-
-    // CAN-CASH counts (bounds.hpp cashable_tricks): sound only for the side
-    // holding the option, so they are split by who is on lead.
-    std::uint64_t lead_nil_side = 0;   // the minimising side leads
-    std::uint64_t lead_opponents = 0;  // the maximising side leads
-    std::uint64_t cash_cut_best = 0;   // would cut on the sound per-suit count
-    std::uint64_t cash_cut_sum = 0;    // ...on the optimistic summed count
-    std::uint64_t cash_only_cut = 0;   // can-cash cuts where the forced floor does not
-    std::uint64_t either_cut = 0;      // either mechanism cuts
-
-    // How often the CHEAP necessary condition for a can-cash cut holds, i.e.
-    // how often the per-suit walk would have to run at all.  With per_partner
-    // negative the opponents' bound is at most zero, so beta > 0 refutes it in
-    // one comparison; the cover's is at most per_partner * t, so an alpha below
-    // that refutes it in one more.
-    std::uint64_t cash_gate_passes = 0;
+    std::uint64_t boundaries = 0;    // trick boundaries the untightened bound left open
+    std::uint64_t gate_forced = 0;   // the spade-count gate let the forced walk run
+    std::uint64_t fire_forced = 0;   // the forced-floor triangle cut
+    std::uint64_t gate_cash = 0;     // the longest-suit gate let the cash walk run
+    std::uint64_t fire_cash = 0;     // the opponents' can-cash floor cut
 };
+
 
 const QuickTrickStats& quick_trick_stats();
 void reset_quick_trick_stats();

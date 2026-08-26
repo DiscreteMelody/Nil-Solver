@@ -66,6 +66,8 @@ struct Ctx {
     bool tt_boundaries_only = true;  // consult the table only at a trick boundary
     bool target_bounds = true;       // the arithmetic reach bound; MODE_FULL only
     bool later_tricks = true;        // tighten that bound by DDS s4; MODE_FULL only
+    bool spade_matrix = false;       // ...for all four hands at once (item 44, opt-in)
+    bool quick_tricks = true;        // ...plus DDS s3's can-cash floor (item 43)
     bool tt_narrow = true;           // spend a partial table match on the cutoff bound
     bool suit_mix = true;            // one card per suit at the head of the move list
     // True when no remaining trick can lower the value, i.e. every weight is
@@ -130,92 +132,6 @@ struct Ctx {
 
 // Roadmap item 32's population count.  Split out so the expression at the call
 // site stays one line: the measurement must not reshape the branch it measures.
-// Roadmap item 43's population count.  Split out for the same reason
-// count_nilset_outcome is: the measurement must not reshape the branch it
-// measures, so the call site stays one statement.
-//
-// Three candidate constraints are evaluated against the node's OWN window, and
-// none of them is applied:
-//
-//   FORCED   forced_spade_tricks() gives every hand a floor that holds down
-//            every line, so the three floors combine into
-//            n >= kn, p >= kp, n + p <= t - ko -- a triangle, three vertices.
-//            Legal at any node.
-//
-//   CASH     cashable_tricks() gives the side ON LEAD a strategy, which bounds
-//            the value only from that side.  The nil side minimises, so its
-//            cover partner's cash count is an UPPER bound and fires against
-//            alpha; the opponents maximise, so theirs is a LOWER bound and
-//            fires against beta.  A can-cash count is counted only when the
-//            hand that owns the option is the hand on lead -- an entry from
-//            partner is section 3's other half and is deliberately not assumed
-//            here, so this is a floor on that population too.
-inline void count_quick_trick_outcome(QuickTrickStats& stats, const State& st, int nil_seat,
-                                      int per_nil, int per_partner, int t, int alpha,
-                                      int beta) {
-    ++stats.boundaries;
-
-    int forced[4];
-    forced_spade_tricks(st.hands, forced);
-    const int cover = nil_seat ^ 2;
-    const int kn = forced[nil_seat];
-    const int kp = forced[cover];
-    const int ko = forced[(nil_seat + 1) & 3] + forced[(nil_seat + 3) & 3];
-    if (kn > 0 || kp > 0 || ko > 0) ++stats.forced_any;
-    if (kn > 0) ++stats.forced_nil;
-    const int room = t - ko;
-    bool forced_cuts = false;
-    if (room >= kn + kp) {
-        const int v0 = per_nil * kn + per_partner * kp;
-        const int v1 = per_nil * (room - kp) + per_partner * kp;
-        const int v2 = per_nil * kn + per_partner * (room - kn);
-        int hi = v0, lo = v0;
-        if (v1 > hi) hi = v1;
-        if (v2 > hi) hi = v2;
-        if (v1 < lo) lo = v1;
-        if (v2 < lo) lo = v2;
-        if (hi <= alpha || lo >= beta) forced_cuts = true;
-    }
-    if (forced_cuts) ++stats.forced_cut;
-
-    bool cash_cuts = false;
-    const bool nil_side_leads = ((st.leader ^ nil_seat) & 1) == 0;
-    if (nil_side_leads) {
-        ++stats.lead_nil_side;
-        // Only the cover partner's tricks bound the value from above; the nil
-        // bidder taking tricks is the case the upper bound is already at.
-        if (st.leader == cover) {
-            // Cheapest necessary condition: the tightest this bound can ever be
-            // is b = t, worth per_partner * t.  Below that alpha can never
-            // reach it and the per-suit walk is wasted.
-            if (alpha >= per_partner * t) ++stats.cash_gate_passes;
-            const QuickTricks q = cashable_tricks(st.hands, cover);
-            if (q.best > 0 &&
-                per_nil * (t - q.best) + per_partner * q.best <= alpha) {
-                ++stats.cash_cut_best;
-                cash_cuts = true;
-            }
-            if (q.sum > 0 && q.sum <= t &&
-                per_nil * (t - q.sum) + per_partner * q.sum <= alpha)
-                ++stats.cash_cut_sum;
-        }
-    } else {
-        ++stats.lead_opponents;
-        // per_partner is negative in the maximising direction, so this bound is
-        // at most zero and a positive beta refutes it outright.
-        if (beta <= 0) ++stats.cash_gate_passes;
-        const QuickTricks q = cashable_tricks(st.hands, st.leader);
-        if (q.best > 0 && per_partner * (t - q.best) >= beta) {
-            ++stats.cash_cut_best;
-            cash_cuts = true;
-        }
-        if (q.sum > 0 && q.sum <= t && per_partner * (t - q.sum) >= beta)
-            ++stats.cash_cut_sum;
-    }
-    if (cash_cuts && !forced_cuts) ++stats.cash_only_cut;
-    if (cash_cuts || forced_cuts) ++stats.either_cut;
-}
-
 inline void count_nilset_outcome(NilSetStats& stats, const Hand hands[4], int nil_seat) {
     if (nil_must_take_a_trick(hands, nil_seat)) {
         ++stats.proof_fires;
@@ -772,54 +688,145 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
         // -- the gate is the mode.  This is a MODE_FULL item and the flag is
         // documented as one.
         if (ctx.later_tricks) {
-            int k = 0;
-            const int owner = top_spade_run(st.hands, k);
-            if (owner >= 0 && k > 0 && k <= t) {
-                const int per_nil =
-                    ctx.primary_weight + ctx.tertiary_weight + ctx.secondary_weight;
-                const int per_partner = ctx.secondary_weight;
-                int n0, p0, n1, p1, n2, p2;
-                if (owner == ctx.nil_seat) {
-                    n0 = k, p0 = 0, n1 = k, p1 = t - k, n2 = t, p2 = 0;
-                } else if (((owner ^ ctx.nil_seat) & 1) == 0) {
-                    n0 = 0, p0 = k, n1 = 0, p1 = t, n2 = t - k, p2 = k;
-                } else {
-                    n0 = 0, p0 = 0, n1 = t - k, p1 = 0, n2 = 0, p2 = t - k;
+            const int per_nil =
+                ctx.primary_weight + ctx.tertiary_weight + ctx.secondary_weight;
+            const int per_partner = ctx.secondary_weight;
+            const Hand sp = suit_mask(SUIT_SPADES);
+            const int cover = ctx.nil_seat ^ 2;
+            const int lho = (ctx.nil_seat + 1) & 3;
+            const int rho = (ctx.nil_seat + 3) & 3;
+            if (ctx.quick_stats) ++ctx.quick_stats->boundaries;
+
+            // ---- item 44: the forced floor, for all four hands -------------
+            //
+            // top_spade_run() names one hand and one number, so it constrains
+            // one side of the simplex and leaves the other three unremarked.
+            // forced_spade_tricks() gives every hand a floor in one walk, and
+            // the floors combine rather than compete:
+            //
+            //     n >= kn                the nil bidder's own
+            //     p >= kp                the cover partner's
+            //     n + p <= t - ko        both opponents', ADDED, because two
+            //                            hands cannot win the same trick
+            //
+            // Never weaker than the incumbent: for the hand top_spade_run()
+            // named, the general count reproduces its run and may exceed it.
+            //
+            // THE GATE IS WHAT MAKES IT AFFORDABLE, and it is the whole
+            // difference between this and the version measured in patch 48. A
+            // hand's floor cannot exceed the number of spades it holds, and
+            // the triangle only shrinks as the floors grow -- so evaluating it
+            // at the spade COUNTS gives the most tightening the walk could
+            // ever produce. If that still does not reach the window, the walk
+            // is certain to be wasted. Four masked popcounts instead of a walk
+            // down every outstanding spade.
+            //
+            // An empty triangle at the counts means the counts are not
+            // simultaneously achievable, so they say nothing and the gate
+            // opens rather than closing -- conservative in the only direction
+            // that matters.
+            if (ctx.spade_matrix) {
+                const int cn = count_cards(st.hands[ctx.nil_seat] & sp);
+                const int cp = count_cards(st.hands[cover] & sp);
+                const int co = count_cards((st.hands[lho] | st.hands[rho]) & sp);
+                int ghi = 0, glo = 0;
+                const bool bounded =
+                    triangle_bounds(per_nil, per_partner, cn, cp, t - co, ghi, glo);
+                if (!bounded || ghi <= alpha || glo >= beta) {
+                    if (ctx.quick_stats) ++ctx.quick_stats->gate_forced;
+                    int forced[4];
+                    forced_spade_tricks(st.hands, forced);
+                    const int ko = forced[lho] + forced[rho];
+                    int hi2 = 0, lo2 = 0;
+                    if (triangle_bounds(per_nil, per_partner, forced[ctx.nil_seat],
+                                        forced[cover], t - ko, hi2, lo2)) {
+                        if (hi2 <= alpha) {
+                            if (ctx.quick_stats) ++ctx.quick_stats->fire_forced;
+                            best_move = first_legal_move(st);
+                            return hi2;
+                        }
+                        if (lo2 >= beta) {
+                            if (ctx.quick_stats) ++ctx.quick_stats->fire_forced;
+                            best_move = first_legal_move(st);
+                            return lo2;
+                        }
+                    }
                 }
-                const int v0 = per_nil * n0 + per_partner * p0;
-                const int v1 = per_nil * n1 + per_partner * p1;
-                const int v2 = per_nil * n2 + per_partner * p2;
-                int hi2 = v0;
-                if (v1 > hi2) hi2 = v1;
-                if (v2 > hi2) hi2 = v2;
-                int lo2 = v0;
-                if (v1 < lo2) lo2 = v1;
-                if (v2 < lo2) lo2 = v2;
-                if (hi2 <= alpha) {
-                    best_move = first_legal_move(st);
-                    return hi2;
+            } else {
+                // The incumbent single-hand form, kept reachable so that the
+                // change above is a one-flag differential on one binary.
+                int k = 0;
+                const int owner = top_spade_run(st.hands, k);
+                if (owner >= 0 && k > 0 && k <= t) {
+                    int kn = 0, kp = 0, room = t;
+                    if (owner == ctx.nil_seat) {
+                        kn = k;
+                    } else if (((owner ^ ctx.nil_seat) & 1) == 0) {
+                        kp = k;
+                    } else {
+                        room = t - k;
+                    }
+                    int hi2 = 0, lo2 = 0;
+                    if (triangle_bounds(per_nil, per_partner, kn, kp, room, hi2, lo2)) {
+                        if (hi2 <= alpha) {
+                            best_move = first_legal_move(st);
+                            return hi2;
+                        }
+                        if (lo2 >= beta) {
+                            best_move = first_legal_move(st);
+                            return lo2;
+                        }
+                    }
                 }
-                if (lo2 >= beta) {
-                    best_move = first_legal_move(st);
-                    return lo2;
+            }
+
+            // ---- item 43: DDS section 3, the opponents' can-cash count -----
+            //
+            // Patch 48 measured this beside item 44 and found the two nearly
+            // DISJOINT: 97-98% of the cuts here land at boundaries where the
+            // forced floor does not cut. They are complementary rather than
+            // competing, which is why they run in sequence -- exactly as the
+            // paper runs its own cutoffs.
+            //
+            // WHY IT IS SPENT ONLY HERE. A can-cash count is a claim about one
+            // STRATEGY, so it bounds a node only from the side that owns the
+            // strategy. The opponents maximise, so theirs is a lower bound and
+            // is spent against beta, and only at a node where they are on
+            // lead. The mirror image -- the cover partner's count as an upper
+            // bound -- is NOT taken, and bounds.hpp says why: that claim is
+            // about a named hand rather than a side, and a nil bidder holding
+            // nothing but spades is forced to ruff its own partner's winner.
+            //
+            // Its gate is one comparison in the common case. The bound is
+            // weakest at c = 0 and strongest at the largest c the leader could
+            // possibly have, which is bounded by its longest suit; if even
+            // that does not reach beta, the per-suit walk is wasted.
+            // The strongest this bound can EVER be is c = t, which leaves the
+            // nil side nothing to split and floors the value at zero.  So
+            // `beta > 0` refutes it outright, in one comparison, before a
+            // single popcount is spent -- and that comparison is the whole
+            // reason this arm is affordable where item 44's is not.
+            if (ctx.quick_tricks && beta <= 0 && ((st.leader ^ ctx.nil_seat) & 1) != 0) {
+                int longest = 0;
+                for (int suit = 0; suit < 4; ++suit) {
+                    const int len = count_cards(st.hands[st.leader] & suit_mask(suit));
+                    if (len > longest) longest = len;
+                }
+                if (longest > 0 && split_floor(per_nil, per_partner, t - longest) >= beta) {
+                    if (ctx.quick_stats) ++ctx.quick_stats->gate_cash;
+                    const int c = side_cashable_tricks(st.hands, st.leader);
+                    if (c > 0) {
+                        const int lo3 = split_floor(per_nil, per_partner, t - c);
+                        if (lo3 >= beta) {
+                            if (ctx.quick_stats) ++ctx.quick_stats->fire_cash;
+                            best_move = first_legal_move(st);
+                            return lo3;
+                        }
+                    }
                 }
             }
         }
 
-        // ROADMAP ITEM 43'S POPULATION.  Measurement only: nothing below
-        // changes what this node returns, and the whole block is unreachable
-        // unless --quick-tricks-stats set the pointer.
-        //
-        // Placed HERE, past both the untightened simplex and the incumbent
-        // later-tricks tightening, so every counter reads as a fraction of the
-        // boundaries still open rather than of all of them.  A count that would
-        // have fired where the bound already fired buys nothing.
-        if (ctx.quick_stats) {
-            count_quick_trick_outcome(*ctx.quick_stats, st, ctx.nil_seat,
-                                      ctx.primary_weight + ctx.tertiary_weight +
-                                          ctx.secondary_weight,
-                                      ctx.secondary_weight, t, alpha, beta);
-        }
     }
 
     // THE SAME TWO PROOFS, SPENT IN MODE_FULL (patch 29).
@@ -1274,6 +1281,8 @@ void configure(Ctx& ctx, int nil_seat, const SearchOptions& opts,
     ctx.tt_boundaries_only = opts.tt_boundaries_only;
     ctx.target_bounds = opts.target_bounds;
     ctx.later_tricks = opts.later_tricks;
+    ctx.spade_matrix = opts.spade_matrix;
+    ctx.quick_tricks = opts.quick_tricks;
     ctx.tt_narrow = opts.tt_narrow_window;
     ctx.suit_mix = opts.suit_mixed_order;
     // Canonicalise whenever the caller wants the canonical line -- and also,
