@@ -38,6 +38,7 @@ expensive node. Read items 11 and 31 in that light.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ⊘ | QuickTricks, DDS §3 (item 43) | patch 48 | **measured, not built, and the measurement is the deliverable.** §3 counts what the side on lead CAN CASH, which bounds a node only from the side holding the option -- an upper bound when the minimising nil side holds it, a lower bound when the maximising opponents do. Both were evaluated against each node's own window at the boundaries the reach bound leaves open, and neither was applied. **The result that matters is that §3 and §4 are nearly DISJOINT**: the can-cash count cuts 1.57-4.07% of still-open boundaries and **97-98% of those cuts are at boundaries where the forced floor does not cut**, so the two add rather than overlap -- 2.90% to 8.11% together against 1.34-4.12% for the forced floor alone. Against item 44's calibration (4.12% would-cut bought −1.28% of nodes) that projects to roughly −2.5% at best, and the per-suit walk is dearer than the trump-only one it would sit beside. **A cheap necessary condition halves it and no more**: per_partner is negative, so the opponents' bound is at most zero and a positive beta refutes it in one comparison -- 48.90% of boundaries still let the walk run. Shipped: `forced_spade_tricks()` and `cashable_tricks()` in `bounds.hpp`, and `--quick-tricks-stats`, **free when off** and verified so (39,701 fast, 279,895 full, 164,156,179 on `large.txt`, 22/22). A soundness gap found on the way is recorded in the item and would have to be closed before any of it is spent |
 | ✅ | ~~The random benchmark generator draws an impossible spades-broken flag~~ | patch 47 | **a measurement bug, and it has been eating the 13-card leg since patch 45.** `random_position()` set `pos.spades_broken` on a coin flip; patch 45's `validate()` rejects that flag while all thirteen spades are in play, which a 13-card deal ALWAYS is. The failing half never ran, and the summary line went on dividing by the requested count -- so `--cards 13 --count 8` reported **a third to a half of the work it claimed**: seed 3 869,633 against a real 1,996,445 (2.30x), seed 11 7,919,000 against 23,858,179 (3.01x), seed 42 4,759,514 against 10,433,275 (2.19x), fast mode. **12 cards loses 1-3 deals in 8 and 11 cards loses one on seed 42**, because 44 dealt cards can hold every spade. The coin is drawn either way and then masked, so the DEAL STREAM DOES NOT MOVE and every previously-passing deal reproduces byte-identical -- verified at 6, 9 and 11 cards on two seeds, and the corpus (39,701 fast / 279,895 full) and `large.txt` (164,156,179) are untouched because neither uses random deals. **Patch 45's verdict survives the repair**: rebuilt at `410a30c` and re-run on a full 8-deal sample, the three 13-card seeds go 62,013,835 -> 36,287,899, **−41.5% against the −44% that entry banked**. What does not survive is every PER-SEED 13-card figure taken since patch 45; those are on a truncated sample and must not seed the next A/B |
 | ✅ | ~~`--break-on-forced-lead` removed from every interface~~ | patch 46 | patch 45 made the rule universal but kept two pieces of scaffolding for callers that no longer exist: ABI bit `0x2u` was documented as retired-and-burned so an old caller would get an ignored flag rather than a silently different objective, and the corpus parser recognised the old thirteen-field layout to explain the missing `forced` column. Nothing ships against either, so both are gone and the call surface is one flag shorter. The old-layout branch was **dead code besides** -- it sat inside a `f.size() < 10` guard and tested for 11, 12 and 13, so it could never fire; an old row now fails where it always really failed, on the `forced` value not parsing as a trick. The stale `expected at least 11` in that same message is corrected to 10, which is what the guard has checked since the column went. **No behaviour change and no answers move**: 22/22 tests, all 560 corpus rows and all 19 large rows reproduce byte-identical. Earlier entries on this list still mention `--break-on-forced-lead` and are deliberately left alone -- they record what was verified at the time, and rewriting them would make the log claim a history it did not have |
 | ✅ | ~~A spade played always breaks spades; broken flag validated~~ | patch 45 | **a rules change, not an optimisation, and it pays like one.** `spades_broken_after` had a `break_on_forced_lead` parameter selecting whether a hand forced to lead a spade left spades unbroken -- the literal reading of the rule, and the default. It collapses to `broken \|\| suit == SPADES`, with the `trick_len` and `led_suit` arguments gone too since nothing else consulted them. Removed from `SearchOptions`, `Ctx`, `replay_pv`, the C ABI (bit `0x2u` **burned, not recycled**), both CLIs, `CorpusEntry`, the corpus format's sixth column, `nil_oracle.py` and seven Python tools. **261 of 560 corpus rows were computed under the literal reading and none of their answers moved**: a forced spade lead needs a hand holding nothing but spades while on lead, which constructed endings never reach. Separately, `validate()` now rejects a position claiming broken spades while all thirteen are still in play -- a full deal has had no card played, so no spade has. Three `large.txt` rows carried it, one at nine cards. Unbroken spades forbid a voluntary spade lead, which prunes hard near the root, so clearing them took the 13-card benchmark leg **from 290M nodes to 163M (−44%)** and c13-0001 from 184,547,569 to **71,253,358 (−61%)** with no value moving -- two principal variations did, and were re-pinned |
@@ -2306,7 +2307,7 @@ at every node and every value it stores is a bound at one end or the other, so
 every match settles its window. The test suite pins that as an equality, not an
 inequality.
 
-### 43. QuickTricks — ⭐⭐⭐⭐ — **NEXT; from DDS §3**
+### 43. QuickTricks — ⭐⭐⭐⭐ → ⭐⭐⭐ — **population measured, patch 48; NOT built, and §3 turns out to be complementary to §4 rather than a replacement for it**
 
 **The one primary cutoff in the paper this solver has never had.** §2 landed as
 patch 31 (−22.4% at 13 cards), §4 as patch 39 (−16.7%), and §3 is absent from
@@ -2338,6 +2339,79 @@ to meet, and item 44 below for the closed form that already meets it.
 addition -- re-run the sure-trick test after the leading card is played, where
 the winner is far more constrained), and the **opponents' sure tricks** as a cap
 on `n + p`, which is the opponent case of item 44 generalised off trump.
+
+---
+
+## What patch 48 measured
+
+`cashable_tricks()` in `bounds.hpp` is §3's count: per suit, the run of top
+outstanding cards the hand holds, capped in a side suit by the shorter
+opponent's length in it, because an opponent void in the suit and holding a
+spade ruffs. It reports `best` (the largest single suit, unconditionally sound
+-- cash one suit and stop) and `sum` (every suit added, optimistic, because
+cashing one suit can force a void opponent to discard from another and shorten
+the guard the next suit was counted against). The two bracket the truth instead
+of pretending to be it.
+
+**Where a can-cash count may be spent, and it is not where §4's is.** The reach
+bound ranges over the simplex without assuming anybody plays well, so it
+consumes floors that hold down every line. A can-cash count is a statement about
+ONE strategy, so it bounds the node from one side only:
+
+  * **opponents on lead** (they maximise): under a cashing strategy they take at
+    least `c`, so `n + p <= t - c` for every reply, and
+    `V >= per_partner * (t - c)`. Fires against beta.
+  * **cover partner on lead** (the nil side minimises): under a cashing strategy
+    `p >= b` for every reply, so `V <= per_nil * (t - b) + per_partner * b`.
+    Fires against alpha.
+
+The nil bidder's own cash count is worth nothing -- an upper bound is already at
+`n = t`, which is the case it would be describing.
+
+**The measurement**, taken at the boundaries the untightened simplex AND the
+incumbent later-tricks tightening both left open, so every figure is a fraction
+of what is still unanswered:
+
+| workload | boundaries open | forced floor cuts | can-cash cuts (sound) | of which forced does NOT cut | either |
+|---|---:|---:|---:|---:|---:|
+| 13c x4, seed 3, full max | 16,769,137 | 4.12% | 4.07% | **3.99%** | **8.11%** |
+| 13c x4, seed 42, full max | 55,135,192 | 1.34% | 1.57% | **1.55%** | **2.90%** |
+| 11c x6, seed 3, full max | 26,697,207 | 1.41% | 3.47% | **3.45%** | **4.87%** |
+
+**That fourth column is the finding.** 97-98% of the can-cash cuts land where the
+forced floor does not, on all three workloads. §3 is not a better §4 and it is
+not a subset of it -- the two mechanisms are nearly disjoint and roughly the same
+size, so together they answer about twice what §4 answers alone. That is what
+the paper's structure implies (they are separate cutoffs run in sequence) and it
+had not been checked here.
+
+**Why it still is not built.** Item 44 calibrates the exchange rate: a 4.12%
+would-cut rate bought **−1.28% of nodes** at 13 cards, and cost 8.4% of
+throughput. Doubling the fire rate projects to roughly −2.5%, against a
+predicate that walks four suits instead of one trump suit. The cheap gate helps
+and does not rescue it: per_partner is negative so the opponents' bound is at
+most zero and a positive beta refutes it in a single comparison, but **48.90% of
+boundaries still let the walk run** (13c seed 3). 4.07% of cuts out of 48.90% of
+walks is an 8% hit rate on the expensive part.
+
+*A soundness gap, and it has to be closed before any of this is spent.* The
+cover-partner bound claims `p >= b` -- that the COVER takes those tricks. If the
+nil bidder is void in the cashing suit and holds nothing but spades it is forced
+to ruff its own partner's winner, and the trick moves from `p` to `n`. The claim
+is about a named hand rather than about the side, so unlike the opponents' case
+this does not survive the substitution. It is narrow but real, and the measured
+4.07% is therefore an upper estimate of what a sound version would cut. Any
+implementation needs the guard; the population above should be re-measured with
+it in place before the numbers are trusted to two decimals.
+
+*What would revive it, concretely.* A tighter gate than the one measured. The
+cover bound needs `b >= (per_nil * t - alpha) / (per_nil - per_partner)`, so the
+minimum useful `b` is one division away and the walk can be skipped outright
+whenever the cover holds fewer cards than that. That was not measured and is the
+first thing to try. **Nothing here is a soundness problem with §3 itself** --
+the population is real, the disjointness is real, and the arithmetic is cost.
+
+---
 
 ### 44. The forced-trump floor for all four hands — ⭐⭐ — **BUILT, MEASURED, PARKED ON COST (not on soundness and not on nodes)**
 
@@ -2401,6 +2475,17 @@ an above-mask, and compute `ko` first so `per_nil * room <= alpha` can cut befor
 `kn` and `kp` are ever touched. **The node result is real and the soundness is
 established** -- this is a cost problem and nothing else, which is a much better
 place to be parked than 31b or 32.
+
+**Patch 48 changed what this item is worth by measuring item 43 beside it.** The
+two mechanisms are nearly disjoint -- 97-98% of §3's can-cash cuts land at
+boundaries where this forced floor does not cut -- so they should be built and
+measured TOGETHER or not at all. Either alone is a ~1.3% node saving fighting an
+8% throughput bill; together the fire rate roughly doubles against one shared
+walk down the position, and one walk amortised over two bounds is a different
+arithmetic from two walks over one bound each. `forced_spade_tricks()` shipped in
+patch 48 as measurement machinery, so both predicates are already in
+`bounds.hpp` and the next attempt starts from working code rather than from this
+entry.
 
 ### 45. Two more places the impossible spades-broken flag is generated — ⭐⭐⭐
 
@@ -3037,7 +3122,7 @@ say so.
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 36 ✅ → 41 ✅ → 42 ⊘ → 47 ✅ → 43 (QuickTricks, DDS §3) → 45 → 29b (single-suit) → 44 ⏸ → 9 ⊘ → 10 ⊘ → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 36 ✅ → 41 ✅ → 42 ⊘ → 47 ✅ → 43 ⊘ → 45 → 29b (single-suit) → 44 + 43 together ⏸ → 9 ⊘ → 10 ⊘ → measure → 11..14
 ```
 
 **Patch 47 comes before all of it, and it is not an optimisation.** The random

@@ -322,6 +322,145 @@ inline int top_spade_run(const Hand hands[4], int& run) {
     return owner;
 }
 
+// ---------------------------------------------------------------------------
+// QUICK TRICKS (DDS section 3), and the two shapes it comes in
+// ---------------------------------------------------------------------------
+// Section 3 counts the tricks the side about to lead can take IMMEDIATELY, by
+// cashing from the top.  That is a CAN-CASH count: it presumes the side is on
+// lead and chooses to cash.  DDS can spend it directly because its value is the
+// side's own trick count and its side to move is maximising exactly that.
+//
+// This search cannot, and the reason is worth stating once.  The reach bound in
+// search_impl() ranges over the whole simplex n + p <= t WITHOUT assuming
+// anybody plays well, so what it consumes is a floor that holds down every
+// line.  A can-cash count is a statement about one strategy, and it bounds the
+// node's value only from the side whose strategy it is -- an upper bound when a
+// minimiser holds the option, a lower bound when a maximiser does.  The two
+// therefore plug in at different places and fire against different thresholds,
+// which is why they are counted separately below rather than added up.
+//
+// FORCED, by contrast, is what top_spade_run() gives and what the bound wants.
+// forced_spade_tricks() below is the closed form of that argument for every
+// hand at once.
+
+// Every hand's FORCED trump tricks, in one pass down the outstanding spades.
+//
+// With hand H holding spades r1 > r2 > ... > ra and o_i the number of spades
+// OUTSIDE H ranked above r_i,
+//
+//     forced(H) = max over i of (i - o_i)
+//
+// and H wins at least that many of the remaining tricks in EVERY line.
+//
+// WHY.  Fix i and take H's top i spades.  They are played on i distinct tricks,
+// because H plays one card per trick.  One of them is lost only if a HIGHER
+// spade lands on that trick, and a higher spade in H itself cannot -- same
+// hand, same trick, one card.  So the spoiler is a spade outside H ranked above
+// some r_j with j <= i, hence above r_i, and there are o_i of those.  Each is
+// played once, so each spoils at most one.  At least i - o_i survive.
+//
+// The max over i is free: every i gives a valid floor, so the largest is valid
+// too.  At o_i = 0 this reproduces top_spade_run() exactly, so it is never
+// weaker for the hand that function names, and it speaks about the other three
+// besides.
+//
+// DDS SECTION 4'S RULES 2 AND 3 ARE THE SMALL CASES.  Rule 2 -- highest trump
+// is one sure trick, highest plus second-highest is two -- is i = 1 and i = 2
+// at o = 0.  Rule 3 -- "the second highest trump plus at least one trump more
+// behind the hand with the highest trump" -- is i = 2, o_2 = 1.  The paper
+// enumerates them; this is the form they are instances of.
+//
+// TWO HANDS' FLOORS MAY BE ADDED, which the top_spade_run() comment denies for
+// a side-wide count.  What is unusable there is pooling a RUN across two hands,
+// where s1 and s2 can land on one trick and collapse.  Nothing is pooled here:
+// each floor is proved on its own hand, and two hands cannot win the same
+// trick.  The formula prices the collapse in by itself -- give s1 to West and
+// s2 to East and East scores 1 - 1 = 0.
+//
+// A TRICK BOUNDARY ONLY: it reads the four hands as the whole of the live
+// cards.
+inline void forced_spade_tricks(const Hand hands[4], int out[4]) {
+    out[0] = out[1] = out[2] = out[3] = 0;
+    Hand outstanding =
+        (hands[0] | hands[1] | hands[2] | hands[3]) & suit_mask(SUIT_SPADES);
+    int seen[4] = {0, 0, 0, 0};
+    int total = 0;
+    while (outstanding) {
+        const CardId c = highest_card(outstanding);
+        outstanding &= ~card_bit(c);
+        int owner = 0;
+        while (owner < 4 && !(hands[owner] & card_bit(c))) ++owner;
+        if (owner == 4) continue;
+        ++seen[owner];
+        ++total;
+        // o_i is every spade seen so far that is not this hand's.
+        const int v = seen[owner] - (total - seen[owner]);
+        if (v > out[owner]) out[owner] = v;
+    }
+}
+
+// DDS section 3's count: tricks `seat` cashes if it gains the lead and runs its
+// winners from the top.
+//
+// Per suit, `seat` holds a run of r cards from the top of what is outstanding.
+// In the trump suit all r cash -- the only spades above them are its own.  In a
+// side suit an opponent void in the suit and holding a spade RUFFS, so only the
+// rounds where both opponents must still follow are safe:
+//
+//     r' = r                                   if neither opponent holds a spade
+//     r' = min(r, shorter opponent's length)   otherwise
+//
+// The PARTNER's holding is not consulted: a partner who ruffs still wins the
+// trick for this side, and a partner who over-takes still leaves the side on
+// lead.  Only the two opponents can break the run.
+//
+// `sum` adds the per-suit counts and `best` takes the largest single suit.
+// They bracket the truth rather than agreeing with it, and deliberately.  `best`
+// is unconditionally sound -- cash one suit and stop.  `sum` is optimistic:
+// cashing one suit can force an opponent void in it to DISCARD from another,
+// shortening the guard that the next suit's count was computed against.  A
+// population measured between the two is a population known to within the
+// bracket, which is the honest thing to report before anything is wired to it.
+struct QuickTricks {
+    int best = 0;  // largest single suit -- sound
+    int sum = 0;   // every suit added -- optimistic
+};
+
+inline QuickTricks cashable_tricks(const Hand hands[4], int seat) {
+    QuickTricks q;
+    const int lho = (seat + 1) & 3;
+    const int rho = (seat + 3) & 3;
+    const Hand live = hands[0] | hands[1] | hands[2] | hands[3];
+    const bool opps_have_trumps =
+        ((hands[lho] | hands[rho]) & suit_mask(SUIT_SPADES)) != 0;
+    for (int suit = 0; suit < 4; ++suit) {
+        const Hand mask = suit_mask(suit);
+        Hand outstanding = live & mask;
+        if (!outstanding) continue;
+        const Hand mine = hands[seat] & mask;
+        if (!mine) continue;
+        int run = 0;
+        while (outstanding) {
+            const CardId c = highest_card(outstanding);
+            if (!(mine & card_bit(c))) break;
+            ++run;
+            outstanding &= ~card_bit(c);
+        }
+        if (run == 0) continue;
+        int cashes = run;
+        if (suit != SUIT_SPADES && opps_have_trumps) {
+            const int a = count_cards(hands[lho] & mask);
+            const int b = count_cards(hands[rho] & mask);
+            const int shorter = a < b ? a : b;
+            if (shorter < cashes) cashes = shorter;
+        }
+        if (cashes <= 0) continue;
+        q.sum += cashes;
+        if (cashes > q.best) q.best = cashes;
+    }
+    return q;
+}
+
 inline bool nil_must_take_a_trick(const Hand hands[4], int nil_seat) {
     const Hand mine = hands[nil_seat] & suit_mask(SUIT_SPADES);
     // The overwhelmingly common case for a nil bidder, and one mask test.

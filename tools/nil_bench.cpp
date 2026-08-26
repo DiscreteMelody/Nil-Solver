@@ -406,6 +406,8 @@ void usage(const char* argv0) {
               << "  --tt-stats        also report transposition table behaviour\n"
               << "  --rank-stats      also report the winning-rank mask histogram\n"
               << "  --nilset-stats    also report forced-trick proof coverage\n"
+              << "  --quick-tricks-stats  also report what a DDS section 3\n"
+              << "                    quick-trick count would buy (item 43)\n"
               << "  --quiet           only print the summary and any failures\n"
               << "\n"
               << "--check-pv compares against the PV a corpus row recorded, so it means\n"
@@ -485,6 +487,7 @@ int main(int argc, char** argv) {
     bool tt_stats = false;
     bool rank_stats = false;
     bool nilset_stats = false;
+    bool quick_tricks_stats = false;
     // --mode both: solve every position in the other mode as well and require
     // the two to agree on nil_fails.
     bool cross_check_modes = false;
@@ -591,6 +594,9 @@ int main(int argc, char** argv) {
         } else if (arg == "--nilset-stats") {
             nilset_stats = true;
             opts.track_nilset = true;
+        } else if (arg == "--quick-tricks-stats") {
+            quick_tricks_stats = true;
+            opts.track_quick_tricks = true;
         } else if (arg == "--rank-stats") {
             rank_stats = true;
             opts.track_rank_masks = true;
@@ -702,6 +708,7 @@ int main(int argc, char** argv) {
     // it starts from zero here rather than per position.
     if (rank_stats) nil::reset_rank_mask_stats();
     if (nilset_stats) nil::reset_nil_set_stats();
+    if (quick_tricks_stats) nil::reset_quick_trick_stats();
 
     for (const Item& item : items) {
         nil::Solution sol;
@@ -963,6 +970,37 @@ int main(int argc, char** argv) {
                   << commas(ns.ceiling_only) << "   " << pc(ns.ceiling_only) << "\n"
                   << "    neither                      " << std::setw(12) << commas(ns.neither)
                   << "   " << pc(ns.neither) << "\n";
+    }
+
+    if (quick_tricks_stats) {
+        const nil::QuickTrickStats& qs = nil::quick_trick_stats();
+        const auto pc = [&](std::uint64_t part) {
+            std::ostringstream os;
+            os << std::fixed << std::setprecision(2)
+               << (qs.boundaries ? 100.0 * static_cast<double>(part) /
+                                       static_cast<double>(qs.boundaries)
+                                 : 0.0)
+               << "%";
+            return os.str();
+        };
+        const auto row = [&](const char* label, std::uint64_t part) {
+            std::cout << "    " << std::left << std::setw(30) << label << std::right
+                      << std::setw(14) << commas(part) << "   " << pc(part) << "\n";
+        };
+        std::cout << "\n  quick tricks at trick boundaries the reach bound left open"
+                  << " (roadmap item 43)\n"
+                  << "    boundaries still open        " << std::setw(14)
+                  << commas(qs.boundaries) << "\n";
+        row("forced floor, some hand", qs.forced_any);
+        row("forced floor, the nil bidder", qs.forced_nil);
+        row("  ...would cut", qs.forced_cut);
+        row("nil side on lead", qs.lead_nil_side);
+        row("opponents on lead", qs.lead_opponents);
+        row("  can-cash would cut (sound)", qs.cash_cut_best);
+        row("  can-cash would cut (optimistic)", qs.cash_cut_sum);
+        row("  can-cash cuts, forced does not", qs.cash_only_cut);
+        row("  either mechanism cuts", qs.either_cut);
+        row("  cheap gate lets the walk run", qs.cash_gate_passes);
     }
 
     if (rank_stats) {

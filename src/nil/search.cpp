@@ -42,6 +42,11 @@ NilSetStats& nil_set_stats_storage() {
     return stats;
 }
 
+QuickTrickStats& quick_trick_stats_storage() {
+    static thread_local QuickTrickStats stats;
+    return stats;
+}
+
 // Stand-ins for "no window at all", used by MODE_FULL.  No value the objective
 // can produce comes within several orders of magnitude of either, so every
 // cutoff test in search() is dead on that path: full mode is still exhaustive
@@ -120,10 +125,97 @@ struct Ctx {
     bool track_ranks = false;
     RankMaskStats* rank_stats = nullptr;
     NilSetStats* nilset_stats = nullptr;  // roadmap item 32, measurement only
+    QuickTrickStats* quick_stats = nullptr;  // roadmap item 43, measurement only
 };
 
 // Roadmap item 32's population count.  Split out so the expression at the call
 // site stays one line: the measurement must not reshape the branch it measures.
+// Roadmap item 43's population count.  Split out for the same reason
+// count_nilset_outcome is: the measurement must not reshape the branch it
+// measures, so the call site stays one statement.
+//
+// Three candidate constraints are evaluated against the node's OWN window, and
+// none of them is applied:
+//
+//   FORCED   forced_spade_tricks() gives every hand a floor that holds down
+//            every line, so the three floors combine into
+//            n >= kn, p >= kp, n + p <= t - ko -- a triangle, three vertices.
+//            Legal at any node.
+//
+//   CASH     cashable_tricks() gives the side ON LEAD a strategy, which bounds
+//            the value only from that side.  The nil side minimises, so its
+//            cover partner's cash count is an UPPER bound and fires against
+//            alpha; the opponents maximise, so theirs is a LOWER bound and
+//            fires against beta.  A can-cash count is counted only when the
+//            hand that owns the option is the hand on lead -- an entry from
+//            partner is section 3's other half and is deliberately not assumed
+//            here, so this is a floor on that population too.
+inline void count_quick_trick_outcome(QuickTrickStats& stats, const State& st, int nil_seat,
+                                      int per_nil, int per_partner, int t, int alpha,
+                                      int beta) {
+    ++stats.boundaries;
+
+    int forced[4];
+    forced_spade_tricks(st.hands, forced);
+    const int cover = nil_seat ^ 2;
+    const int kn = forced[nil_seat];
+    const int kp = forced[cover];
+    const int ko = forced[(nil_seat + 1) & 3] + forced[(nil_seat + 3) & 3];
+    if (kn > 0 || kp > 0 || ko > 0) ++stats.forced_any;
+    if (kn > 0) ++stats.forced_nil;
+    const int room = t - ko;
+    bool forced_cuts = false;
+    if (room >= kn + kp) {
+        const int v0 = per_nil * kn + per_partner * kp;
+        const int v1 = per_nil * (room - kp) + per_partner * kp;
+        const int v2 = per_nil * kn + per_partner * (room - kn);
+        int hi = v0, lo = v0;
+        if (v1 > hi) hi = v1;
+        if (v2 > hi) hi = v2;
+        if (v1 < lo) lo = v1;
+        if (v2 < lo) lo = v2;
+        if (hi <= alpha || lo >= beta) forced_cuts = true;
+    }
+    if (forced_cuts) ++stats.forced_cut;
+
+    bool cash_cuts = false;
+    const bool nil_side_leads = ((st.leader ^ nil_seat) & 1) == 0;
+    if (nil_side_leads) {
+        ++stats.lead_nil_side;
+        // Only the cover partner's tricks bound the value from above; the nil
+        // bidder taking tricks is the case the upper bound is already at.
+        if (st.leader == cover) {
+            // Cheapest necessary condition: the tightest this bound can ever be
+            // is b = t, worth per_partner * t.  Below that alpha can never
+            // reach it and the per-suit walk is wasted.
+            if (alpha >= per_partner * t) ++stats.cash_gate_passes;
+            const QuickTricks q = cashable_tricks(st.hands, cover);
+            if (q.best > 0 &&
+                per_nil * (t - q.best) + per_partner * q.best <= alpha) {
+                ++stats.cash_cut_best;
+                cash_cuts = true;
+            }
+            if (q.sum > 0 && q.sum <= t &&
+                per_nil * (t - q.sum) + per_partner * q.sum <= alpha)
+                ++stats.cash_cut_sum;
+        }
+    } else {
+        ++stats.lead_opponents;
+        // per_partner is negative in the maximising direction, so this bound is
+        // at most zero and a positive beta refutes it outright.
+        if (beta <= 0) ++stats.cash_gate_passes;
+        const QuickTricks q = cashable_tricks(st.hands, st.leader);
+        if (q.best > 0 && per_partner * (t - q.best) >= beta) {
+            ++stats.cash_cut_best;
+            cash_cuts = true;
+        }
+        if (q.sum > 0 && q.sum <= t && per_partner * (t - q.sum) >= beta)
+            ++stats.cash_cut_sum;
+    }
+    if (cash_cuts && !forced_cuts) ++stats.cash_only_cut;
+    if (cash_cuts || forced_cuts) ++stats.either_cut;
+}
+
 inline void count_nilset_outcome(NilSetStats& stats, const Hand hands[4], int nil_seat) {
     if (nil_must_take_a_trick(hands, nil_seat)) {
         ++stats.proof_fires;
@@ -713,6 +805,21 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
                 }
             }
         }
+
+        // ROADMAP ITEM 43'S POPULATION.  Measurement only: nothing below
+        // changes what this node returns, and the whole block is unreachable
+        // unless --quick-tricks-stats set the pointer.
+        //
+        // Placed HERE, past both the untightened simplex and the incumbent
+        // later-tricks tightening, so every counter reads as a fraction of the
+        // boundaries still open rather than of all of them.  A count that would
+        // have fired where the bound already fired buys nothing.
+        if (ctx.quick_stats) {
+            count_quick_trick_outcome(*ctx.quick_stats, st, ctx.nil_seat,
+                                      ctx.primary_weight + ctx.tertiary_weight +
+                                          ctx.secondary_weight,
+                                      ctx.secondary_weight, t, alpha, beta);
+        }
     }
 
     // THE SAME TWO PROOFS, SPENT IN MODE_FULL (patch 29).
@@ -1193,6 +1300,7 @@ void configure(Ctx& ctx, int nil_seat, const SearchOptions& opts,
     ctx.track_ranks = opts.track_rank_masks;
     if (ctx.track_ranks) ctx.rank_stats = &rank_mask_stats_storage();
     if (opts.track_nilset) ctx.nilset_stats = &nil_set_stats_storage();
+    if (opts.track_quick_tricks) ctx.quick_stats = &quick_trick_stats_storage();
 
     const std::size_t table_mb =
         opts.tt_megabytes == TT_AUTO ? TT_DEFAULT_MEGABYTES : opts.tt_megabytes;
@@ -1539,6 +1647,10 @@ void reset_rank_mask_stats() { rank_mask_stats_storage() = RankMaskStats(); }
 const NilSetStats& nil_set_stats() { return nil_set_stats_storage(); }
 
 void reset_nil_set_stats() { nil_set_stats_storage() = NilSetStats(); }
+
+const QuickTrickStats& quick_trick_stats() { return quick_trick_stats_storage(); }
+
+void reset_quick_trick_stats() { quick_trick_stats_storage() = QuickTrickStats(); }
 
 bool solve_moves(const Position& pos, int nil_seat, const SearchOptions& opts, Solution& out,
                  std::vector<MoveScore>& moves_out, std::string& err) {

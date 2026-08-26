@@ -537,6 +537,11 @@ struct SearchOptions {
     // Off by default and free when off.
     bool track_nilset = false;
 
+    // Collect roadmap item 43's quick-trick population.  Measurement only and
+    // free when off: the counter block is guarded on a null pointer that is set
+    // only when this is true.
+    bool track_quick_tricks = false;
+
 
     // Return the canonically lowest of the equally-best lines, rather than
     // whichever one the move ordering happened to reach first.
@@ -732,6 +737,43 @@ struct NilSetStats {
     std::uint64_t ceiling_only = 0;   // silent today, the permissive test says forced
     std::uint64_t neither = 0;
 };
+
+// Roadmap item 43's population count: what a DDS section 3 quick-trick count
+// would have bought, measured at the boundaries where the bounds that exist
+// today stay silent.  Measurement only -- nothing in the search consumes it.
+//
+// `boundaries` counts full-mode trick boundaries that reached the end of the
+// reach-bound block WITHOUT the untightened simplex or the incumbent
+// later-tricks tightening answering them.  Every other counter is a subset of
+// it, so each reads directly as a fraction of the population still open.
+struct QuickTrickStats {
+    std::uint64_t boundaries = 0;
+
+    // FORCED floors (bounds.hpp forced_spade_tricks): sound at any node, and
+    // the shape the reach bound actually wants.
+    std::uint64_t forced_any = 0;      // some hand has a floor above zero
+    std::uint64_t forced_nil = 0;      // the nil bidder's own floor is positive
+    std::uint64_t forced_cut = 0;      // the joint forced polytope would cut
+
+    // CAN-CASH counts (bounds.hpp cashable_tricks): sound only for the side
+    // holding the option, so they are split by who is on lead.
+    std::uint64_t lead_nil_side = 0;   // the minimising side leads
+    std::uint64_t lead_opponents = 0;  // the maximising side leads
+    std::uint64_t cash_cut_best = 0;   // would cut on the sound per-suit count
+    std::uint64_t cash_cut_sum = 0;    // ...on the optimistic summed count
+    std::uint64_t cash_only_cut = 0;   // can-cash cuts where the forced floor does not
+    std::uint64_t either_cut = 0;      // either mechanism cuts
+
+    // How often the CHEAP necessary condition for a can-cash cut holds, i.e.
+    // how often the per-suit walk would have to run at all.  With per_partner
+    // negative the opponents' bound is at most zero, so beta > 0 refutes it in
+    // one comparison; the cover's is at most per_partner * t, so an alpha below
+    // that refutes it in one more.
+    std::uint64_t cash_gate_passes = 0;
+};
+
+const QuickTrickStats& quick_trick_stats();
+void reset_quick_trick_stats();
 
 const NilSetStats& nil_set_stats();
 void reset_nil_set_stats();
