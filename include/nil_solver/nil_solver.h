@@ -137,9 +137,15 @@ extern "C" {
  * turns that off.  Same answer and same principal variation either way -- it is
  * a diagnostic, and it is several times slower. */
 #define NIL_FLAG_NO_COLLAPSE 0x40u
-/* Allow more than NIL_CARD_LIMIT cards per hand.  Without this the solver
- * refuses, because the search is still exhaustive and will take a very long
- * time. */
+/* Accepted and ignored.
+ *
+ * This once lifted a refusal to search more than NIL_CARD_LIMIT cards per hand.
+ * There is no such refusal any more -- see NIL_CARD_LIMIT for why -- and every
+ * size the position can represent is searched on request.
+ *
+ * Retained rather than removed so that callers already passing it keep
+ * compiling and keep working, and so the bit is not handed to something else
+ * that an old caller would then be setting by accident. */
 #define NIL_FLAG_FORCE_LARGE 0x8u
 /* Answer the nil question and nothing else.  nil_fails is filled in; the three
  * trick counts come back as NIL_TRICKS_UNKNOWN and there is no principal
@@ -381,8 +387,18 @@ extern "C" {
  * Ignored by nil_solve_pv: a caller asking for a line is asking for that one. */
 #define NIL_FLAG_FAST_LINE 0x1000u
 
-/* Cards per hand the solver will attempt without NIL_FLAG_FORCE_LARGE. */
-#define NIL_CARD_LIMIT 9
+/* The most cards a hand can hold.  This was once the size the solver would
+ * attempt without NIL_FLAG_FORCE_LARGE, and it was 9.
+ *
+ * That gate is gone.  It was written when the full search really was
+ * exhaustive -- the table collapsed repeated positions and nothing pruned --
+ * and it stopped describing the solver several patches ago.  A full thirteen
+ * now runs a median of about four seconds and a worst case around twenty over
+ * twenty-four random deals, so refusing the question was costing more than it
+ * saved.  nil_validate rejects a hand larger than this on its own.
+ *
+ * Retained because the ABI is public. */
+#define NIL_CARD_LIMIT 13
 
 /* What the trick counts read under NIL_FLAG_FAST_MODE.  Deliberately not zero:
  * zero is a real answer to "how many tricks did the nil bidder take", and a
@@ -395,6 +411,10 @@ extern "C" {
 #define NIL_ERR_NULL_ARG (-1)
 #define NIL_ERR_PARSE (-2)
 #define NIL_ERR_ILLEGAL_POSITION (-3)
+/* No longer returned.  It reported a refusal to search a large hand, and that
+ * refusal is gone; a hand too large to be legal comes back as
+ * NIL_ERR_ILLEGAL_POSITION from validation instead.  The value is kept so the
+ * numbering below it does not shift under an existing caller. */
 #define NIL_ERR_TOO_MANY_CARDS (-4)
 #define NIL_ERR_BUFFER_TOO_SMALL (-5)
 #define NIL_ERR_INTERNAL (-6)

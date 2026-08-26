@@ -18,11 +18,6 @@
 
 namespace {
 
-// Above this the search is still not finishing in a sitting.  It is a guard
-// rail, not a statement about what the solver can represent -- pass --force to
-// go past it.
-constexpr int NIL_CLI_CARD_LIMIT = 9;
-
 void usage(const char* argv0) {
     std::cout
         << "usage: " << argv0 << " --pbn <deal> [options]\n"
@@ -85,7 +80,7 @@ void usage(const char* argv0) {
         << "                          one line per card with whether the nil\n"
         << "                          survives it and what it costs\n"
         << "  --compact               print only the machine-readable result\n"
-        << "  --force                 allow more than 9 cards per hand (very slow)\n"
+        << "  --force                 accepted and ignored; no longer needed\n"
         << "  --help                  this message\n";
 }
 
@@ -108,7 +103,6 @@ int main(int argc, char** argv) {
     bool spades_broken = false;
     bool compact = false;
     bool list_moves = false;
-    bool force = false;
     bool tt_stats = false;
     nil::SearchOptions opts;
 
@@ -200,7 +194,10 @@ int main(int argc, char** argv) {
         } else if (arg == "--compact") {
             compact = true;
         } else if (arg == "--force") {
-            force = true;
+            // Accepted and ignored.  There is no size gate any more, but three
+            // of the Python tools in tools/ pass this, so it stays a valid
+            // argument rather than an error.
+            (void)0;
         } else {
             std::cerr << "error: unknown argument '" << arg << "'\n";
             usage(argv[0]);
@@ -245,21 +242,6 @@ int main(int argc, char** argv) {
         std::cerr << "error: " << err << "\n";
         return 2;
     }
-    if (pos.cards_per_hand() > NIL_CLI_CARD_LIMIT && !force) {
-        std::cerr << "error: " << pos.cards_per_hand() << " cards per hand; ";
-        if (opts.mode == nil::MODE_FAST) {
-            std::cerr << "the boolean search does prune, and a full thirteen is usually "
-                         "well under a second, but the spread is wide and an awkward "
-                         "layout can still take several. Use --force to insist.\n";
-        } else {
-            std::cerr << "the full search is exhaustive (the transposition table collapses "
-                         "repeated positions but prunes nothing) and this will take a very "
-                         "long time. --mode fast prunes hard and answers the nil question "
-                         "alone; use --force to insist on this one.\n";
-        }
-        return 2;
-    }
-
     nil::Solution sol;
     std::vector<nil::MoveScore> scored;
     if (list_moves) {

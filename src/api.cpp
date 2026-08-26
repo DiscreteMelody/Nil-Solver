@@ -67,21 +67,6 @@ std::int32_t prepare(const char* pbn, std::int32_t leader, const char* current_t
         copy_err(err_buf, err_len, err);
         return NIL_ERR_ILLEGAL_POSITION;
     }
-    if (pos.cards_per_hand() > NIL_CARD_LIMIT && !(flags & NIL_FLAG_FORCE_LARGE)) {
-        copy_err(err_buf, err_len,
-                 (flags & NIL_FLAG_FAST_MODE)
-                     ? "too many cards per hand: the boolean search does prune, and a full "
-                       "thirteen is usually well under a second, but the spread is wide and "
-                       "an awkward layout can still take several. Pass NIL_FLAG_FORCE_LARGE "
-                       "to insist."
-                     : "too many cards per hand: the full search is exhaustive (the "
-                       "transposition table collapses repeated positions but prunes nothing) "
-                       "and will take a very long time. NIL_FLAG_FAST_MODE prunes hard and "
-                       "answers the nil question alone; pass NIL_FLAG_FORCE_LARGE to insist "
-                       "on this one.");
-        return NIL_ERR_TOO_MANY_CARDS;
-    }
-
     opts.use_memo = (flags & NIL_FLAG_NO_MEMO) == 0;
     opts.collapse_equivalents = (flags & NIL_FLAG_NO_COLLAPSE) == 0;
     opts.use_static_bounds = (flags & NIL_FLAG_NO_STATIC_BOUNDS) == 0;
