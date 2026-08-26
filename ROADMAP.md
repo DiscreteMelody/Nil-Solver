@@ -38,6 +38,7 @@ expensive node. Read items 11 and 31 in that light.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ⊘ | Section 3's ceiling: the cover partner's can-cash count (item 43b) | patch 50 | **measured and rejected; the guard works and the population does not.** Patch 49 left this half out on a soundness hazard -- the claim `p >= b` is about a NAMED HAND, and a nil bidder holding nothing but spades is forced to ruff its own partner's winner. Both halves of that are now settled. **The hazard is real**: a counterexample hunter computing the game value where the nil side maximises the cover's tricks and the opponents minimise finds the unguarded count over-claiming **8-12 times per 400 deals** at three cards. **The guard closes it** -- cap b at the nil bidder's cards in the suit plus its cards that are neither spades nor of that suit -- with **zero counterexamples in ~2,700 deals** at three, four and five cards, costing only 0.3-8.3% of the cuts. **And it still fails on population**: it opens its gate on 14.50% of boundaries to cut 1.27%, an 8.8% hit rate, against the shipped half's 7.21% and 2.02% for 28% -- half the yield at twice the cost, and the shipped half was already a wall-time wash. **The asymmetry is structural**: item 43's bound is capped at ZERO, so `beta > 0` refutes it in one comparison; this one is capped at `per_partner * t` (−182 at thirteen cards), which alpha clears virtually always, so there is no cheap precondition to be had. Measured: −0.79% nodes on the corpus, −0.04% on `large.txt`, −0.12% at 13c seed 3 and **+0.27% at 13c seed 42** -- it makes that seed BIGGER, deterministically, most likely by item 41's mechanism of trading exact table entries for one-sided bounds. Wall +2.9% and +3.4%. Correctness was never in question: all 560 corpus values and all 19 `large.txt` rows match under `--check-pv` with the arm on |
 | ✅ | ~~QuickTricks: the opponents' can-cash floor~~ | patch 49 | DDS §3, spent in the one direction that is sound here. A can-cash count is a claim about one STRATEGY, so it bounds a node only from the side that owns it -- the opponents maximise, so theirs says the nil side splits at most `t - c` and the value cannot fall below the worst corner of that. Spent against beta, at a node where they are on lead, and nowhere else. **−0.14% to −1.16% nodes across the three 13-card seeds, −0.66% on the corpus, −0.46% on `large.txt`**, `MODE_FAST` byte-identical. **What made it shippable was one line of ordering**: the bound is strongest at `c = t`, which leaves the nil side nothing to split and floors the value at zero, so `beta > 0` refutes it in a SINGLE COMPARISON before a popcount is spent. Putting that ahead of the four-popcount longest-suit test flipped 12 cards from slower in 4 of 5 interleaved reps to faster in 3 of 5, with the node count provably unmoved (278,059 either way). Its gate then opens on **7.14% of boundaries against item 44's 71%**, and that ratio is the whole reason one ships and the other does not. **Wall time is much weaker than nodes and this entry says so**: interleaved medians, one binary, arms toggled at runtime -- 12c 484.3 -> 477.5 ms (3 of 5 faster), 13c seed 42 3598.1 -> 3584.7 (3 of 5), 13c seed 3 1055.5 -> 1074.6 (2 of 5), 11c 1280.4 -> 1293.5 (2 of 5). A wash, slightly positive. The cover partner's mirror image is NOT taken and bounds.hpp says why. 400 random deals x 3 arms in both tie-break directions agree on value, split and PV while 299 differ in node count; all 560 corpus values under `--check-pv` and `--check-moves`, all 19 `large.txt` rows |
 | ⏸ | The forced-trump floor for all four hands (item 44) | patch 49 | **built, gated, measured, SHIPPED OFF.** Every hand's forced floor in one walk, combining into `n >= kn`, `p >= kp`, `n + p <= t - ko` -- three constraints where `top_spade_run` gives one. Sound: an exhaustive-playout property test over 18,800 checks at 3, 4 and 5 cards finds no counterexample. **−1.28% nodes at 13 cards and −8.3% of throughput, so net slower.** A gate on three masked popcounts -- floors cannot exceed spade counts, and the triangle only shrinks as floors grow -- **bought essentially nothing (8.4% -> 8.3%), because it opens on 71% of boundaries**. Carried behind `--spade-matrix` / `NIL_FLAG_SPADE_MATRIX` rather than deleted: the node saving is real and it is **nearly disjoint from item 43**, which the corpus shows almost exactly additively -- 6,299 nodes saved alone plus 1,836 alone against 8,127 saved together. Both arms on is −2.44% at 13c seed 3. What it needs is a tighter gate or a cheaper walk |
 | ⊘ | QuickTricks, DDS §3 (item 43) | patch 48 | **measured, not built, and the measurement is the deliverable.** §3 counts what the side on lead CAN CASH, which bounds a node only from the side holding the option -- an upper bound when the minimising nil side holds it, a lower bound when the maximising opponents do. Both were evaluated against each node's own window at the boundaries the reach bound leaves open, and neither was applied. **The result that matters is that §3 and §4 are nearly DISJOINT**: the can-cash count cuts 1.57-4.07% of still-open boundaries and **97-98% of those cuts are at boundaries where the forced floor does not cut**, so the two add rather than overlap -- 2.90% to 8.11% together against 1.34-4.12% for the forced floor alone. Against item 44's calibration (4.12% would-cut bought −1.28% of nodes) that projects to roughly −2.5% at best, and the per-suit walk is dearer than the trump-only one it would sit beside. **A cheap necessary condition halves it and no more**: per_partner is negative, so the opponents' bound is at most zero and a positive beta refutes it in one comparison -- 48.90% of boundaries still let the walk run. Shipped: `forced_spade_tricks()` and `cashable_tricks()` in `bounds.hpp`, and `--quick-tricks-stats`, **free when off** and verified so (39,701 fast, 279,895 full, 164,156,179 on `large.txt`, 22/22). A soundness gap found on the way is recorded in the item and would have to be closed before any of it is spent |
@@ -2542,6 +2543,81 @@ cashed suit, or holds no spades at all) and the question is what it leaves of
 the population. That is a measurement, not a build, and it is the next thing to
 do on this item.
 
+### 43b. The cover partner's can-cash count as a ceiling — ⭐⭐⭐ → ⊘ — **measured and REJECTED; the guard works, the population does not**
+
+Section 3's other half, and the piece patch 49 deliberately left out. The cover
+partner on lead cashes b tricks, so `p >= b`, so the value is capped at
+`max{per_nil*n + per_partner*p : p >= b, n + p <= t}`. Spent against alpha.
+
+**The hazard patch 49 named is real, and now it is demonstrated rather than
+argued.** A counterexample hunter computed the game value where the nil side
+(cover plus nil bidder, one player in a two-team game) MAXIMISES the cover
+hand's trick count and the opponents minimise it -- the right quantity, because
+"can cash" is a claim about a best strategy and not about every line. Against
+that, the unguarded count over-claims **8 to 12 times per 400 deals** at three
+cards and twice per 200 at four. The failure is the predicted one: the nil
+bidder runs out of the cashed suit, holds nothing but spades, and is forced to
+ruff its own partner's winner.
+
+**The guard closes it completely.** Over b rounds the nil bidder plays b cards;
+it follows suit while it can and must discard after that, and a discard is safe
+exactly when it is not a spade, so b is capped at
+
+    (nil bidder's cards in the suit) + (its cards that are neither spades nor of that suit)
+
+with no guard needed for a spade lead or for a nil bidder holding no spades.
+**Zero counterexamples in roughly 2,700 deals across three, four and five
+cards**, and it costs almost nothing: it caps only 10-15 of ~630 positive claims
+per run, and 0.3% to 8.3% of the cuts.
+
+*So the soundness question is settled, and the item still fails.* The population
+is the problem, at trick boundaries neither shipped arm settled:
+
+| workload | boundaries left | cover on lead | gate opens | cuts, guard off | cuts, guard on |
+|---|---:|---:|---:|---:|---:|
+| 13c x4, seed 3 | 16,223,961 | 39.69% | 14.50% | 1.39% | **1.27%** |
+| 13c x4, seed 42 | 54,488,387 | 39.96% | 14.19% | 0.55% | **0.55%** |
+| 11c x6, seed 3 | 25,892,568 | 21.09% | 4.81% | 0.32% | **0.31%** |
+
+Set beside the half that shipped: **item 43 opens its gate on 7.21% and cuts
+2.02%, a 28% hit rate; this opens on 14.50% and cuts 1.27%, an 8.8% hit rate.**
+Half the yield at twice the gate cost, and item 43 itself shipped as a wall-time
+wash.
+
+**The asymmetry is structural, not incidental, and it is worth keeping.** Item
+43's bound is strongest at `c = t`, where it floors the value at ZERO -- a fixed
+ceiling right in the middle of the window's range, so `beta > 0` refutes it in
+one comparison and the walk almost never runs. This bound is strongest at
+`b = t`, where it caps the value at `per_partner * t`, which is −182 at thirteen
+cards. Alpha clears that virtually always, so there is no cheap precondition to
+be had. **The two halves of section 3 are not symmetric in what they cost to
+ask.**
+
+*And the measured node result is worse than the population suggests:*
+
+| workload | default | + cover ceiling | nodes |
+|---|---:|---:|---:|
+| corpus 560, full | 278,059 | 275,852 | −0.79% |
+| `large.txt`, 19 rows | 163,393,676 | 163,321,448 | −0.04% |
+| 13c x8, seed 3 | 381,343,003 | 380,879,588 | −0.12% |
+| 13c x8, seed 42 | 338,508,564 | 339,429,146 | **+0.27%** |
+
+**It makes seed 42 bigger.** Node counts are deterministic, so that is not
+noise. The likely mechanism is item 41's: a cut returns a fail-soft BOUND where
+the node would otherwise have produced an exact value, and this table's worth is
+concentrated in its exact entries -- so a cheap cut high in the tree can cost
+more downstream than it saves locally. Wall time follows: +2.9% on seed 3 and
++3.4% on seed 42. All 560 corpus values and all 19 `large.txt` rows still match
+under `--check-pv`, so this is a performance verdict and not a correctness one.
+
+*What would revive it.* Very little, and that is the point of recording it this
+fully. The guard is not the obstacle -- it is nearly free and it is proven. The
+obstacle is that the bound has no tight ceiling to gate on, so it must pay for a
+four-suit walk on 14% of boundaries to buy under 1.3% of cuts, some of which
+cost more than they save. A cheap upper bound on the cover's cashable count,
+tighter than its longest suit, would be the thing to find; without one this does
+not become affordable no matter how the rest is arranged.
+
 ### 45. Two more places the impossible spades-broken flag is generated — ⭐⭐⭐
 
 Patch 47 fixed `nil_bench`. **The same bug is live in three Python tools**, and
@@ -3177,7 +3253,7 @@ say so.
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 36 ✅ → 41 ✅ → 42 ⊘ → 47 ✅ → 43 ⊘→✅ → 44 ⏸ → 45 → 29b (single-suit) → 9 ⊘ → 10 ⊘ → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 36 ✅ → 41 ✅ → 42 ⊘ → 47 ✅ → 43 ⊘→✅ → 43b ⊘ → 44 ⏸ → 45 → 29b (single-suit) → 9 ⊘ → 10 ⊘ → measure → 11..14
 ```
 
 **Patch 47 comes before all of it, and it is not an optimisation.** The random
