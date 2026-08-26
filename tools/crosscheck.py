@@ -90,7 +90,16 @@ class Case:
 
         self.leader = rng.randrange(4)
         self.nil_seat = rng.randrange(4)
-        self.spades_broken = bool(rng.getrandbits(1))
+        # Spades are broken only when one has LEFT a hand.  A layout still holding
+        # all thirteen has had no spade played, and validate() rejects the flag on
+        # it -- so draw the coin and then mask it, which keeps the deal stream in
+        # place and only ever clears a flag that could not have been set.
+        #
+        # The partial trick below may legitimately set it afterwards: a spade played
+        # to the current trick HAS left a hand.
+        broken_coin = bool(rng.getrandbits(1))
+        spades_held = sum(1 for h in hands for c in h if c.suit == oracle.SPADES)
+        self.spades_broken = spades_held < 13 and broken_coin
         self.secondary = "min" if rng.getrandbits(1) else "max"
         # Weighted: the live-nil case is the one that matters most, but the
         # already-set case has to be exercised too or it will rot.

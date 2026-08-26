@@ -105,7 +105,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 oracle, case, use_memo=True
             )
             lines.append(
-                "c%d-%04d | %s | %s | %s | %d | %d | %s | %s | %d | %d | %d | %s"
+                # Eleven columns, matching the header this file writes:
+                #   name | pbn | leader | nil | broken | trick | secondary |
+                #   nilset | nil_tricks | side_tricks | pv
+                "c%d-%04d | %s | %s | %s | %d | %s | %s | %d | %d | %d | %s"
                 % (
                     cards,
                     args.start_index + index,

@@ -120,7 +120,16 @@ def deal(rng: random.Random, oracle, cards: int, trick_prob: float,
 
     leader = rng.randrange(4)
     nil_seat = rng.randrange(4)
-    broken = bool(rng.getrandbits(1))
+    # Spades are broken only when one has LEFT a hand.  A layout still holding
+    # all thirteen has had no spade played, and validate() rejects the flag on
+    # it -- so draw the coin and then mask it, which keeps the deal stream in
+    # place and only ever clears a flag that could not have been set.
+    #
+    # The partial trick below may legitimately set it afterwards: a spade played
+    # to the current trick HAS left a hand.
+    broken_coin = bool(rng.getrandbits(1))
+    spades_held = sum(1 for h in hands for c in h if c.suit == oracle.SPADES)
+    broken = spades_held < 13 and broken_coin
     secondary = "min" if rng.getrandbits(1) else "max"
     nil_set = rng.random() < 0.2
 
@@ -195,7 +204,13 @@ def run_oracle(oracle, spec: Dict[str, object]):
 
 def row(name: str, spec: Dict[str, object], nil_tricks, side_tricks, pv: str,
         provenance: str) -> str:
-    return "%s | %s | %s | %s | %d | %d | %s | %s | %d | %s | %s | %s | %s" % (
+    # Twelve columns, matching the header this file writes:
+    #   name | pbn | leader | nil | broken | trick | secondary | nilset |
+    #   nil_tricks | side_tricks | pv | provenance
+    #
+    # nil_tricks and side_tricks are %s rather than %d on purpose: a timed-only
+    # row records "?" for both, because nothing solved it.
+    return "%s | %s | %s | %s | %d | %s | %s | %d | %s | %s | %s | %s" % (
         name, spec["pbn"], SEAT_CHARS[spec["leader"]], SEAT_CHARS[spec["nil_seat"]],
         1 if spec["broken"] else 0, spec["trick_text"],
         spec["secondary"], 1 if spec["nil_already_set"] else 0,
