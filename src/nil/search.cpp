@@ -1522,7 +1522,13 @@ ObjectiveWeights objective_weights(int tricks_remaining, const SeatRoles& roles,
     if (nil_count(roles) > 1) {
         const int k = tricks_remaining + 1;
         ObjectiveWeights w;
-        w.primary = k * k;
+        // Zero when every bid is already down, exactly as a single already-set
+        // nil zeroes it: there is no primary level left, and what remains is the
+        // secondary alone -- each pair taking or shedding as many tricks as it
+        // can. Inert either way, since nothing is charged against an empty live
+        // mask, but saying it in the weights keeps the objective honest for
+        // anything that reads them.
+        w.primary = live_nil_mask(roles) ? k * k : 0;
         w.secondary = opts.minimise_own_tricks ? k : -k;
         w.tertiary = 0;
         return w;

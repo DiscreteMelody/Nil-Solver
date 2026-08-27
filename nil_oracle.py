@@ -169,11 +169,6 @@ def role_shape(roles: Sequence[int]) -> str:
         return SHAPE_SINGLE_NIL
 
     if len(nils) == 2:
-        if all(roles[s] == ROLE_NIL_SET for s in nils):
-            raise ValueError(
-                f"both bids are already down ({describe_roles(roles)}); there is "
-                "no nil left to play for"
-            )
         if (nils[0] + 2) % 4 != nils[1]:
             raise ValueError(
                 f"the two nil bidders are not partners ({described}); nils on "
@@ -861,11 +856,10 @@ def solve_partner_nils(
     # breaks, and re-solving from it is the point.
     live_seats = tuple(s for s, r in enumerate(roles) if r == ROLE_NIL)
     already_down = sum(1 for r in roles if r == ROLE_NIL_SET)
-    if not live_seats:
-        raise ValueError(
-            f"both bids are already down ({describe_roles(roles)}); there is no "
-            "nil left to play for"
-        )
+    # With every bid already down there is no primary level at all, and what is
+    # left is the secondary alone: each pair takes or sheds as many tricks as it
+    # can, which is an ordinary double-dummy question.  The mask is simply empty
+    # and nothing is ever charged against it.
     nil_seats = live_seats
     primary_weight, secondary_weight = multi_objective_weights(
         position.tricks_remaining, secondary
@@ -1248,11 +1242,12 @@ def format_multi_solution(solution: MultiNilSolution, compact: bool = False) -> 
             f"opponent_tricks={solution.opponent_tricks}\n"
             f"pv={' '.join(f'{SEAT_CHARS[a]}:{c}' for a, c in solution.pv)}\n"
         )
-    direction = (
-        "then the pair takes as many as it can"
+    takes = (
+        "the pair takes as many as it can"
         if solution.secondary == "max"
-        else "then the pair takes as few as it can"
+        else "the pair takes as few as it can"
     )
+    direction = "then " + takes
     nil_names = "/".join(SEAT_CHARS[x] for x in solution.nil_seats)
     out = [
         f"PBN            {pos.to_pbn()}",
@@ -1261,7 +1256,12 @@ def format_multi_solution(solution: MultiNilSolution, compact: bool = False) -> 
         f"Seats          {describe_roles(solution.roles)}",
         f"               ({nil_names} minimize nils set, "
         f"the other pair maximizes it)",
-        f"Objective      how many of the two nils are set, {direction}",
+        f"Objective      "
+        + (
+            f"both bids already down, so {takes}"
+            if all(r != ROLE_NIL for r in solution.roles)
+            else f"how many of the two nils are set, {direction}"
+        ),
         f"Spades broken  {'yes' if pos.spades_broken else 'no'}",
     ]
     if pos.current_trick:

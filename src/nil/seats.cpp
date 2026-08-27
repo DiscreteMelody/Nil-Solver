@@ -143,13 +143,16 @@ SeatShape seat_shape(const SeatRoles& roles, std::string& err) {
         }
         // A bid already down is a fact about the deal, not an unimplemented
         // shape: it is the state a real hand reaches the moment one of two nils
-        // breaks, and re-solving from it is the point.  Both down is different
-        // -- there is then nothing left to play for and no primary level at all.
-        if (nil_set_count(roles) == 2) {
-            err = "both bids are already down (" + describe_seat_roles(roles) +
-                  "); there is no nil left to play for";
-            return SHAPE_UNSUPPORTED;
-        }
+        // breaks, and re-solving from it is the point.
+        //
+        // BOTH DOWN IS ACCEPTED TOO, and degenerates rather than failing.  With
+        // no live bid there is no primary level, so what is left is the
+        // secondary alone: each pair takes as many tricks as it can, or sheds as
+        // many as it can, according to `secondary`.  That is an ordinary
+        // double-dummy question and a perfectly good one to ask -- the hand goes
+        // on being played, and the trick count is still worth points.  It is
+        // also exactly what a SINGLE nil already set has always done, so
+        // refusing it here was an inconsistency rather than a safeguard.
         return SHAPE_PARTNER_NILS;
     }
 

@@ -1753,7 +1753,6 @@ int main(int argc, char** argv) {
         const Refusal refusals[] = {
             {"0 0 3 3", "nils on opposing sides"},
             {"0 3 0 2", "a cover with nobody left to cover"},
-            {"1 3 0 1", "both bids already down"},
             {"0 0 0 3", "three nils"},
         };
         for (const Refusal& r : refusals) {
@@ -1852,6 +1851,47 @@ int main(int argc, char** argv) {
               nil::solve(safe, one_down, plain, safe_down, err), true);
         check("and reports that one as down", safe_down.nils_set, 1);
         check("with no tricks to the pair", safe_down.nil_side_tricks, 0);
+
+        // BOTH BIDS ALREADY DOWN.  Accepted, and it degenerates rather than
+        // failing: with no live bid there is no primary level, so what is left
+        // is the secondary alone -- each pair taking or shedding as many tricks
+        // as it can.  That is an ordinary double-dummy question, the hand is
+        // still being played, and the tricks are still worth points.
+        //
+        // It is also exactly what a SINGLE nil already set has always done, so
+        // the two must agree: a dead bidder and a cover partner both play
+        // freely, having nothing left to protect.  That equivalence is the test.
+        nil::SeatRoles all_down;
+        nil::SeatRoles down_and_cover;
+        check("both bids down parses",
+              nil::parse_seat_roles("1 3 1 3", nil::SEAT_NORTH, all_down, err), true);
+        check("and validates", nil::validate_seat_roles(all_down, err), true);
+        check("no primary level is left",
+              nil::objective_weights(6, all_down, plain).primary, 0);
+        check("one down plus a cover parses",
+              nil::parse_seat_roles("1 3 2 3", nil::SEAT_NORTH, down_and_cover, err), true);
+
+        for (const char* pbn : deals) {
+            const Position pos = make_position(pbn, "N", true);
+            for (bool shed : {false, true}) {
+                nil::SearchOptions o;
+                o.minimise_own_tricks = shed;
+                nil::Solution both;
+                nil::Solution cover;
+                const std::string tag = shed ? " (shedding)" : " (taking)";
+                check("both-down solves" + tag, nil::solve(pos, all_down, o, both, err), true);
+                check("down-plus-cover solves" + tag,
+                      nil::solve(pos, down_and_cover, o, cover, err), true);
+                check("the two agree on the pair's tricks" + tag, both.nil_side_tricks,
+                      cover.nil_side_tricks);
+                check("and on the opponents'" + tag, both.opponent_tricks,
+                      cover.opponent_tricks);
+            }
+            nil::Solution both;
+            check("both bids are reported down", nil::solve(pos, all_down, plain, both, err),
+                  true);
+            check("as two", both.nils_set, 2);
+        }
 
         // FAST MODE REFUSES THE SHAPE.  It asks whether ONE named seat can make
         // nil, and there is no named seat here -- nor is one bid's survival
