@@ -861,12 +861,17 @@ def solve_partner_nils(
     # can, which is an ordinary double-dummy question.  The mask is simply empty
     # and nothing is ever charged against it.
     nil_seats = live_seats
+    # The COALITION is the whole pair, live bids or not: a busted bidder still
+    # plays for its side's trick total.  Taking the parity from `live_seats`
+    # instead crashes the moment both bids are down, which is a legal shape --
+    # and was, until the corpus grew rows for it, a shape nothing exercised.
+    pair_seats = tuple(s for s, r in enumerate(roles) if r in (ROLE_NIL, ROLE_NIL_SET))
     primary_weight, secondary_weight = multi_objective_weights(
         position.tricks_remaining, secondary
     )
     ctx = _MultiCtx(
         nil_seats=nil_seats,
-        minimizing_parity=nil_seats[0] % 2,
+        minimizing_parity=pair_seats[0] % 2,
         primary_weight=primary_weight,
         secondary_weight=secondary_weight,
         memo={} if use_memo else None,
@@ -891,7 +896,6 @@ def solve_partner_nils(
     nils_set = live_broken + already_down
     # Every seat on the pair, live or not: the secondary level is the PAIR's
     # tricks, and a broken bidder's tricks still count for it.
-    pair_seats = tuple(s for s, r in enumerate(roles) if r in (ROLE_NIL, ROLE_NIL_SET))
     nil_side = sum(seat_tricks[seat] for seat in pair_seats)
     replayed = primary_weight * live_broken + secondary_weight * nil_side
     if replayed != value:

@@ -34,11 +34,40 @@ import argparse
 import importlib.util
 import pathlib
 import random
+import re
+import subprocess
 import sys
 import time
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+CLI = ROOT / "build/bin/nil_cli"
+
+# EVERY STATE A TWIN-NIL HAND CAN BE IN, and every trick depth it can be asked
+# at.  Rows cycle through this list so the corpus covers the whole objective
+# rather than one corner of it:
+#
+#   0 3 0 3   both bids live -- the case the primary level exists for
+#   1 3 0 3   one down, the other standing.  The commonest mid-hand state, and
+#             the one where the pair funnels tricks through the dead seat
+#   0 3 1 3   the same, on the other partner, so a seat-parity slip shows up
+#   3 1 3 1   both down.  No primary level at all; the objective degenerates to
+#             each pair taking as many tricks as it can
+#
+# The trick depth matters independently: three nodes in four are mid-trick, the
+# state key encodes a partial trick differently, and a hand asks "what do I play
+# NOW" far more often than it asks from a clean lead.
+VARIANTS = [
+    ("0 3 0 3", 0),
+    ("0 3 0 3", 1),
+    ("0 3 0 3", 2),
+    ("0 3 0 3", 3),
+    ("1 3 0 3", 0),
+    ("0 3 1 3", 0),
+    ("3 1 3 1", 0),
+    ("1 3 0 3", 2),
+]
 SEAT_CHARS = "NESW"
+SUIT_CHARS = "SHDC"
 RANK_CHARS = "23456789TJQKA"
 
 
@@ -61,11 +90,13 @@ def deal(rng, cards):
 
 
 def to_pbn(hands):
+    """Accepts either raw (suit, rank) pairs or oracle Cards."""
     groups = []
     for hand in hands:
+        pairs = [(c[0], c[1]) if isinstance(c, tuple) else (c.suit, c.rank) for c in hand]
         by_suit = []
         for suit in range(4):
-            ranks = sorted((r for s, r in hand if s == suit), reverse=True)
+            ranks = sorted((r for s, r in pairs if s == suit), reverse=True)
             by_suit.append("".join(RANK_CHARS[r - 2] for r in ranks))
         groups.append(".".join(by_suit))
     return "N:" + " ".join(groups)
@@ -249,10 +280,14 @@ HEADER = """\
 #   pbn         PBN deal string
 #   leader      N/E/S/W, seat that led the current trick
 #   seats       four role digits, clockwise from the seat the PBN names, as in
-#               the other corpora.  Always "0 3 0 3" here: one pair bid two
-#               nils and the other pair is trying to set both
+#               the other corpora.  One pair bid two nils and the other pair is
+#               trying to set both; rows cycle through every state that pair can
+#               be in -- 0 3 0 3 both live, 1 3 0 3 and 0 3 1 3 one down,
+#               3 1 3 1 both down
 #   broken      0 or 1, spades already broken
-#   trick       cards already on the trick; empty here
+#   trick       cards already on the trick.  Rows cycle through depths 0 to 3,
+#               because three nodes in four are mid-trick and a hand asks "what
+#               do I play NOW" far more often than it asks from a clean lead
 #   secondary   tie-break direction; always "max" -- the "min" direction is
 #               unoptimised and is not being pinned yet
 #   tricks      FOUR per-seat trick counts under optimal play, clockwise from
@@ -262,8 +297,10 @@ HEADER = """\
 #   pv          principal variation, informational; move ordering will
 #               legitimately change which of several equal cards is chosen
 #   provenance  oracle  = nil_oracle.py computed it independently
-#               timed   = nobody has solved it; the position is here so the
-#                         C++ solver can be timed on it
+#               solver  = pinned from this solver.  A weaker claim than an
+#                         oracle row -- it says the answer has not CHANGED, not
+#                         that it is right -- but it is what makes the 13-card
+#                         rows regression anchors instead of timing fodder
 #
 # THE OBJECTIVE, lexicographically:
 #   PRIMARY    how many of the two nils are set.  The opponents maximize it,
@@ -280,7 +317,52 @@ HEADER = """\
 """
 
 
-def row(name, pbn, leader, broken, secondary, answer, pv, provenance):
+def peel_trick(hands, leader, broken, depth, rng):
+    """Play `depth` legal cards onto a fresh trick, returning what is left.
+
+    Returns (remaining hands, cards on the trick, spades broken) or None if the
+    position could not be built.  The cards are chosen at random rather than
+    optimally: the point is a legal mid-trick position, not a good one.
+    """
+    # deal() hands back raw (suit, rank) pairs; the oracle's legality rules want
+    # its own Card type, so convert once here and hand Cards back out.
+    live = [[oracle.Card(s, r) for s, r in h] for h in hands]
+    trick = []
+    for i in range(depth):
+        seat = (leader + i) % 4
+        legal = oracle.legal_moves(tuple(sorted(live[seat])), tuple(trick), broken)
+        if not legal:
+            return None
+        card = rng.choice(legal)
+        live[seat].remove(card)
+        broken = oracle.spades_broken_after(broken, tuple(trick), card)
+        trick.append(card)
+    return live, trick, broken
+
+
+def solve_with_cli(pbn, leader, seats, broken, trick_text):
+    """Answer a row with the C++ solver, for sizes the oracle cannot reach."""
+    cmd = [str(CLI), "--pbn", pbn, "--leader", SEAT_CHARS[leader],
+           "--seats", seats, "--compact"]
+    if broken:
+        cmd.append("--spades-broken")
+    if trick_text:
+        cmd += ["--trick", trick_text]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        return None
+
+    def field(key):
+        m = re.search(key + r"=(-?\d+)", proc.stdout)
+        return int(m.group(1)) if m else None
+
+    pv = re.search(r"pv=(.*)", proc.stdout)
+    return (field("nils_set"), field("tricks"), field("side_tricks"),
+            pv.group(1).strip() if pv else "")
+
+
+def row(name, pbn, leader, broken, secondary, answer, pv, provenance,
+        seats="0 3 0 3", trick_text=""):
     """`answer` is (nils_set, bidding seats' total tricks), or None if unsolved.
 
     Both are pinned by the objective.  Per-seat counts are not, and are
@@ -288,14 +370,16 @@ def row(name, pbn, leader, broken, secondary, answer, pv, provenance):
     """
     if answer is None:
         nils_set = nil_tricks = side_tricks = "?"
+    elif len(answer) == 3:
+        nils_set, nil_tricks, side_tricks = (str(x) for x in answer)
     else:
         nils_set = str(answer[0])
         # No cover partner in this shape, so the bidding side's total IS the
         # bidding seats' total.
         nil_tricks = side_tricks = str(answer[1])
-    return "%s | %s | %s | 0 3 0 3 | %d |  | %s | %s | %s | %s | %s | %s" % (
-        name, pbn, SEAT_CHARS[leader], 1 if broken else 0, secondary,
-        nils_set, nil_tricks, side_tricks, pv, provenance,
+    return "%s | %s | %s | %s | %d | %s | %s | %s | %s | %s | %s | %s" % (
+        name, pbn, SEAT_CHARS[leader], seats, 1 if broken else 0, trick_text,
+        secondary, nils_set, nil_tricks, side_tricks, pv, provenance,
     )
 
 
@@ -313,31 +397,55 @@ def build(args):
             hands = two_nil_deal(rng, cards) if cards >= 13 else deal(rng, cards)
             leader = rng.randrange(4)
             broken = rng.random() < 0.5 if cards < 13 else False
-            pos = position_from(hands, leader, broken)
-            try:
-                pos.validate()
-            except Exception:
+            seats, depth = VARIANTS[made % len(VARIANTS)]
+            peeled = peel_trick(hands, leader, broken, depth, rng)
+            if peeled is None:
                 continue
+            live, trick, broken2 = peeled
+            if not any(live):
+                continue
+            pbn_text = to_pbn(live)
+            trick_text = " ".join(
+                SUIT_CHARS[c.suit] + RANK_CHARS[c.rank - 2] for c in trick
+            )
 
             if cards >= 13:
-                # Unsolvable here, and only worth timing if a human would
-                # actually have bid both of these hands.
+                # The oracle is exhaustive and cannot reach thirteen cards, but
+                # the solver now answers these in well under a second -- so they
+                # are PINNED FROM THE SOLVER rather than left blank.  A pinned
+                # row is a weaker claim than an oracle row: it says the answer
+                # has not CHANGED, not that it is right.  That is still the
+                # difference between a regression anchor and timing fodder.
                 if not (plausible_nil(hands[0]) and plausible_nil(hands[2])):
                     continue
+                answer = solve_with_cli(pbn_text, leader, seats, broken2, trick_text)
+                if answer is None:
+                    continue
                 rows.append(row(
-                    "m%d-%04d" % (cards, made), to_pbn(hands), leader, broken,
-                    "max", None, "", "timed",
+                    "m%d-%04d" % (cards, made), pbn_text, leader, broken2,
+                    "max", answer[:3], answer[3], "solver",
+                    seats=seats, trick_text=trick_text,
                 ))
                 made += 1
                 continue
 
-            sol = oracle.solve_partner_nils(
-                pos, [0, 3, 0, 3], use_memo=True, secondary="max"
+            pos = oracle.Position(
+                hands=tuple(tuple(sorted(h)) for h in live),
+                leader=leader,
+                spades_broken=broken2,
+                current_trick=tuple(trick),
             )
+            try:
+                pos.validate()
+            except Exception:
+                continue
+            roles = oracle.parse_roles(seats, 0)
+            sol = oracle.solve_partner_nils(pos, roles, use_memo=True, secondary="max")
             pv = " ".join(f"{SEAT_CHARS[a]}:{c}" for a, c in sol.pv)
             rows.append(row(
-                "m%d-%04d" % (cards, made), to_pbn(hands), leader, broken,
-                "max", (sol.nils_set, sol.nil_side_tricks), pv, "oracle",
+                "m%d-%04d" % (cards, made), pbn_text, leader, broken2,
+                "max", (sol.nils_set, sol.nil_side_tricks, sol.nil_side_tricks),
+                pv, "oracle", seats=seats, trick_text=trick_text,
             ))
             counts[sol.nils_set] = counts.get(sol.nils_set, 0) + 1
             made += 1
