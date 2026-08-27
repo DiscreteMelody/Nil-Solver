@@ -69,6 +69,13 @@ bool parse_pbn_hand(const std::string& text, Hand& out, std::string& err) {
     return true;
 }
 
+int pbn_anchor(const std::string& text) {
+    std::string t = text;
+    while (!t.empty() && std::isspace(static_cast<unsigned char>(t.front()))) t.erase(t.begin());
+    if (t.size() < 2 || t[1] != ':') return -1;
+    return parse_seat(t.substr(0, 1));
+}
+
 bool parse_pbn(const std::string& text, Hand hands[4], std::string& err) {
     for (int s = 0; s < 4; ++s) hands[s] = 0;
 

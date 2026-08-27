@@ -33,6 +33,12 @@ struct Position {
 // '-' for a void or for a whole hand are accepted, matching the oracle.
 bool parse_pbn(const std::string& text, Hand hands[4], std::string& err);
 
+// The seat a PBN string is named for, or -1 if it does not name one.  The hands
+// run clockwise from it, and so does the `--seats` role list that travels
+// beside it -- see nil/seats.hpp.  Cheap enough to call before parsing the
+// deal, which is what callers that must resolve the roles first do.
+int pbn_anchor(const std::string& text);
+
 // One PBN hand group, e.g. 'AQT643.T.QJ864.8'.
 bool parse_pbn_hand(const std::string& text, Hand& out, std::string& err);
 

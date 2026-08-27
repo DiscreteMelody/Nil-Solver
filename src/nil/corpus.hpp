@@ -8,19 +8,23 @@
 // One record per line, fields separated by '|' and trimmed.  Blank lines and
 // lines starting with '#' are ignored.
 //
-//   name | pbn | leader | nil | broken | trick | secondary | nilset |
+//   name | pbn | leader | seats | broken | trick | secondary |
 //   nil_tricks | side_tricks | pv | provenance
 //
 //   name        identifier for the record, e.g. "c5-0042"
 //   pbn         PBN deal string
 //   leader      N/E/S/W, seat that led the current trick
-//   nil         N/E/S/W, seat that bid nil
+//   seats       four role digits, e.g. "0 3 2 3", running CLOCKWISE FROM THE
+//               SEAT THE PBN NAMES -- the same order the hands are in.  0 is a
+//               nil bidder that has not taken a trick, 1 a nil already broken,
+//               2 the partner covering it, 3 a seat on a side with no nil.
+//               This replaced two columns, `nil` and `nilset`, in patch 54; see
+//               nil/seats.hpp for why.
 //   broken      0 or 1, spades already broken.  A layout still holding all
 //               thirteen spades cannot have them broken -- see validate() --
 //               so this is 0 on every full 13-card deal.
 //   trick       cards already on the trick, e.g. "H4 HK"; may be empty
 //   secondary   "max" or "min", the tie-break direction
-//   nilset      0 or 1, whether the nil is already broken
 //   nil_tricks  expected trick count for the nil bidder; "?" if unknown
 //   side_tricks expected trick count for the nil bidder's pair; "?" if unknown
 //   pv          expected principal variation; may be empty
@@ -42,6 +46,7 @@
 #include <vector>
 
 #include "nil/position.hpp"
+#include "nil/seats.hpp"
 
 namespace nil {
 
@@ -50,9 +55,8 @@ struct CorpusEntry {
     std::string pbn;        // as written in the file, for reproduction
     std::string trick_text; // as written in the file
     Position position;
-    int nil_seat = 0;
+    SeatRoles roles;
     bool minimise_own_tricks = false;
-    bool nil_already_set = false;
     int expected_tricks = -1;        // -1 when the file says "?"
     int expected_side_tricks = -1;   // -1 when the file says "?"
     std::string expected_pv;         // empty when not recorded

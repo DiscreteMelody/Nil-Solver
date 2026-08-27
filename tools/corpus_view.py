@@ -37,12 +37,13 @@ import sys
 from typing import Dict, List, Optional, Sequence
 
 SEAT_CHARS = "NESW"
+ROLE_NAMES = ("nil", "nil-set", "cover", "opponent")
 SUIT_CHARS = "SHDC"
 DEFAULT_CORPUS = os.path.join("tests", "corpus", "positions.txt")
 
 FIELDS = (
-    "name", "pbn", "leader", "nil", "broken", "trick",
-    "secondary", "nilset", "nil_tricks", "side_tricks", "pv", "provenance",
+    "name", "pbn", "leader", "seats", "broken", "trick",
+    "secondary", "nil_tricks", "side_tricks", "pv", "provenance",
 )
 
 # How much a recorded answer is worth.  See tools/make_large_corpus.py.
@@ -61,14 +62,14 @@ def load(path: str) -> List[Dict[str, str]]:
             if not line or line.startswith("#"):
                 continue
             parts = [p.strip() for p in line.split("|")]
-            if len(parts) < 11:
+            if len(parts) < 10:
                 raise SystemExit(
-                    "%s:%d: expected at least 11 fields, got %d. If this corpus "
-                    "predates the lexicographic objective, regenerate it with "
+                    "%s:%d: expected at least 10 fields, got %d. If this corpus "
+                    "predates the seats column, regenerate it with "
                     "tools/make_corpus.py" % (path, line_no, len(parts))
                 )
             record = dict(zip(FIELDS, parts))
-            if len(parts) < 12:
+            if len(parts) < 11:
                 record["pv"] = ""
             record.setdefault("provenance", "oracle")
             if not record["provenance"]:
@@ -115,26 +116,50 @@ def suits_in_play(pbn: str) -> int:
     return len(seen)
 
 
+def roles_of(record: Dict[str, str]) -> List[int]:
+    """The record's roles, indexed by absolute seat.
+
+    The column is written clockwise from the seat the row's own PBN names, so
+    the anchor comes out of the deal string.
+    """
+    anchor = SEAT_CHARS.index(record["pbn"][0].upper())
+    digits = [ch for ch in record["seats"] if ch.isdigit()]
+    roles = [3, 3, 3, 3]
+    for offset, ch in enumerate(digits):
+        roles[(anchor + offset) % 4] = int(ch)
+    return roles
+
+
+def nil_seat_of(record: Dict[str, str]) -> str:
+    roles = roles_of(record)
+    for seat, role in enumerate(roles):
+        if role in (0, 1):
+            return SEAT_CHARS[seat]
+    return "?"
+
+
+def nil_is_set(record: Dict[str, str]) -> bool:
+    return 1 in roles_of(record)
+
+
 def describe(record: Dict[str, str]) -> str:
-    if record["nilset"] == "1":
+    if nil_is_set(record):
         primary = "nil already set, so the primary is off"
     else:
-        primary = "%s's tricks first" % record["nil"]
+        primary = "%s's tricks first" % nil_seat_of(record)
     secondary = ("each pair takes what it can" if record["secondary"] == "max"
                  else "each pair sheds what it can")
     return "%s, then %s" % (primary, secondary)
 
 
-def repro(record: Dict[str, str], exe, nil_flag: str = "--nil") -> List[str]:
+def repro(record: Dict[str, str], exe) -> List[str]:
     args = list(exe) if isinstance(exe, (list, tuple)) else [exe]
     args += ["--pbn", record["pbn"], "--leader", record["leader"],
-             nil_flag, record["nil"]]
+             "--seats", record["seats"]]
     if record["broken"] == "1":
         args.append("--spades-broken")
     if record["secondary"] == "min":
         args += ["--secondary", "min"]
-    if record["nilset"] == "1":
-        args.append("--nil-already-set")
     if record["trick"]:
         args += ["--trick", record["trick"]]
     return args
@@ -152,7 +177,10 @@ def show(record: Dict[str, str], exe: Optional[str], oracle_path: Optional[str])
     for line in hands_by_seat(record["pbn"]):
         print(line)
     print("Leader         %s" % record["leader"])
-    print("Nil bidder     %s" % record["nil"])
+    print("Seats          %s  (%s)"
+          % (record["seats"], " ".join(
+              "%s=%s" % (SEAT_CHARS[i], ROLE_NAMES[r])
+              for i, r in enumerate(roles_of(record)))))
     print("Spades broken  %s" % ("yes" if record["broken"] == "1" else "no"))
     if record["trick"]:
         print("On the trick   %s   (already played, in order from the leader)" % record["trick"])
@@ -165,8 +193,8 @@ def show(record: Dict[str, str], exe: Optional[str], oracle_path: Optional[str])
         print("Recorded answer  [%s: %s]"
               % (provenance, PROVENANCE.get(provenance, "unknown provenance")))
         print("  %s takes %s trick(s); its side takes %s"
-              % (record["nil"], record["nil_tricks"], record["side_tricks"]))
-        if record["nilset"] != "1":
+              % (nil_seat_of(record), record["nil_tricks"], record["side_tricks"]))
+        if not nil_is_set(record):
             print("  so the nil %s"
                   % ("FAILS" if int(record["nil_tricks"]) > 0 else "MAKES"))
 
@@ -179,9 +207,9 @@ def show(record: Dict[str, str], exe: Optional[str], oracle_path: Optional[str])
     print("Reproduce:")
     print("  %s" % shell(repro(record, exe or os.path.join("build", "bin", "nil_cli"))))
     if oracle_path:
-        # The oracle names the seat --designated, since it does not know the
-        # word "nil"; everything else is spelled the same.
-        print("  %s" % shell(repro(record, ["python3", oracle_path], "--designated")))
+        # The oracle takes the same --seats list, read against the same PBN
+        # anchor, so the two command lines differ only in the executable.
+        print("  %s" % shell(repro(record, ["python3", oracle_path])))
 
     problems = 0
     if exe:
@@ -252,10 +280,11 @@ def verify_with_oracle(record: Dict[str, str], oracle_path: str) -> int:
 
     case = crosscheck.Case.__new__(crosscheck.Case)
     case.leader = SEAT_CHARS.index(record["leader"])
-    case.nil_seat = SEAT_CHARS.index(record["nil"])
+    case.roles = roles_of(record)
+    case.nil_seat = SEAT_CHARS.index(nil_seat_of(record))
     case.spades_broken = record["broken"] == "1"
     case.secondary = record["secondary"]
-    case.nil_already_set = record["nilset"] == "1"
+    case.nil_already_set = nil_is_set(record)
     case.current_trick = tuple(
         oracle.card_from_str(t) for t in record["trick"].split() if t
     )
@@ -304,12 +333,12 @@ def summarise(records: List[Dict[str, str]]) -> None:
     print("  cards  count   nil makes  nil fails   already set   take   shed   mid-trick")
     for cards in sorted(by_cards):
         group = by_cards[cards]
-        live = [r for r in group if r["nilset"] != "1" and r["nil_tricks"] != "?"]
+        live = [r for r in group if not nil_is_set(r) and r["nil_tricks"] != "?"]
         makes = sum(1 for r in live if int(r["nil_tricks"]) == 0)
         fails = len(live) - makes
         print("  %5s  %5d   %9d  %9d   %11d   %4d   %4d   %9d"
               % (cards, len(group), makes, fails,
-                 sum(1 for r in group if r["nilset"] == "1"),
+                 sum(1 for r in group if nil_is_set(r)),
                  sum(1 for r in group if r["secondary"] == "max"),
                  sum(1 for r in group if r["secondary"] == "min"),
                  sum(1 for r in group if r["trick"])))
@@ -318,11 +347,11 @@ def summarise(records: List[Dict[str, str]]) -> None:
 
 
 def one_line(record: Dict[str, str]) -> str:
-    verdict = ("  -  " if record["nilset"] == "1" or record["nil_tricks"] == "?"
+    verdict = ("  -  " if nil_is_set(record) or record["nil_tricks"] == "?"
                else ("MAKES" if int(record["nil_tricks"]) == 0 else "FAILS"))
     return "%-10s %2sc  lead %s  nil %s  %-3s %s  %s  nil=%-2s side=%-2s %-10s %s" % (
-        record["name"], record["cards"], record["leader"], record["nil"],
-        record["secondary"], "set " if record["nilset"] == "1" else "live",
+        record["name"], record["cards"], record["leader"], nil_seat_of(record),
+        record["secondary"], "set " if nil_is_set(record) else "live",
         verdict, record["nil_tricks"], record["side_tricks"], record["provenance"],
         ("resumed mid-trick" if record["trick"] else ""),
     )
@@ -347,7 +376,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.add_argument("--seed", type=int, default=None, help="seed for --random")
     p.add_argument("--cards", default=None, help="filter by cards per hand")
     p.add_argument("--secondary", choices=("max", "min"), default=None)
-    p.add_argument("--nilset", choices=("yes", "no"), default=None)
+    p.add_argument("--nilset", choices=("yes", "no"), default=None,
+                   help="keep only rows whose nil bidder is (or is not) already set")
     p.add_argument("--outcome", choices=("makes", "fails"), default=None)
     p.add_argument("--midtrick", choices=("yes", "no"), default=None)
     p.add_argument("--provenance", choices=("oracle", "solver", "unverified"), default=None)
@@ -364,15 +394,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.secondary:
         records = [r for r in records if r["secondary"] == args.secondary]
     if args.nilset:
-        want = "1" if args.nilset == "yes" else "0"
-        records = [r for r in records if r["nilset"] == want]
+        want = args.nilset == "yes"
+        records = [r for r in records if nil_is_set(r) == want]
     if args.midtrick:
         records = [r for r in records if bool(r["trick"]) == (args.midtrick == "yes")]
     if args.provenance:
         records = [r for r in records if r["provenance"] == args.provenance]
     if args.outcome:
         records = [r for r in records
-                   if r["nilset"] != "1" and r["nil_tricks"] != "?"
+                   if not nil_is_set(r) and r["nil_tricks"] != "?"
                    and (int(r["nil_tricks"]) == 0) == (args.outcome == "makes")]
     if not records:
         print("no records match those filters")

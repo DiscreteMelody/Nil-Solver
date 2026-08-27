@@ -13,6 +13,7 @@
 
 #include "nil/position.hpp"
 #include "nil/search.hpp"
+#include "nil/seats.hpp"
 
 namespace {
 
@@ -35,18 +36,49 @@ void copy_err(char* buf, std::int32_t len, const std::string& msg) {
 // SearchOptions.  Shared by every entry point, so there is one place where a
 // flag means what it means.
 std::int32_t prepare(const char* pbn, std::int32_t leader, const char* current_trick,
-                     std::int32_t nil_seat, std::uint32_t flags, nil::Position& pos,
-                     nil::SearchOptions& opts, char* err_buf, std::int32_t err_len) {
+                     const std::int32_t* seats, std::uint32_t flags, nil::Position& pos,
+                     nil::SeatRoles& roles, nil::SearchOptions& opts, char* err_buf,
+                     std::int32_t err_len) {
     if (leader < 0 || leader > 3) {
         copy_err(err_buf, err_len, "leader out of range (expected 0..3 for N/E/S/W)");
         return NIL_ERR_ILLEGAL_POSITION;
     }
-    if (nil_seat < 0 || nil_seat > 3) {
-        copy_err(err_buf, err_len, "nil seat out of range (expected 0..3 for N/E/S/W)");
-        return NIL_ERR_ILLEGAL_POSITION;
+    if (!seats) {
+        copy_err(err_buf, err_len, "null seats array");
+        return NIL_ERR_NULL_ARG;
     }
 
     std::string err;
+    // The roles run clockwise from the seat the PBN names, so the anchor has to
+    // come out of the string before they can be placed on absolute seats.  It
+    // is read separately from parse_pbn because a bad anchor should be reported
+    // as the PBN error it is, not as a seats error.
+    const int anchor = nil::pbn_anchor(pbn);
+    if (anchor < 0) {
+        copy_err(err_buf, err_len,
+                 "PBN deal must start with a seat letter and a colon, e.g. 'N:'");
+        return NIL_ERR_PARSE;
+    }
+    for (int offset = 0; offset < 4; ++offset) {
+        const std::int32_t v = seats[offset];
+        if (v < NIL_ROLE_NIL || v > NIL_ROLE_OPPONENT) {
+            copy_err(err_buf, err_len,
+                     "seat role out of range (expected 0 nil, 1 nil-set, 2 cover, "
+                     "3 opponent)");
+            return NIL_ERR_ILLEGAL_POSITION;
+        }
+        roles.role[(anchor + offset) & 3] = static_cast<nil::SeatRole>(v);
+    }
+    if (!nil::validate_seat_roles(roles, err)) {
+        copy_err(err_buf, err_len, err);
+        // Two nils is a legal deal this build cannot answer; everything else in
+        // that array is a malformed one.  The two get different codes so a
+        // caller can tell a typo from a feature that has not landed.
+        return roles.nil_seat() >= 0 && err.find("not supported yet") != std::string::npos
+                   ? NIL_ERR_UNSUPPORTED
+                   : NIL_ERR_ILLEGAL_POSITION;
+    }
+
     if (!nil::parse_pbn(pbn, pos.hands, err)) {
         copy_err(err_buf, err_len, err);
         return NIL_ERR_PARSE;
@@ -84,7 +116,6 @@ std::int32_t prepare(const char* pbn, std::int32_t leader, const char* current_t
     opts.presolve_window = (flags & NIL_FLAG_NO_PRESOLVE) == 0;
     opts.tt_megabytes = g_table_megabytes;
     opts.minimise_own_tricks = (flags & NIL_FLAG_MINIMISE_OWN_TRICKS) != 0;
-    opts.nil_already_set = (flags & NIL_FLAG_NIL_ALREADY_SET) != 0;
     opts.mode = (flags & NIL_FLAG_FAST_MODE) != 0 ? nil::MODE_FAST : nil::MODE_FULL;
     return NIL_OK;
 }
@@ -103,16 +134,17 @@ void fill_result(nil_result* out, const nil::Solution& sol, int tricks_remaining
 
 // Shared body for nil_solve / nil_solve_pv.
 std::int32_t solve_impl(const char* pbn, std::int32_t leader, const char* current_trick,
-                        std::int32_t nil_seat, std::uint32_t flags, nil_result* out,
+                        const std::int32_t* seats, std::uint32_t flags, nil_result* out,
                         std::string* pv_out, char* err_buf, std::int32_t err_len) {
     if (!pbn || !out) {
         copy_err(err_buf, err_len, "null argument");
         return NIL_ERR_NULL_ARG;
     }
     nil::Position pos;
+    nil::SeatRoles roles;
     nil::SearchOptions opts;
     const std::int32_t rc =
-        prepare(pbn, leader, current_trick, nil_seat, flags, pos, opts, err_buf, err_len);
+        prepare(pbn, leader, current_trick, seats, flags, pos, roles, opts, err_buf, err_len);
     if (rc != NIL_OK) return rc;
 
     // A caller asking for a line is asking for the canonical one, so the flag
@@ -121,7 +153,7 @@ std::int32_t solve_impl(const char* pbn, std::int32_t leader, const char* curren
 
     std::string err;
     nil::Solution sol;
-    if (!nil::solve(pos, nil_seat, opts, sol, err)) {
+    if (!nil::solve(pos, roles, opts, sol, err)) {
         copy_err(err_buf, err_len, err);
         return NIL_ERR_INTERNAL;
     }
@@ -133,6 +165,13 @@ std::int32_t solve_impl(const char* pbn, std::int32_t leader, const char* curren
 
 static_assert(nil::TRICKS_NOT_COMPUTED == NIL_TRICKS_UNKNOWN,
               "the C ABI's unknown-trick sentinel must match the core's");
+// The role numbers are the wire format, so the two spellings of them must not
+// be allowed to drift apart.
+static_assert(static_cast<int>(nil::ROLE_NIL) == NIL_ROLE_NIL &&
+                  static_cast<int>(nil::ROLE_NIL_SET) == NIL_ROLE_NIL_SET &&
+                  static_cast<int>(nil::ROLE_COVER) == NIL_ROLE_COVER &&
+                  static_cast<int>(nil::ROLE_OPPONENT) == NIL_ROLE_OPPONENT,
+              "the C ABI's seat roles must match the core's");
 
 }  // namespace
 
@@ -140,15 +179,15 @@ extern "C" {
 
 NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve(const char* pbn, std::int32_t leader,
                                                       const char* current_trick,
-                                                      std::int32_t nil_seat, std::uint32_t flags,
-                                                      nil_result* out, char* err_buf,
-                                                      std::int32_t err_len) {
-    return solve_impl(pbn, leader, current_trick, nil_seat, flags, out, nullptr, err_buf, err_len);
+                                                      const std::int32_t* seats,
+                                                      std::uint32_t flags, nil_result* out,
+                                                      char* err_buf, std::int32_t err_len) {
+    return solve_impl(pbn, leader, current_trick, seats, flags, out, nullptr, err_buf, err_len);
 }
 
 NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve_pv(const char* pbn, std::int32_t leader,
                                                          const char* current_trick,
-                                                         std::int32_t nil_seat,
+                                                         const std::int32_t* seats,
                                                          std::uint32_t flags, nil_result* out,
                                                          char* pv_buf, std::int32_t pv_len,
                                                          char* err_buf, std::int32_t err_len) {
@@ -166,7 +205,7 @@ NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve_pv(const char* pbn, std::i
     }
     std::string pv;
     const std::int32_t rc =
-        solve_impl(pbn, leader, current_trick, nil_seat, flags, out, &pv, err_buf, err_len);
+        solve_impl(pbn, leader, current_trick, seats, flags, out, &pv, err_buf, err_len);
     if (rc != NIL_OK) {
         pv_buf[0] = '\0';
         return rc;
@@ -182,18 +221,19 @@ NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve_pv(const char* pbn, std::i
 
 NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_fails(const char* pbn, std::int32_t leader,
                                                       const char* current_trick,
-                                                      std::int32_t nil_seat, std::uint32_t flags) {
+                                                      const std::int32_t* seats,
+                                                      std::uint32_t flags) {
     nil_result result;
     // The boolean is the whole output, and fast mode is the mode that computes
     // exactly the boolean.  Selecting it here rather than making every caller
     // remember the flag is the point of this entry point existing.
-    const std::int32_t rc = solve_impl(pbn, leader, current_trick, nil_seat,
+    const std::int32_t rc = solve_impl(pbn, leader, current_trick, seats,
                                        flags | NIL_FLAG_FAST_MODE, &result, nullptr, nullptr, 0);
     return rc == NIL_OK ? result.nil_fails : rc;
 }
 
 NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve_moves(
-    const char* pbn, std::int32_t leader, const char* current_trick, std::int32_t nil_seat,
+    const char* pbn, std::int32_t leader, const char* current_trick, const std::int32_t* seats,
     std::uint32_t flags, nil_result* out, nil_move* moves, std::int32_t moves_cap,
     std::int32_t* moves_len, char* err_buf, std::int32_t err_len) {
     if (!pbn || !out || !moves || !moves_len) {
@@ -203,9 +243,10 @@ NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve_moves(
     *moves_len = 0;
 
     nil::Position pos;
+    nil::SeatRoles roles;
     nil::SearchOptions opts;
     const std::int32_t rc =
-        prepare(pbn, leader, current_trick, nil_seat, flags, pos, opts, err_buf, err_len);
+        prepare(pbn, leader, current_trick, seats, flags, pos, roles, opts, err_buf, err_len);
     if (rc != NIL_OK) return rc;
 
     opts.canonical_pv = (flags & NIL_FLAG_FAST_LINE) == 0;
@@ -213,7 +254,7 @@ NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve_moves(
     std::string err;
     nil::Solution sol;
     std::vector<nil::MoveScore> scored;
-    if (!nil::solve_moves(pos, nil_seat, opts, sol, scored, err)) {
+    if (!nil::solve_moves(pos, roles, opts, sol, scored, err)) {
         copy_err(err_buf, err_len, err);
         return NIL_ERR_INTERNAL;
     }

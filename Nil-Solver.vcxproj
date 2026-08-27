@@ -135,6 +135,7 @@
     <ClInclude Include="src\nil\ranks.hpp" />
     <ClInclude Include="src\nil\rules.hpp" />
     <ClInclude Include="src\nil\search.hpp" />
+    <ClInclude Include="src\nil\seats.hpp" />
     <ClInclude Include="src\nil\statekey.hpp" />
     <ClInclude Include="src\nil\tt.hpp" />
     <ClInclude Include="framework.h" />
@@ -148,6 +149,7 @@
     <ClCompile Include="src\nil\corpus.cpp" />
     <ClCompile Include="src\nil\position.cpp" />
     <ClCompile Include="src\nil\search.cpp" />
+    <ClCompile Include="src\nil\seats.cpp" />
     <ClCompile Include="src\nil\statekey.cpp" />
     <ClCompile Include="src\nil\tt.cpp" />
     <ClCompile Include="dllmain.cpp" />

@@ -34,6 +34,19 @@ The sides are fixed by seat parity, not by the designated player's seat.  If
 the designated player is North, then North itself plays to minimize its own
 trick count.
 
+SEAT ROLES
+----------
+The command line describes the deal the way the solver's does, with --seats: one
+role per seat, running clockwise from the seat the PBN names.  See ROLE_* below.
+It is a spelling of the two arguments it replaced -- the designated seat, and
+whether its nil is already broken -- and NOT a change to what is computed.  In
+particular the coalitions are still fixed by parity, so this file answers the
+nil question exactly when the nil sits North or South; tools/crosscheck.py
+rotates each deal so that it does.  Making the coalitions follow the roles would
+make the oracle agree with the solver for all four seats, and it is deliberately
+not done here: this file is the ground truth the solver is checked against, and
+its search is not moved by a representation change.
+
 DELIBERATELY ABSENT
 -------------------
 No alpha-beta.  No transposition table (see --memo for an opt-in exception,
@@ -80,6 +93,117 @@ SUIT_CHARS = "SHDC"           # index 0..3; PBN order: spades, hearts, diamonds,
 SPADES = 0
 RANK_CHARS = "23456789TJQKA"  # rank value == index + 2, i.e. 2..14
 SEAT_CHARS = "NESW"           # index 0..3, clockwise
+
+# What each seat is doing.  Wire values, shared with the C++ solver's SeatRole
+# and with the corpus format's `seats` column.
+ROLE_NIL = 0        # a nil bidder that has not yet taken a trick
+ROLE_NIL_SET = 1    # a nil bidder whose nil is already broken
+ROLE_COVER = 2      # the partner covering it
+ROLE_OPPONENT = 3   # a seat on a side with no nil bid
+ROLE_NAMES = ("nil", "nil-set", "cover", "opponent")
+
+
+def roles_from_nil(nil_seat: int, already_set: bool = False) -> List[int]:
+    """The arrangement a designated seat and an already-set flag describe."""
+    roles = [ROLE_OPPONENT] * 4
+    roles[nil_seat % 4] = ROLE_NIL_SET if already_set else ROLE_NIL
+    roles[(nil_seat + 2) % 4] = ROLE_COVER
+    return roles
+
+
+def nil_seat_of(roles: Sequence[int]) -> int:
+    for seat, role in enumerate(roles):
+        if role in (ROLE_NIL, ROLE_NIL_SET):
+            return seat
+    return -1
+
+
+def nil_already_set_of(roles: Sequence[int]) -> bool:
+    return ROLE_NIL_SET in tuple(roles)
+
+
+def validate_roles(roles: Sequence[int]) -> None:
+    """Raise unless this is a shape the solver accepts today.
+
+    Exactly one nil, exactly one cover, and the cover across from the nil.  Two
+    nils is a legal spades deal and an unimplemented feature rather than a
+    malformed argument, and the message says which.
+    """
+    if len(roles) != 4:
+        raise ValueError(f"expected four seat roles, got {len(roles)}")
+    for seat, role in enumerate(roles):
+        if role not in (ROLE_NIL, ROLE_NIL_SET, ROLE_COVER, ROLE_OPPONENT):
+            raise ValueError(
+                f"seat {SEAT_CHARS[seat]} has role {role}; expected 0 (nil), "
+                "1 (nil-set), 2 (cover) or 3 (opponent)"
+            )
+    nils = [s for s, r in enumerate(roles) if r in (ROLE_NIL, ROLE_NIL_SET)]
+    covers = [s for s, r in enumerate(roles) if r == ROLE_COVER]
+    described = describe_roles(roles)
+    if not nils:
+        raise ValueError(f"no seat bid nil ({described}); one seat must have role 0 or 1")
+    if len(nils) > 1:
+        raise ValueError(
+            f"more than one nil bid ({described}); solving with multiple nils is "
+            "not supported yet"
+        )
+    if not covers:
+        raise ValueError(
+            f"no cover partner for {SEAT_CHARS[nils[0]]}'s nil ({described}); "
+            "one seat must have role 2"
+        )
+    if len(covers) > 1:
+        raise ValueError(
+            f"more than one cover partner ({described}); exactly one seat may have role 2"
+        )
+    if covers[0] != (nils[0] + 2) % 4:
+        raise ValueError(
+            "the cover partner must sit across from the nil bidder: "
+            f"{SEAT_CHARS[nils[0]]} bid nil, so the cover is "
+            f"{SEAT_CHARS[(nils[0] + 2) % 4]} and not {SEAT_CHARS[covers[0]]} ({described})"
+        )
+
+
+def parse_roles(text: str, anchor: int) -> List[int]:
+    """Read '0 3 2 3' -- clockwise from `anchor` -- into absolute seat order.
+
+    Whitespace and commas separate; four digits run together are four values.
+    """
+    digits = [ch for ch in text if not ch.isspace() and ch != ","]
+    for ch in digits:
+        if not ch.isdigit():
+            raise ValueError(
+                f"bad seat role character {ch!r} in {text!r}; expected four values "
+                "from 0 (nil), 1 (nil-set), 2 (cover), 3 (opponent)"
+            )
+    if len(digits) != 4:
+        raise ValueError(f"expected exactly four seat roles, got {len(digits)} in {text!r}")
+    roles = [ROLE_OPPONENT] * 4
+    for offset, ch in enumerate(digits):
+        roles[(anchor + offset) % 4] = int(ch)
+    return roles
+
+
+def roles_to_str(roles: Sequence[int], anchor: int) -> str:
+    """The inverse: '0 3 2 3', clockwise from `anchor`."""
+    return " ".join(str(roles[(anchor + off) % 4]) for off in range(4))
+
+
+def describe_roles(roles: Sequence[int]) -> str:
+    """Absolute and unambiguous: 'N=nil E=opponent S=cover W=opponent'."""
+    return " ".join(
+        f"{SEAT_CHARS[s]}={ROLE_NAMES[r] if 0 <= r < 4 else '?'}"
+        for s, r in enumerate(roles)
+    )
+
+
+def pbn_anchor(text: str) -> int:
+    """The seat a PBN string is named for; its hands, and its roles, run
+    clockwise from there."""
+    t = text.strip()
+    if len(t) < 2 or t[1] != ":":
+        raise ValueError("PBN deal must start with a seat letter and a colon, e.g. 'N:'")
+    return seat_from_str(t[0])
 
 
 class Card(NamedTuple):
@@ -807,7 +931,7 @@ def format_solution(solution: Solution, compact: bool = False) -> str:
         f"PBN            {pos.to_pbn()}",
         format_hands(pos),
         f"Leader         {SEAT_CHARS[pos.leader]}",
-        f"Designated     {SEAT_CHARS[solution.designated]}"
+        f"Seats          {describe_roles(roles_from_nil(solution.designated, solution.nil_already_set))}"
         f"  (N/S minimize, E/W maximize)",
         f"Objective      {objective} {direction}",
         f"Spades broken  {'yes' if pos.spades_broken else 'no'}",
@@ -1120,11 +1244,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         epilog=(
             "examples:\n"
             "  %(prog)s --selftest\n"
-            "  %(prog)s --random --seed 42 --cards 5 --leader N --designated S\n"
-            "  %(prog)s --pbn 'N:A...2 K...3 Q...4 J...5' --leader N --designated N\n"
+            "  %(prog)s --random --seed 42 --cards 5 --leader N --seats 3 3 0 2\n"
+            "  %(prog)s --pbn 'N:A...2 K...3 Q...4 J...5' --leader N --seats 0 3 2 3\n"
             "  %(prog)s --random --seed 42 --cards 5 --compact   # diff-friendly\n"
-            "  %(prog)s --pbn '...' --designated N --secondary min\n"
-            "  %(prog)s --pbn '...' --designated N --nil-already-set\n"
+            "  %(prog)s --pbn '...' --seats 0 3 2 3 --secondary min\n"
+            "  %(prog)s --pbn '...' --seats 1 3 2 3   # the nil is already set\n"
         ),
     )
     src = p.add_mutually_exclusive_group()
@@ -1135,7 +1259,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.add_argument("--seed", type=int, default=0, help="RNG seed for --random")
     p.add_argument("--cards", type=int, default=5, help="cards per hand for --random (4-7)")
     p.add_argument("--leader", default=None, help="seat on lead (N/E/S/W)")
-    p.add_argument("--designated", default=None, help="designated player (N/E/S/W)")
+    p.add_argument(
+        "--seats",
+        nargs="+",
+        default=None,
+        metavar="R",
+        help="what each seat is doing, clockwise from the seat --pbn names: "
+        "0 = nil bidder with no trick yet, 1 = nil already broken, 2 = the "
+        "partner covering it, 3 = a seat on a side with no nil.  Exactly one "
+        "nil and its partner covering [0 3 2 3]",
+    )
     p.add_argument("--spades-broken", action="store_true", help="start with spades broken")
     p.add_argument(
         "--trick",
@@ -1149,12 +1282,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         default="max",
         help="tie-break direction: each pair takes as many tricks as it can "
         "(max, the default) or as few as it can (min)",
-    )
-    p.add_argument(
-        "--nil-already-set",
-        action="store_true",
-        help="the nil has already been broken in the real game, so drop the "
-        "primary objective and optimize only the secondary one",
     )
     p.add_argument(
         "--memo",
@@ -1174,24 +1301,29 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 1 if selftest() else 0
 
     leader = seat_from_str(args.leader) if args.leader else None
-    designated = seat_from_str(args.designated) if args.designated else None
+    seats_text = " ".join(args.seats) if args.seats else "0 3 2 3"
 
     try:
         if args.random or not args.pbn:
+            # A generated deal is written from North, so that is the anchor the
+            # roles are read against.
+            roles = parse_roles(seats_text, 0)
+            validate_roles(roles)
             fx = random_fixture(
                 seed=args.seed,
                 cards_per_hand=args.cards,
                 leader=leader if leader is not None else 0,
-                designated=designated if designated is not None else 0,
+                designated=nil_seat_of(roles),
                 spades_broken=args.spades_broken,
             )
             hands = fx.position.hands
-            designated = fx.designated
             leader = fx.position.leader
         else:
             hands = parse_pbn(args.pbn)
+            roles = parse_roles(seats_text, pbn_anchor(args.pbn))
+            validate_roles(roles)
             leader = 0 if leader is None else leader
-            designated = 0 if designated is None else designated
+        designated = nil_seat_of(roles)
 
         trick = tuple(
             card_from_str(t) for t in args.trick.replace(",", " ").split() if t
@@ -1216,7 +1348,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         designated,
         use_memo=args.memo,
         secondary=args.secondary,
-        nil_already_set=args.nil_already_set,
+        nil_already_set=nil_already_set_of(roles),
     )
     print(format_solution(solution, compact=args.compact))
     return 0

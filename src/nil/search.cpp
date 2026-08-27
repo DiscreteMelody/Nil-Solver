@@ -1232,9 +1232,13 @@ int value_after(Ctx& ctx, const State& st, CardId card, int alpha, int beta, Sta
 // weights differ between the modes -- a fast-mode 1 and a full-mode 1 are not
 // the same number.  new_search() on every solve is what keeps one mode's
 // entries out of the other's search, and it is not optional.
-void configure(Ctx& ctx, int nil_seat, const SearchOptions& opts,
+void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
                const ObjectiveWeights& weights) {
-    ctx.nil_seat = nil_seat;
+    // The search still reasons about ONE nil seat and takes the coalitions from
+    // its parity, exactly as it did when the caller passed that seat directly.
+    // The roles array is the caller's description; this is where phase two will
+    // stop collapsing it to a scalar.
+    ctx.nil_seat = roles.nil_seat();
     ctx.primary_weight = weights.primary;
     ctx.secondary_weight = weights.secondary;
     ctx.tertiary_weight = weights.tertiary;
@@ -1260,7 +1264,7 @@ void configure(Ctx& ctx, int nil_seat, const SearchOptions& opts,
     // Ordering is answer-neutral in both modes.  What it costs in MODE_FULL is the
     // canonical tie-break on the principal variation, so it runs unless a caller
     // has asked for that line specifically.  See SearchOptions::canonical_pv.
-    // The third condition is not about speed.  With nil_already_set the primary
+    // The third condition is not about speed.  With ROLE_NIL_SET the primary
     // weight is zero, and with minimise_own_tricks the tertiary is zero too, so
     // the value reduces to secondary * nil_side_tricks and says nothing about
     // how that total splits between the nil bidder and its partner.  The two
@@ -1408,12 +1412,13 @@ std::string with_commas(std::uint64_t n) {
 
 }  // namespace
 
-ObjectiveWeights objective_weights(int tricks_remaining, const SearchOptions& opts) {
+ObjectiveWeights objective_weights(int tricks_remaining, const SeatRoles& roles,
+                                   const SearchOptions& opts) {
     if (opts.mode == MODE_FAST) {
         // Nothing packed above or below the nil bidder's trick count, so the
         // value IS that count and the window is [0, 1].  minimise_own_tricks is
         // inert here by construction -- there is no secondary level for it to
-        // point at -- and nil_already_set never reaches this function, because
+        // point at -- and ROLE_NIL_SET never reaches this function, because
         // solve() answers that combination without searching.
         ObjectiveWeights w;
         w.primary = 1;
@@ -1424,7 +1429,7 @@ ObjectiveWeights objective_weights(int tricks_remaining, const SearchOptions& op
 
     const int k = tricks_remaining + 1;
     ObjectiveWeights w;
-    w.primary = opts.nil_already_set ? 0 : k * k;
+    w.primary = roles.nil_already_set() ? 0 : k * k;
     w.secondary = opts.minimise_own_tricks ? k : -k;
     w.tertiary = opts.minimise_own_tricks ? 0 : 1;
     return w;
@@ -1441,8 +1446,8 @@ ObjectiveWeights objective_weights(int tricks_remaining, const SearchOptions& op
 //                                 most k * (k - 1) = k*k - k, and a failing one
 //                                 at least k*k + k.
 //
-// Both gaps are 2k wide and neither depends on the deal.  Undefined when
-// nil_already_set, where primary is zero and the two halves collapse into each
+// Both gaps are 2k wide and neither depends on the deal.  Undefined under
+// ROLE_NIL_SET, where primary is zero and the two halves collapse into each
 // other -- callers must not ask, and solve() does not.
 // Below this many tricks the presolve is not worth its own setup.  It is not
 // that the fast search gets relatively dearer -- it does not -- but that the
@@ -1463,36 +1468,33 @@ int max_value_if_nil_safe(int tricks_remaining, const ObjectiveWeights& w) {
     return cover_only > 0 ? cover_only : 0;
 }
 
-bool solve(const Position& pos, int nil_seat, const SearchOptions& opts, Solution& out,
-           std::string& err) {
-    if (nil_seat < 0 || nil_seat > 3) {
-        err = "nil seat out of range";
-        return false;
-    }
+bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opts,
+           Solution& out, std::string& err) {
+    if (!validate_seat_roles(roles, err)) return false;
     if (!validate(pos, err)) return false;
 
-    const ObjectiveWeights weights = objective_weights(pos.tricks_remaining(), opts);
+    const ObjectiveWeights weights = objective_weights(pos.tricks_remaining(), roles, opts);
 
     // ---- fast mode: the nil question, and nothing else ---------------------
     if (opts.mode == MODE_FAST) {
         out = Solution();
-        out.nil_seat = nil_seat;
+        out.roles = roles;
         out.mode = MODE_FAST;
         out.nil_tricks = TRICKS_NOT_COMPUTED;
         out.nil_side_tricks = TRICKS_NOT_COMPUTED;
         out.opponent_tricks = TRICKS_NOT_COMPUTED;
 
         // The caller has asserted the very thing this mode computes.  There is
-        // nothing to search: the secondary objective that nil_already_set
-        // exists to expose has no output to land in here, because fast mode
-        // reports no trick counts.  Ask in full mode if you want those numbers.
-        if (opts.nil_already_set) {
+        // nothing to search: the secondary objective that ROLE_NIL_SET exists
+        // to expose has no output to land in here, because fast mode reports no
+        // trick counts.  Ask in full mode if you want those numbers.
+        if (roles.nil_already_set()) {
             out.nil_fails = true;
             return true;
         }
 
         Ctx fast_ctx;
-        configure(fast_ctx, nil_seat, opts, weights);
+        configure(fast_ctx, roles, opts, weights);
         State root = state_of(pos);
         CardId root_move = NO_CARD;
         // The whole question is "is the nil bidder's trick count at least one",
@@ -1548,13 +1550,13 @@ bool solve(const Position& pos, int nil_seat, const SearchOptions& opts, Solutio
     // max_value_if_nil_safe(), so a beta one above that contains the answer and
     // refutes every line that tries to force a trick the moment it succeeds.
     //
-    // Skipped when nil_already_set, where the primary weight is zero and the
-    // two halves of the value range are not separated at all.
+    // Skipped under ROLE_NIL_SET, where the primary weight is zero and the two
+    // halves of the value range are not separated at all.
     int root_alpha = WINDOW_MIN;
     int root_beta = WINDOW_MAX;
     std::uint64_t presolve_nodes = 0;
     TTStats presolve_stats;
-    if (opts.presolve_window && !opts.nil_already_set &&
+    if (opts.presolve_window && !roles.nil_already_set() &&
         pos.tricks_remaining() >= PRESOLVE_MIN_TRICKS) {
         SearchOptions probe_opts = opts;
         probe_opts.mode = MODE_FAST;
@@ -1570,7 +1572,7 @@ bool solve(const Position& pos, int nil_seat, const SearchOptions& opts, Solutio
         // A failed presolve is not a failed solve.  It is an optimisation, and
         // the full search below is complete without it, so anything that goes
         // wrong here is dropped and the sentinels stand.
-        if (solve(pos, nil_seat, probe_opts, probe, probe_err) && !probe.nil_fails) {
+        if (solve(pos, roles, probe_opts, probe, probe_err) && !probe.nil_fails) {
             root_beta = max_value_if_nil_safe(pos.tricks_remaining(), weights) + 1;
         }
         presolve_nodes = probe.nodes;
@@ -1582,7 +1584,7 @@ bool solve(const Position& pos, int nil_seat, const SearchOptions& opts, Solutio
     }
 
     Ctx ctx;
-    configure(ctx, nil_seat, opts, weights);
+    configure(ctx, roles, opts, weights);
 
     State st = state_of(pos);
     CardId move = NO_CARD;
@@ -1612,7 +1614,7 @@ bool solve(const Position& pos, int nil_seat, const SearchOptions& opts, Solutio
     // A solver that lies is worse than no solver.  Replaying recovers the trick
     // counts independently; re-packing them must land back on the search value.
     Tally tally;
-    if (!replay_pv(pos, out.pv, nil_seat, tally, err)) {
+    if (!replay_pv(pos, out.pv, roles, tally, err)) {
         err = "internal inconsistency: " + err;
         return false;
     }
@@ -1632,9 +1634,9 @@ bool solve(const Position& pos, int nil_seat, const SearchOptions& opts, Solutio
     out.opponent_tricks = tally.opponent_tricks;
     // When the caller has told us the nil is already broken, that is a fact
     // about the game, not something for the search to rediscover.
-    out.nil_fails = opts.nil_already_set || tally.nil_tricks > 0;
+    out.nil_fails = roles.nil_already_set() || tally.nil_tricks > 0;
     out.value = value;
-    out.nil_seat = nil_seat;
+    out.roles = roles;
     out.mode = MODE_FULL;
     // The presolve's work is this solve's work.  Reporting the full search
     // alone would make item 23 look free, and it is not free -- it is cheap.
@@ -1661,21 +1663,19 @@ const QuickTrickStats& quick_trick_stats() { return quick_trick_stats_storage();
 
 void reset_quick_trick_stats() { quick_trick_stats_storage() = QuickTrickStats(); }
 
-bool solve_moves(const Position& pos, int nil_seat, const SearchOptions& opts, Solution& out,
-                 std::vector<MoveScore>& moves_out, std::string& err) {
+bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOptions& opts,
+                 Solution& out, std::vector<MoveScore>& moves_out, std::string& err) {
     moves_out.clear();
-    if (nil_seat < 0 || nil_seat > 3) {
-        err = "nil seat out of range";
-        return false;
-    }
+    if (!validate_seat_roles(roles, err)) return false;
+    const int nil_seat = roles.nil_seat();
     if (!validate(pos, err)) return false;
 
     out = Solution();
-    out.nil_seat = nil_seat;
+    out.roles = roles;
     out.mode = opts.mode;
 
     const int tricks_remaining = pos.tricks_remaining();
-    const ObjectiveWeights weights = objective_weights(tricks_remaining, opts);
+    const ObjectiveWeights weights = objective_weights(tricks_remaining, roles, opts);
     const bool fast = opts.mode == MODE_FAST;
 
     State root = state_of(pos);
@@ -1686,7 +1686,7 @@ bool solve_moves(const Position& pos, int nil_seat, const SearchOptions& opts, S
         out.nil_tricks = fast ? TRICKS_NOT_COMPUTED : 0;
         out.nil_side_tricks = fast ? TRICKS_NOT_COMPUTED : 0;
         out.opponent_tricks = fast ? TRICKS_NOT_COMPUTED : 0;
-        out.nil_fails = opts.nil_already_set;
+        out.nil_fails = roles.nil_already_set();
         return true;
     }
 
@@ -1708,7 +1708,7 @@ bool solve_moves(const Position& pos, int nil_seat, const SearchOptions& opts, S
     // same way solve() does -- the caller has asserted the only thing this mode
     // computes.  Every legal card gets the same answer, because it is not an
     // answer about the cards.
-    if (fast && opts.nil_already_set) {
+    if (fast && roles.nil_already_set()) {
         out.nil_fails = true;
         out.nil_tricks = TRICKS_NOT_COMPUTED;
         out.nil_side_tricks = TRICKS_NOT_COMPUTED;
@@ -1727,7 +1727,7 @@ bool solve_moves(const Position& pos, int nil_seat, const SearchOptions& opts, S
     }
 
     Ctx ctx;
-    configure(ctx, nil_seat, opts, weights);
+    configure(ctx, roles, opts, weights);
 
     std::uint64_t presolve_nodes = 0;
     const int alpha = fast ? 0 : WINDOW_MIN;
@@ -1739,7 +1739,7 @@ bool solve_moves(const Position& pos, int nil_seat, const SearchOptions& opts, S
     // window would hand back a bound for exactly the rows a caller most wants
     // a number on.  Those rows -- and only those -- are re-searched wide below.
     int tight_beta = beta;
-    if (!fast && opts.presolve_window && !opts.nil_already_set &&
+    if (!fast && opts.presolve_window && !roles.nil_already_set() &&
         pos.tricks_remaining() >= PRESOLVE_MIN_TRICKS) {
         SearchOptions probe_opts = opts;
         probe_opts.mode = MODE_FAST;
@@ -1752,7 +1752,7 @@ bool solve_moves(const Position& pos, int nil_seat, const SearchOptions& opts, S
         // schedule.
         Solution probe;
         std::string probe_err;
-        if (solve(pos, nil_seat, probe_opts, probe, probe_err) && !probe.nil_fails) {
+        if (solve(pos, roles, probe_opts, probe, probe_err) && !probe.nil_fails) {
             tight_beta = max_value_if_nil_safe(pos.tricks_remaining(), weights) + 1;
         }
         presolve_nodes = probe.nodes;
@@ -1850,7 +1850,7 @@ bool solve_moves(const Position& pos, int nil_seat, const SearchOptions& opts, S
         if (!child.empty() && !walk_pv(ctx, child, next_move, line, err)) return false;
 
         Tally tally;
-        if (!replay_pv(pos, line, nil_seat, tally, err)) {
+        if (!replay_pv(pos, line, roles, tally, err)) {
             err = "internal inconsistency replaying " + card_to_string(ms.card) + ": " + err;
             return false;
         }
@@ -1867,7 +1867,7 @@ bool solve_moves(const Position& pos, int nil_seat, const SearchOptions& opts, S
         ms.nil_tricks = tally.nil_tricks;
         ms.nil_side_tricks = tally.nil_side_tricks;
         ms.opponent_tricks = tally.opponent_tricks;
-        ms.nil_fails = opts.nil_already_set || tally.nil_tricks > 0;
+        ms.nil_fails = roles.nil_already_set() || tally.nil_tricks > 0;
 
         // The first best move in canonical order is the one solve() would have
         // picked -- it enumerates from the bottom and replaces the incumbent
@@ -1900,7 +1900,7 @@ bool solve_moves(const Position& pos, int nil_seat, const SearchOptions& opts, S
     out.tt_evictions = stats.evictions;
     return true;
 }
-bool replay_pv(const Position& pos, const std::vector<Play>& pv, int nil_seat,
+bool replay_pv(const Position& pos, const std::vector<Play>& pv, const SeatRoles& roles,
                Tally& tally_out, std::string& err) {
     Hand hands[4];
     for (int s = 0; s < 4; ++s) hands[s] = pos.hands[s];
@@ -1946,8 +1946,8 @@ bool replay_pv(const Position& pos, const std::vector<Play>& pv, int nil_seat,
         trick[trick_len++] = card;
         if (trick_len == 4) {
             const int winner = trick_winner(leader, trick, 4);
-            if (winner == nil_seat) ++tally_out.nil_tricks;
-            if (((winner ^ nil_seat) & 1) == 0) {
+            if (roles.is_nil(winner)) ++tally_out.nil_tricks;
+            if (roles.on_nil_side(winner)) {
                 ++tally_out.nil_side_tricks;
             } else {
                 ++tally_out.opponent_tricks;
@@ -1997,7 +1997,7 @@ std::string format_pv(const Position& pos, const Solution& sol) {
         CardId cards[4];
         for (std::size_t j = 0; j < n; ++j) cards[j] = plays[i + j].card;
         const int winner = (n == 4) ? trick_winner(leader, cards, 4) : -1;
-        if (winner == sol.nil_seat) ++running;  // primary counter only
+        if (winner == sol.nil_seat()) ++running;  // primary counter only
 
         if (!first_line) os << '\n';
         first_line = false;
@@ -2009,8 +2009,8 @@ std::string format_pv(const Position& pos, const Solution& sol) {
             os << ' ' << cell << (plays[i + j].from_pv ? ' ' : '*');
         }
         os << "  won by " << (winner >= 0 ? std::string(1, SEAT_CHARS[winner]) : std::string("?"))
-           << "   [" << SEAT_CHARS[sol.nil_seat] << '=' << running << ']';
-        if (winner == sol.nil_seat) os << " <-- nil takes a trick";
+           << "   [" << SEAT_CHARS[sol.nil_seat()] << '=' << running << ']';
+        if (winner == sol.nil_seat()) os << " <-- nil takes a trick";
         if (winner < 0) break;
         leader = winner;
     }
@@ -2019,7 +2019,7 @@ std::string format_pv(const Position& pos, const Solution& sol) {
 
 std::string format_solution(const Position& pos, const Solution& sol,
                             const SearchOptions& opts) {
-    const bool nil_is_ns = (sol.nil_seat & 1) == 0;
+    const bool nil_is_ns = (sol.nil_seat() & 1) == 0;
     const bool fast = sol.mode == MODE_FAST;
     const char* side = nil_is_ns ? "NS" : "EW";
     const char* other = nil_is_ns ? "EW" : "NS";
@@ -2027,14 +2027,14 @@ std::string format_solution(const Position& pos, const Solution& sol,
     os << "PBN            " << deal_to_pbn(pos.hands) << '\n'
        << format_hands(pos) << '\n'
        << "Leader         " << SEAT_CHARS[pos.leader] << '\n'
-       << "Nil bidder     " << SEAT_CHARS[sol.nil_seat] << "  ("
+       << "Seats          " << describe_seat_roles(sol.roles) << "  ("
        << (nil_is_ns ? "N/S minimise, E/W maximise" : "E/W minimise, N/S maximise") << ")\n"
        << "Objective      ";
     if (fast) {
         os << "fast mode: the nil question only, no trick counts and no PV\n";
     } else {
-        os << (opts.nil_already_set ? "nil already set, so secondary only; "
-                                    : "nil tricks first, then ")
+        os << (sol.roles.nil_already_set() ? "nil already set, so secondary only; "
+                                           : "nil tricks first, then ")
            << (opts.minimise_own_tricks ? "each pair sheds what it can"
                                         : "each pair takes what it can")
            << '\n';
@@ -2049,12 +2049,12 @@ std::string format_solution(const Position& pos, const Solution& sol,
         os << "  (marked * below)\n";
     }
     if (!fast) {
-        os << "Tricks for " << SEAT_CHARS[sol.nil_seat] << "   " << sol.nil_tricks << " of "
+        os << "Tricks for " << SEAT_CHARS[sol.nil_seat()] << "   " << sol.nil_tricks << " of "
            << pos.tricks_remaining() << '\n'
            << "Side tricks    " << side << '=' << sol.nil_side_tricks << "  " << other << '='
            << sol.opponent_tricks << '\n';
     }
-    if (opts.nil_already_set) {
+    if (sol.roles.nil_already_set()) {
         os << "Nil            ALREADY SET (told, not computed)\n";
     } else {
         os << "Nil            "

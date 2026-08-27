@@ -123,7 +123,13 @@ def main():
         opp = set(spades(hands[(nil_seat + 1) % 4])) | set(spades(hands[(nil_seat + 3) % 4]))
         partner = set(spades(hands[(nil_seat + 2) % 4]))
 
-        cmd = [CLI, "--pbn", pbn, "--leader", leader, "--nil", "NESW"[nil_seat],
+        # --seats runs clockwise from the seat the PBN names, and these deals
+        # are written from North, so the list is in plain N E S W order.
+        roles = [3, 3, 3, 3]
+        roles[nil_seat] = 0
+        roles[(nil_seat + 2) % 4] = 2
+        cmd = [CLI, "--pbn", pbn, "--leader", leader,
+               "--seats", " ".join(str(r) for r in roles),
                "--mode", "fast", "--tt-mb", "8", "--compact"]
         if broken:
             cmd.append("--spades-broken")

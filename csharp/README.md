@@ -78,7 +78,7 @@ var r = Nil.CanBeBroken(
     pbn:          "N:8.K5.KT2.KQT9762 AQT643.T.QJ864.8 J9.A943.73.AJ543 K752.QJ8762.A95.",
     leader:       NilSeat.North,
     currentTrick: null,
-    nilSeat:      NilSeat.North,
+    roles:        NilSeatRoles.ForNil(NilSeat.North),
     flags:        NilFlags.ForceLarge);
 
 if (!r.Success) throw new InvalidOperationException(r.Error);
@@ -99,8 +99,24 @@ convention as DDS's `first`.
 order starting from the leader: `"H4 HK"`. `null` or `""` for the start of a
 trick. At most three.
 
-**`nilSeat`** is the seat that bid nil. This has no DDS equivalent; it is the
-whole question.
+**`roles`** says what each seat is doing, and it is the whole question — there is
+no DDS equivalent. For the ordinary case, `NilSeatRoles.ForNil(seat)` builds it:
+that seat bidding, its partner covering, the other pair opposing. Once the nil
+has actually been broken in the real game, `NilSeatRoles.ForNil(seat, alreadySet:
+true)` gives that seat `NilSeatRole.NilSet`, which drops the primary objective and
+optimises only the tie-break. That replaced the retired `NilFlags.NilAlreadySet`.
+
+`NilSeatRoles` is held by absolute seat, so North is North whatever the deal
+string says, and the wrapper rotates it into the deal's own order for you. You
+only need `NilSeatRoles.FromPbnOrder(pbn, ...)` if you already have the four
+values clockwise from the seat the PBN names — which is the order the native ABI
+and the corpus both use.
+
+Two nils on the table is a legal spades deal and the shape this type exists to
+grow into, but the solver does not answer it yet: a roles value holding two comes
+back as `NilStatus.Unsupported` rather than as a wrong answer. Everything else
+malformed — no nil, two covers, a cover beside the nil rather than across from it
+— is `NilStatus.IllegalPosition`.
 
 Two things about the deal string that the position validator will catch, and
 which are worth knowing before it does:
@@ -154,7 +170,7 @@ you want for scoring a player's actual choice, or for colouring a hand so a
 learner can see which cards were safe.
 
 ```csharp
-var r = await _pool.ScoreMovesAsync(pbn, leader, trick, nilSeat,
+var r = await _pool.ScoreMovesAsync(pbn, leader, trick, roles,
                                     NilFlags.SpadesBroken | NilFlags.ForceLarge);
 
 foreach (var m in r.Moves)
@@ -240,7 +256,6 @@ same answers, more work.
 | flag | when |
 | --- | --- |
 | `SpadesBroken` | spades are already broken in this position. You will pass this most of the time |
-| `NilAlreadySet` | the nil has been broken in the real game. Drops the primary objective; `NilFails` then reads true because you said so |
 | `MinimiseOwnTricks` | tie-break direction: each pair sheds tricks rather than taking them |
 | `ForceLarge` | more than nine cards a hand |
 
@@ -271,7 +286,7 @@ thread that has ever run a solve is holding a table. That is why
 services.AddSingleton(new NilSolverPool(workers: 2, tableMegabytes: 32));
 
 // somewhere in a request
-var r = await _pool.CanBeBrokenAsync(pbn, leader, trick, nilSeat,
+var r = await _pool.CanBeBrokenAsync(pbn, leader, trick, roles,
                                      NilFlags.SpadesBroken | NilFlags.ForceLarge);
 ```
 
@@ -286,7 +301,7 @@ the tail above.
 ## Reading the answer
 
 ```csharp
-var r = await _pool.SolveWithLineAsync(pbn, leader, trick, nilSeat, NilFlags.SpadesBroken);
+var r = await _pool.SolveWithLineAsync(pbn, leader, trick, roles, NilFlags.SpadesBroken);
 
 if (!r.Success)
 {

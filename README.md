@@ -28,8 +28,9 @@ a constant: the nil side taking more is identical to the opponents taking fewer.
 That is why one flag sets a coherent direction for both sides at once, and why
 plain minimax over the packed pair is still well defined.
 
-`nil_already_set` drops the primary objective. Use it once the nil has actually
-been broken in the real game, or when the score makes the nil irrelevant: there
+Giving the nil bidder the `nil-set` role drops the primary objective. Use it once
+the nil has actually been broken in the real game, or when the score makes the
+nil irrelevant: there
 is nothing left to protect or attack, and only the secondary objective matters.
 
 The search is **correctness first**: exhaustive, with no alpha-beta, no move
@@ -55,6 +56,7 @@ include/nil_solver/nil_solver.h   the C ABI — the only thing the DLL exports
 src/nil/cards.hpp|.cpp            cards, hands, canonical ordering
 src/nil/rules.hpp                 the four rules plus the equivalent-card reduction
 src/nil/position.hpp|.cpp         PBN parsing, validation, formatting
+src/nil/seats.hpp|.cpp            what each seat is doing, and how it is written
 src/nil/search.hpp|.cpp           the minimax search and the PV replay verifier
 src/nil/corpus.hpp|.cpp           loads tests/corpus/positions.txt
 src/api.cpp                       C ABI implementation (marshalling only)
@@ -147,9 +149,9 @@ the header in one place to copy next to your C# project.
 ## Command line
 
 ```
-nil_cli --pbn 'N:A...2 K...3 Q...4 J...5' --leader N --nil N
-nil_cli --pbn '...' --leader W --nil S --trick 'H4 HK' --spades-broken
-nil_cli --pbn '...' --nil S --compact          # machine readable
+nil_cli --pbn 'N:A...2 K...3 Q...4 J...5' --leader N --seats 0 3 2 3
+nil_cli --pbn '...' --leader W --seats 3 3 0 2 --trick 'H4 HK' --spades-broken
+nil_cli --pbn '...' --seats 3 3 0 2 --compact          # machine readable
 ```
 
 `--pbn` is the usual PBN deal string: `spades.hearts.diamonds.clubs`, hands
@@ -157,16 +159,32 @@ running clockwise from the named seat, shortened mid-play hands accepted. Cards
 already played to the trick in progress go in `--trick` (in play order starting
 from the leader) and must **not** also appear in the hands.
 
+### Who is who
+
+`--seats` takes one role per seat: `0` a nil bidder that has not taken a trick,
+`1` a nil already broken, `2` the partner covering it, `3` a seat on a side with
+no nil bid. The four values run **clockwise from the seat `--pbn` names**, the
+same order as its hands, so `W:...` with `--seats 0 3 2 3` reads West, North,
+East, South and puts the nil on West with East covering.
+
+This replaced `--nil` and `--nil-already-set`, which between them could only ever
+describe one nil. Two on the table is common in real spades and changes the
+optimal line, because a seat defending its own nil while attacking another's has
+an objective neither argument could express. Today the solver still answers only
+the single-nil question and refuses the rest by name — `--seats 0 0 2 2` reports
+that multiple nils are not supported yet rather than quietly answering something
+adjacent.
+
 The same layout under all three settings, showing what the secondary buys you:
 
 ```
-$ nil_cli --pbn 'N:7..6.3 6.J.2. J3.7.. 9..3.9' --leader N --nil N --spades-broken
+$ nil_cli --pbn 'N:7..6.3 6.J.2. J3.7.. 9..3.9' --leader N --seats 0 3 2 3 --spades-broken
 Objective      nil tricks first, then each pair takes what it can
 Tricks for N   0 of 3
 Side tricks    NS=2  EW=1
 Nil            MAKES  (cannot be forced to take a trick)
 
-$ ... --nil-already-set
+$ ... --seats 1 3 2 3
 Objective      nil already set, so secondary only; each pair takes what it can
 Tricks for N   1 of 3
 Side tricks    NS=3  EW=0
@@ -188,10 +206,10 @@ asks the boolean question on its own — can this nil be broken — and answers 
 that:
 
 ```
-$ nil_cli --pbn 'N:K.A.A.K 32.2..A .K.3.32 A.3.K2.' --leader N --nil E --mode fast
+$ nil_cli --pbn 'N:K.A.A.K 32.2..A .K.3.32 A.3.K2.' --leader N --seats 3 0 3 2 --mode fast
 Objective      fast mode: the nil question only, no trick counts and no PV
 Nil            FAILS  (can be forced to take a trick)
-Nodes          456
+Nodes          5
 ```
 
 The full objective packs the nil bidder's trick count into a scalar with two
@@ -211,7 +229,7 @@ around.
 In fast mode the three trick counts read `-1` and the compact output's `pv` is
 empty; `mode=fast` on the first line is what says so, rather than leaving `-1`
 to be guessed at. `--secondary` has no effect there — it points at a tie-break
-level that mode does not have — and `--nil-already-set` makes the answer `1`
+level that mode does not have — and the `nil-set` role makes the answer `1`
 with no search at all, since it asserts the only thing fast mode computes.
 
 Output is line-oriented so `diff` localises a divergence:
@@ -549,7 +567,7 @@ The checks have teeth — swapping spades with hearts instead of permuting the
 other three produces violations immediately, which is the sanity check that they
 are not vacuous.
 
-**One thing they turned up.** With `--nil-already-set` *and* `--secondary min`,
+**One thing they turned up.** With the `nil-set` role *and* `--secondary min`,
 the two partners are interchangeable — bags accrue to the pair whoever won — so
 nothing in the objective decides the split, and it falls out of the tie-break.
 `nil_tricks` may therefore move under a suit permutation while

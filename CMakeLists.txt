@@ -37,6 +37,7 @@ add_library(nil_solver_core STATIC
   src/nil/corpus.cpp
   src/nil/position.cpp
   src/nil/search.cpp
+  src/nil/seats.cpp
   src/nil/statekey.cpp
   src/nil/tt.cpp
 )

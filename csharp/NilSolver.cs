@@ -351,9 +351,9 @@ namespace NilSolver
         /// it reaches a full thirteen cards; the trick counts come back unknown.
         /// </summary>
         public static NilSolution CanBeBroken(string pbn, NilSeat leader, string? currentTrick,
-                                              NilSeat nilSeat, NilFlags flags = NilFlags.None)
+                                              NilSeatRoles roles, NilFlags flags = NilFlags.None)
         {
-            return Solve(pbn, leader, currentTrick, nilSeat, flags | NilFlags.FastMode);
+            return Solve(pbn, leader, currentTrick, roles, flags | NilFlags.FastMode);
         }
 
         /// <summary>
@@ -363,9 +363,9 @@ namespace NilSolver
         /// it.
         /// </summary>
         public static NilSolution SolveFull(string pbn, NilSeat leader, string? currentTrick,
-                                            NilSeat nilSeat, NilFlags flags = NilFlags.None)
+                                            NilSeatRoles roles, NilFlags flags = NilFlags.None)
         {
-            return Solve(pbn, leader, currentTrick, nilSeat, flags & ~NilFlags.FastMode);
+            return Solve(pbn, leader, currentTrick, roles, flags & ~NilFlags.FastMode);
         }
 
         /// <summary>
@@ -376,15 +376,16 @@ namespace NilSolver
         /// quietly running the slow one instead would be worse than saying so.
         /// </summary>
         public static NilSolution SolveWithLine(string pbn, NilSeat leader, string? currentTrick,
-                                                NilSeat nilSeat, NilFlags flags = NilFlags.None)
+                                                NilSeatRoles roles, NilFlags flags = NilFlags.None)
         {
             if (pbn == null) throw new ArgumentNullException(nameof(pbn));
 
             var err = new StringBuilder(ErrBufferBytes);
             var pv = new StringBuilder(PvBufferBytes);
 
+            int[] seats = roles.ToPbnOrder(pbn);
             int rc = NilSolverNative.nil_solve_pv(pbn, (int)leader, currentTrick ?? string.Empty,
-                                                  (int)nilSeat, (uint)flags, out NilResult native,
+                                                  seats, (uint)flags, out NilResult native,
                                                   pv, pv.Capacity, err, err.Capacity);
 
             // Defensive: the arithmetic above says this cannot happen, but a
@@ -394,7 +395,7 @@ namespace NilSolver
             {
                 pv = new StringBuilder(PvBufferBytes * 4);
                 rc = NilSolverNative.nil_solve_pv(pbn, (int)leader, currentTrick ?? string.Empty,
-                                                  (int)nilSeat, (uint)flags, out native,
+                                                  seats, (uint)flags, out native,
                                                   pv, pv.Capacity, err, err.Capacity);
             }
 
@@ -413,9 +414,9 @@ namespace NilSolver
         /// +0.4% of the wall time of <see cref="CanBeBroken"/>.
         /// </summary>
         public static NilSolution ScoreMoves(string pbn, NilSeat leader, string? currentTrick,
-                                             NilSeat nilSeat, NilFlags flags = NilFlags.None)
+                                             NilSeatRoles roles, NilFlags flags = NilFlags.None)
         {
-            return SolveMoves(pbn, leader, currentTrick, nilSeat, flags | NilFlags.FastMode);
+            return SolveMoves(pbn, leader, currentTrick, roles, flags | NilFlags.FastMode);
         }
 
         /// <summary>
@@ -424,9 +425,9 @@ namespace NilSolver
         /// <see cref="NilFlags.ForceLarge"/>.
         /// </summary>
         public static NilSolution ScoreMovesFull(string pbn, NilSeat leader, string? currentTrick,
-                                                 NilSeat nilSeat, NilFlags flags = NilFlags.None)
+                                                 NilSeatRoles roles, NilFlags flags = NilFlags.None)
         {
-            return SolveMoves(pbn, leader, currentTrick, nilSeat, flags & ~NilFlags.FastMode);
+            return SolveMoves(pbn, leader, currentTrick, roles, flags & ~NilFlags.FastMode);
         }
 
         /// <summary>
@@ -434,7 +435,7 @@ namespace NilSolver
         /// flags yourself.
         /// </summary>
         public static NilSolution SolveMoves(string pbn, NilSeat leader, string? currentTrick,
-                                             NilSeat nilSeat, NilFlags flags)
+                                             NilSeatRoles roles, NilFlags flags)
         {
             if (pbn == null) throw new ArgumentNullException(nameof(pbn));
 
@@ -444,7 +445,8 @@ namespace NilSolver
             var rows = new NilMove[NilSolverNative.MaxMoves];
 
             int rc = NilSolverNative.nil_solve_moves(pbn, (int)leader, currentTrick ?? string.Empty,
-                                                     (int)nilSeat, (uint)flags, out NilResult native,
+                                                     roles.ToPbnOrder(pbn), (uint)flags,
+                                                     out NilResult native,
                                                      rows, rows.Length, out int count,
                                                      err, err.Capacity);
 
@@ -460,13 +462,14 @@ namespace NilSolver
         /// The general form, if you would rather assemble the flags yourself.
         /// </summary>
         public static NilSolution Solve(string pbn, NilSeat leader, string? currentTrick,
-                                        NilSeat nilSeat, NilFlags flags)
+                                        NilSeatRoles roles, NilFlags flags)
         {
             if (pbn == null) throw new ArgumentNullException(nameof(pbn));
 
             var err = new StringBuilder(ErrBufferBytes);
             int rc = NilSolverNative.nil_solve(pbn, (int)leader, currentTrick ?? string.Empty,
-                                               (int)nilSeat, (uint)flags, out NilResult native,
+                                               roles.ToPbnOrder(pbn), (uint)flags,
+                                               out NilResult native,
                                                err, err.Capacity);
 
             return rc == (int)NilStatus.Ok

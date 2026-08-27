@@ -38,6 +38,7 @@ expensive node. Read items 11 and 31 in that light.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ✅ | ~~A role per seat, replacing the nil seat and the already-set flag~~ | patch 54 | **a representation change, and deliberately nothing else.** The objective was described by two scalars -- which seat bid nil, and whether that nil was already broken -- and two scalars can only ever describe ONE nil. Real spades puts two on the table often enough that it matters, and the optimal line changes when it happens, because a seat that is both defending its own nil and attacking another's has an objective neither scalar can express. Replaced by `SeatRoles`: one role per seat, `0` a nil bidder with no trick yet, `1` a nil already broken, `2` the partner covering it, `3` a seat on a side with no nil bid. **The search is untouched.** `configure()` derives `ctx.nil_seat` from the array and everything below it is byte-identical, which is the point: every measurement this file banks stays valid. **Absolute inside, anchored on the wire.** `SeatRoles::role` is indexed by absolute seat, the same as `hands[]` and `leader`, so nothing in the solver thinks about rotation; the TEXT form runs clockwise from the seat the PBN names, exactly as that string's hands do, and the anchor is an argument to `parse_seat_roles` rather than an assumption. `W:...` with `--seats 0 3 2 3` puts the nil on West. **What is refused, and how.** `validate_seat_roles` accepts exactly the arrangements the two scalars could describe and separates the two ways of failing: a malformed array is `NIL_ERR_ILLEGAL_POSITION`, a well-formed one holding two nils is `NIL_ERR_UNSUPPORTED` and says *multiple nils are not supported yet*, so a caller can tell a typo from a feature that has not landed. **Changed everywhere at once**: `solve`, `solve_moves`, `replay_pv`, `objective_weights`, `SearchOptions::nil_already_set` (gone), `Solution::nil_seat` (now `roles` with an accessor), the C ABI's `nil_seat` argument (now `const int32_t* seats`), `NIL_FLAG_NIL_ALREADY_SET` (deleted, bit `0x20u` **burned not recycled**, as `0x2u` was in patch 45), the corpus's `nil` and `nilset` columns (one `seats` column), both CLIs, the C# bindings, `nil_oracle.py`'s argument surface and all seven Python tools. **Verified answer-neutral three ways**: 39,701 fast / 278,059 full / 49,084 on `large.txt` all unmoved with 560 oracle values matching, 22/22 tests, and a differential harness running **144 random deals** at 2-7 cards across both modes, both tie-break directions, live and already-set nils and all four seats through the OLD binary on the old command line and the new one on the new -- **byte-identical output on every deal**. The corpus was rewritten mechanically rather than re-solved, because the two old columns determine the roles exactly. **Two bugs found on the way**, both recorded below |
 | ✅ | ~~Both corpus generators have been crashing since patch 45~~ | patch 53 | **neither corpus could be regenerated, and nobody noticed because neither needed to be.** Patch 45 dropped the `forced` column and removed its ARGUMENT from both row writers while leaving the format strings at their old width. Every argument after `broken` shifted left by one, `trick_text` landed on the `%d` that used to take `forced`, and both tools died with `TypeError: %d format: a real number is required, not str`. `make_corpus.py` had 13 placeholders for 12 arguments; `make_large_corpus.py` had 13 for 12. Fixed to 11 and 12 columns respectively, matching the headers each already writes, with `nil_tricks` and `side_tricks` as `%s` in the large writer because a timed-only row records `?` for both. **The stale header in `tests/corpus/positions.txt` was the same bug's shadow**: it still named a `forced` column its rows have not carried since patch 45, precisely because the tool that would have rewritten it could not run. **Item 45's generator half is fixed here too, because the crash was hiding it.** With the writers working, `make_large_corpus.py` immediately emitted a 10-card row holding all thirteen spades with `broken=1`, which `validate()` refuses — the same coin-flip bug patch 47 fixed in `nil_bench`. Both `make_large_corpus.py` and `crosscheck.py` now draw the coin and mask it, which leaves the deal stream in place and only ever clears a flag that could not have been set; the partial trick may still set it afterwards, correctly, since a spade played to the current trick has left a hand. Verified end to end: both tools regenerate, and the output replays through `nil_bench` under `--check-pv` and `--check-moves` — `--verify` (oracle), `--pin` (solver), `--timed` and `--hardest` paths all exercised. 22/22, and the committed corpora are untouched (39,701 / 278,059 / 163,393,676) |
 | ✅ | ~~Every trace of the card gate, and the trick-spade over-rejection~~ | patch 52 | **the solver now declines a position for one reason only: it is illegal.** Patch 51 removed the gate but kept its ABI vestiges; nothing links against this yet, so they go too. **Deleted**: `NIL_FLAG_FORCE_LARGE` (bit `0x8u` is now free), `NIL_CARD_LIMIT`, `NIL_ERR_TOO_MANY_CARDS`, `--force` from `nil_cli`, and the `--force` argument from `corpus_view.py`, `invariants.py` and `make_large_corpus.py`. **The error codes are renumbered**: `-4` was `NIL_ERR_TOO_MANY_CARDS`, so `NIL_ERR_BUFFER_TOO_SMALL` is now `-4`, `NIL_ERR_INTERNAL` `-5` and `NIL_ERR_UNSUPPORTED` `-6`. **There was never a fast-mode gate below the API layer**, and `nil_already_set` has no size restriction either — both already worked at thirteen and were verified so. **Also fixed: `validate()` counted spades on the CURRENT TRICK toward the thirteen-still-in-play test**, which rejected a reachable position — lead a diamond, have it ruffed, and twelve spades sit in hands with the thirteenth face up, spades broken by that ruff and the count still reading thirteen. A spade on the trick has left a hand, so it no longer counts. Found by generating 3,000 twelve-card layouts with a partial trick: **9 hit it, and all 9 are accepted now.** The change is purely permissive — it only ever lowers the count — so no previously-legal position became illegal, and no banked count moved (39,701 fast, 278,059 full, 163,393,676 on `large.txt`, 22/22, 560 values under `--check-pv` and `--check-moves`). `nil_oracle.py` keeps its own seven-card `--force`: that really is an exhaustive search with no pruning, and its guard is not dead code |
 | ✅ | ~~The nine-card gate on full mode~~ | patch 51 | **a guard rail that outlived what it guarded against.** `nil_cli` and `nil_solve` both refused more than **nine** cards per hand unless passed `--force` / `NIL_FLAG_FORCE_LARGE`, on the stated grounds that *"the full search is exhaustive (the transposition table collapses repeated positions but prunes nothing) and will take a very long time"*. That sentence stopped being true at patch 22 and has been getting less true every patch since — target bounds, later tricks, the presolve, the static bounds and quick tricks all cut. Measured over 24 random 13-card full-mode solves: **median 4.15 s, p90 19.6 s, max 22.7 s, none over 30 s**. A real hand that prompted this — `N:Q532..A854.K8643 6.KT86.973.JT752 AKJT9.AQJ3.T2.Q9 874.97542.KQJ6.A`, leader E, nil S — is 71,135,608 nodes in **7.2 s**, and `--moves` on it, which scores every legal card, is 9.6 s rather than thirteen times that, because the table is shared across the per-card searches. The gate is removed from both interfaces. **Nothing is deleted from the ABI**: `NIL_FLAG_FORCE_LARGE` is accepted and ignored (retained so the bit is not reassigned under an old caller), `NIL_ERR_TOO_MANY_CARDS` keeps its value so the numbering below it does not shift, and `NIL_CARD_LIMIT` becomes 13 and is redocumented as what a hand can hold rather than what will be attempted — an oversized hand is still refused, by `validate()`, as `NIL_ERR_ILLEGAL_POSITION`. `--force` stays a valid CLI argument because `corpus_view.py`, `invariants.py` and `make_large_corpus.py` all pass it. No search behaviour changed and no banked count moved |
@@ -3257,10 +3258,100 @@ it, and pointing at item 7's `--canonical` as the contingency if ordering ever
 reaches full mode. Patch 22 made that contingency live; the comment is updated to
 say so.
 
+### 54. ~~A role per seat~~ — ⭐⭐⭐⭐⭐ — **done, patch 54; phase one of multi-nil**
+
+Landed. See the Done table for what changed. Three things worth carrying
+forward, because phase two has to keep faith with them.
+
+**The anchor is a wire convention and nothing else.** Roles are absolute in
+memory. The rotation happens in exactly two functions, `parse_seat_roles` and
+`seat_roles_to_string`, and in the C# wrapper's `ToPbnOrder`. Every other piece
+of code — the search, `validate_seat_roles`, the corpus loader after parsing —
+sees `role[SEAT_NORTH]` and means North. Keep it that way; a roles array that is
+anchored in some places and absolute in others is the bug this design exists to
+prevent.
+
+**`NIL_SEAT_NORTH` is literally `0`, so an un-migrated ABI call site compiles as
+a null pointer rather than failing to build.** One survived the first pass and
+was caught only by running the tests, coming back as `NIL_ERR_NULL_ARG`. The C
+ABI test block now pins that case explicitly. Any future change to the `seats`
+argument should assume the compiler will not help.
+
+**What phase two actually needs.** The search still collapses the roles to a
+single `ctx.nil_seat` and takes the coalitions from its parity. That is sound
+under the shape `validate_seat_roles` accepts, because the cover IS the nil's
+partner and so `{nil, cover}` is exactly that parity class. It stops being sound
+the moment a second nil appears, and the places that assume one nil are:
+`Ctx::nil_seat` and the weights derived from it, `objective_weights`'s single
+primary level, `replay_pv`'s `nil_tricks` counter, and `bounds.hpp`, which
+reasons throughout about "the nil bidder" and "the cover partner" as two named
+hands. The objective itself is the hard part rather than the plumbing: with two
+nils the primary is no longer a scalar one side minimises and the other
+maximises, and the Sturtevant/Korf paper in this repo is about exactly that —
+`maxⁿ` admits only shallow pruning, and a two-nil deal is closer to a four-way
+game than to the two-team one alpha-beta wants. **Measure the population before
+building anything**: how often two nils are actually bid, and how much the
+optimal line moves when they are.
+
+### 55. The oracle's coalitions still come from parity, not from the roles — ⭐⭐⭐
+
+`nil_oracle.py` fixes the sides by seat parity: North and South always minimise
+the designated player's tricks, East and West always maximise. That is the nil
+question exactly when the nil sits North or South, and something else entirely
+otherwise, which is why `crosscheck.py` rotates every deal so that it does.
+
+With roles in hand the oracle could take the coalitions from them instead — the
+nil side minimises, the opponents maximise — and it would then agree with the
+solver for all four seats and the rotation could go. **Deliberately not done in
+patch 54.** This file is the ground truth the solver is checked against, and
+moving its search during a representation change would mean the corpus was
+validated by one oracle and re-validated by another. It is a small change and it
+wants its own patch, its own selftest pass, and a full corpus re-verification
+showing no value moved.
+
+Note that the oracle's own selftests pin `solve(pos, 1)` — designated East —
+under the parity rule, so they will move when this does, and the new values have
+to be justified by hand rather than re-pinned.
+
+### 56. The C# `NilStatus` enum had drifted from the header — ⭐⭐⭐⭐ — **fixed in patch 54**
+
+Recorded because the mechanism is worth remembering, not because it is open.
+
+Patch 52 deleted `NIL_ERR_TOO_MANY_CARDS` and moved every code below `-4` up by
+one, and the header says so in a comment. The C# mirror in `NilSolverNative.cs`
+was never moved with it, so for two patches every code from `-4` down reported
+under the wrong name: a native `BUFFER_TOO_SMALL` read as `TooManyCards`,
+`INTERNAL` as `BufferTooSmall`, `UNSUPPORTED` as `Internal`, and C#'s
+`Unsupported = -7` could not be produced at all — while `NilSolver.SolveWithLine`
+documented returning it for a PV in fast mode.
+
+It surfaced only because patch 54 makes `-6` a code a caller has a reason to
+branch on: a roles array holding two nils. Fixed to match the header.
+
+**The general lesson is that the C ABI has two mirrors and only one of them is
+compiled here.** `src/api.cpp` now carries a `static_assert` tying the four
+`NIL_ROLE_*` values to the core enum, which catches drift on that pair at build
+time. Nothing catches drift between the header and the C# file, because no C#
+toolchain runs in CI. Until one does, treat every edit to `nil_solver.h` as an
+edit to `csharp/NilSolverNative.cs`.
+
+### 57. `refresh_corpus.py` wrote answers by hard-coded column index — ⭐⭐⭐ — **fixed in patch 54**
+
+Same family as patch 53's format-string shift, and it would have fired the same
+way. The tool rewrote `parts[9]`, `parts[10]` and `parts[11]` with recomputed
+`nil_tricks`, `side_tricks` and `pv`. The `seats` column replaced two columns
+with one and moved all three left by one, so the tool would have written trick
+counts into `secondary` and a principal variation into `side_tricks` — silently,
+on a file whose whole job is to be the trusted answer.
+
+Now derived from `FIELDS` by name. **Any tool that writes a corpus column by
+number is one format change away from corrupting the corpus**; the remaining
+readers all `zip(FIELDS, parts)`, which fails loudly instead.
+
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 36 ✅ → 41 ✅ → 42 ⊘ → 47 ✅ → 43 ⊘→✅ → 43b ⊘ → 44 ⏸ → 45 → 29b (single-suit) → 9 ⊘ → 10 ⊘ → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 36 ✅ → 41 ✅ → 42 ⊘ → 47 ✅ → 43 ⊘→✅ → 43b ⊘ → 44 ⏸ → 54 ✅ → 45 → 29b (single-suit) → 9 ⊘ → 10 ⊘ → measure → 11..14
 ```
 
 **Patch 47 comes before all of it, and it is not an optimisation.** The random

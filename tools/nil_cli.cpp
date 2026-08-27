@@ -3,11 +3,12 @@
 // Deliberately line-oriented so that `diff` localises a divergence, and with a
 // --compact mode that tools/crosscheck.py parses.
 //
-//   nil_cli --pbn 'N:A...2 K...3 Q...4 J...5' --leader N --nil N
-//   nil_cli --pbn '...' --leader W --nil S --trick 'H4 HK' --spades-broken
-//   nil_cli --pbn '...' --nil S --compact
+//   nil_cli --pbn 'N:A...2 K...3 Q...4 J...5' --leader N --seats 0 3 2 3
+//   nil_cli --pbn '...' --leader W --seats 3 3 0 2 --trick 'H4 HK' --spades-broken
+//   nil_cli --pbn '...' --seats 3 3 0 2 --compact
 #include <cstdio>
 #include <cstdlib>
+#include <cctype>
 #include <cstring>
 #include <iostream>
 #include <string>
@@ -15,6 +16,7 @@
 
 #include "nil/position.hpp"
 #include "nil/search.hpp"
+#include "nil/seats.hpp"
 
 namespace {
 
@@ -27,7 +29,13 @@ void usage(const char* argv0) {
         << "                          the named seat; cards already on the current\n"
         << "                          trick must not appear)\n"
         << "  --leader <N|E|S|W>      seat that led the current trick   [N]\n"
-        << "  --nil <N|E|S|W>         seat that bid nil                 [N]\n"
+        << "  --seats <r r r r>       what each seat is doing, CLOCKWISE FROM THE\n"
+        << "                          SEAT --pbn NAMES -- the same order as the\n"
+        << "                          hands.  0 = nil bidder with no trick yet,\n"
+        << "                          1 = nil already broken, 2 = the partner\n"
+        << "                          covering it, 3 = a seat on a side with no\n"
+        << "                          nil.  Exactly one nil and its partner\n"
+        << "                          covering, for now       [0 3 2 3]\n"
         << "  --trick '<cards>'       cards already played to the current trick, in\n"
         << "                          play order from the leader, e.g. 'H4 HK'\n"
         << "  --spades-broken         start with spades already broken\n"
@@ -38,9 +46,6 @@ void usage(const char* argv0) {
         << "  --secondary max|min     tie-break: each pair takes as many tricks as\n"
         << "                          it can (max, default) or as few (min); no\n"
         << "                          effect in fast mode, which has no tie-break\n"
-        << "  --nil-already-set       the nil has already been broken; drop the\n"
-        << "                          primary objective and optimise only the\n"
-        << "                          secondary one\n"
         << "  --no-memo               disable the transposition table (same answer,\n"
         << "                          much slower)\n"
         << "  --no-collapse           generate every legal card rather than one per\n"
@@ -98,7 +103,9 @@ int main(int argc, char** argv) {
     std::string pbn;
     std::string trick_text;
     std::string leader_text = "N";
-    std::string nil_text = "N";
+    // Held as text until the PBN has been read: the roles run clockwise from
+    // the seat it names, and --seats may appear before --pbn on the line.
+    std::string seats_text = "0 3 2 3";
     bool spades_broken = false;
     bool compact = false;
     bool list_moves = false;
@@ -115,8 +122,38 @@ int main(int argc, char** argv) {
             if (!need_value(argc, argv, i, "--pbn", pbn)) return 2;
         } else if (arg == "--leader") {
             if (!need_value(argc, argv, i, "--leader", leader_text)) return 2;
-        } else if (arg == "--nil" || arg == "--designated") {
-            if (!need_value(argc, argv, i, "--nil", nil_text)) return 2;
+        } else if (arg == "--seats") {
+            // Four values, however the shell hands them over: '0 3 2 3' as four
+            // words, '0,3,2,3' or '0323' as one.  Tokens are taken while they
+            // are made of digits and commas, so the next --flag ends the list.
+            seats_text.clear();
+            int digits = 0;
+            while (i + 1 < argc && digits < 4) {
+                const std::string next = argv[i + 1];
+                // Digits, commas and spaces only, and at least one digit -- so
+                // '0 3 2 3' quoted into one argument works as well as four
+                // separate words, and the next --flag ends the list.
+                bool all_role_chars = true;
+                bool has_digit = false;
+                for (char ch : next) {
+                    if (std::isdigit(static_cast<unsigned char>(ch))) {
+                        has_digit = true;
+                    } else if (ch != ',' && !std::isspace(static_cast<unsigned char>(ch))) {
+                        all_role_chars = false;
+                    }
+                }
+                if (!all_role_chars || !has_digit) break;
+                for (char ch : next) {
+                    if (std::isdigit(static_cast<unsigned char>(ch))) ++digits;
+                }
+                if (!seats_text.empty()) seats_text += ' ';
+                seats_text += next;
+                ++i;
+            }
+            if (seats_text.empty()) {
+                std::cerr << "error: --seats needs four values, e.g. --seats 0 3 2 3\n";
+                return 2;
+            }
         } else if (arg == "--trick") {
             if (!need_value(argc, argv, i, "--trick", trick_text)) return 2;
         } else if (arg == "--spades-broken") {
@@ -143,8 +180,6 @@ int main(int argc, char** argv) {
                 std::cerr << "error: --secondary takes 'max' or 'min'\n";
                 return 2;
             }
-        } else if (arg == "--nil-already-set") {
-            opts.nil_already_set = true;
         } else if (arg == "--no-memo") {
             opts.use_memo = false;
         } else if (arg == "--no-collapse") {
@@ -206,13 +241,8 @@ int main(int argc, char** argv) {
     }
 
     const int leader = nil::parse_seat(leader_text);
-    const int nil_seat = nil::parse_seat(nil_text);
     if (leader < 0) {
         std::cerr << "error: bad --leader '" << leader_text << "'\n";
-        return 2;
-    }
-    if (nil_seat < 0) {
-        std::cerr << "error: bad --nil '" << nil_text << "'\n";
         return 2;
     }
 
@@ -220,6 +250,12 @@ int main(int argc, char** argv) {
     nil::Position pos;
     if (!nil::parse_pbn(pbn, pos.hands, err)) {
         std::cerr << "error: " << err << "\n";
+        return 2;
+    }
+    nil::SeatRoles roles;
+    if (!nil::parse_seat_roles(seats_text, nil::pbn_anchor(pbn), roles, err) ||
+        !nil::validate_seat_roles(roles, err)) {
+        std::cerr << "error: --seats: " << err << "\n";
         return 2;
     }
     pos.leader = leader;
@@ -239,11 +275,11 @@ int main(int argc, char** argv) {
     nil::Solution sol;
     std::vector<nil::MoveScore> scored;
     if (list_moves) {
-        if (!nil::solve_moves(pos, nil_seat, opts, sol, scored, err)) {
+        if (!nil::solve_moves(pos, roles, opts, sol, scored, err)) {
             std::cerr << "error: " << err << "\n";
             return 3;
         }
-    } else if (!nil::solve(pos, nil_seat, opts, sol, err)) {
+    } else if (!nil::solve(pos, roles, opts, sol, err)) {
         std::cerr << "error: " << err << "\n";
         return 3;
     }
@@ -254,6 +290,7 @@ int main(int argc, char** argv) {
         // read -1 (nil::TRICKS_NOT_COMPUTED) and pv is empty, and `mode` is
         // what says so rather than leaving -1 to be guessed at.
         std::cout << "mode=" << (opts.mode == nil::MODE_FAST ? "fast" : "full") << "\n"
+                  << "seats=" << nil::seat_roles_to_string(roles, nil::SEAT_NORTH) << "\n"
                   << "tricks=" << sol.nil_tricks << "\n"
                   << "side_tricks=" << sol.nil_side_tricks << "\n"
                   << "opponent_tricks=" << sol.opponent_tricks << "\n"
@@ -300,7 +337,7 @@ int main(int argc, char** argv) {
                           << nil::card_to_string(m.card) << "  "
                           << (m.nil_fails ? "nil FAILS " : "nil holds ");
                 if (!fast) {
-                    std::cout << "  " << nil::SEAT_CHARS[sol.nil_seat] << '=' << m.nil_tricks
+                    std::cout << "  " << nil::SEAT_CHARS[sol.nil_seat()] << '=' << m.nil_tricks
                               << "  side=" << m.nil_side_tricks
                               << "  opp=" << m.opponent_tricks;
                 }

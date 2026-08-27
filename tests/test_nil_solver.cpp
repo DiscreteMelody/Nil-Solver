@@ -19,6 +19,7 @@
 #include "nil/position.hpp"
 #include "nil/rules.hpp"
 #include "nil/search.hpp"
+#include "nil/seats.hpp"
 #include "nil/statekey.hpp"
 #include "nil/tt.hpp"
 #include "nil_solver/nil_solver.h"
@@ -59,6 +60,13 @@ void check(const std::string& name, const A& got, const B& want) {
 }
 
 const char* const SEAT_NAMES[4] = {"N", "E", "S", "W"};
+
+// Role lists for the C ABI, which takes them CLOCKWISE FROM THE SEAT THE PBN
+// NAMES.  Every deal in this file is N-anchored, so these read N, E, S, W.
+const std::int32_t SEATS_NIL_N[4] = {NIL_ROLE_NIL, NIL_ROLE_OPPONENT, NIL_ROLE_COVER,
+                                     NIL_ROLE_OPPONENT};
+const std::int32_t SEATS_NIL_E[4] = {NIL_ROLE_OPPONENT, NIL_ROLE_NIL, NIL_ROLE_OPPONENT,
+                                     NIL_ROLE_COVER};
 
 using nil::CardId;
 using nil::Hand;
@@ -107,11 +115,15 @@ Position make_position(const char* pbn, const char* leader, bool spades_broken =
     return pos;
 }
 
+// `already_set` used to be SearchOptions::nil_already_set; it is now the nil
+// bidder's own role, so it travels with the seat rather than with the options.
 Solution must_solve(const Position& pos, const char* nil_seat,
-                    const SearchOptions& opts = SearchOptions()) {
+                    const SearchOptions& opts = SearchOptions(), bool already_set = false) {
     Solution sol;
     std::string err;
-    if (!nil::solve(pos, nil::parse_seat(nil_seat), opts, sol, err)) {
+    const nil::SeatRoles roles =
+        nil::seat_roles_from_nil(nil::parse_seat(nil_seat), already_set);
+    if (!nil::solve(pos, roles, opts, sol, err)) {
         std::cerr << "test bug: solve failed: " << err << "\n";
         std::exit(70);
     }
@@ -401,12 +413,12 @@ int main(int argc, char** argv) {
             for (int variant = 0; variant < 4; ++variant) {
                 SearchOptions on;
                 on.minimise_own_tricks = (variant & 1) != 0;
-                on.nil_already_set = (variant & 2) != 0;
+                const bool already_set = (variant & 2) != 0;
                 SearchOptions off = on;
                 off.collapse_equivalents = false;
                 for (int seat = 0; seat < 4; ++seat) {
-                    const Solution a = must_solve(pos, SEAT_NAMES[seat], on);
-                    const Solution b = must_solve(pos, SEAT_NAMES[seat], off);
+                    const Solution a = must_solve(pos, SEAT_NAMES[seat], on, already_set);
+                    const Solution b = must_solve(pos, SEAT_NAMES[seat], off, already_set);
                     with += static_cast<long long>(a.nodes);
                     without += static_cast<long long>(b.nodes);
                     if (a.value == b.value &&
@@ -429,22 +441,22 @@ int main(int argc, char** argv) {
         SearchOptions take;                       // default: each pair takes what it can
         SearchOptions shed;
         shed.minimise_own_tricks = true;
-        SearchOptions take_set = take;
-        take_set.nil_already_set = true;
+        const nil::SeatRoles live = nil::seat_roles_from_nil(nil::SEAT_NORTH, false);
+        const nil::SeatRoles already = nil::seat_roles_from_nil(nil::SEAT_NORTH, true);
 
-        check("weights: primary dominates", nil::objective_weights(4, take).primary, 25);
-        check("weights: take", nil::objective_weights(4, take).secondary, -5);
-        check("weights: shed", nil::objective_weights(4, shed).secondary, 5);
+        check("weights: primary dominates", nil::objective_weights(4, live, take).primary, 25);
+        check("weights: take", nil::objective_weights(4, live, take).secondary, -5);
+        check("weights: shed", nil::objective_weights(4, live, shed).secondary, 5);
         check("weights: the cover level is on when taking",
-              nil::objective_weights(4, take).tertiary, 1);
+              nil::objective_weights(4, live, take).tertiary, 1);
         check("weights: and off when shedding",
-              nil::objective_weights(4, shed).tertiary, 0);
+              nil::objective_weights(4, live, shed).tertiary, 0);
         check("weights: already set drops the primary",
-              nil::objective_weights(4, take_set).primary, 0);
+              nil::objective_weights(4, already, take).primary, 0);
         {
             // Each level must strictly outrank everything below it, or the
             // tie-break starts overruling the nil.
-            const nil::ObjectiveWeights w = nil::objective_weights(4, take);
+            const nil::ObjectiveWeights w = nil::objective_weights(4, live, take);
             check("weights: levels do not overlap",
                   w.primary > std::abs(w.secondary) * 4 + w.tertiary * 4, true);
         }
@@ -454,7 +466,7 @@ int main(int argc, char** argv) {
         // bidder, where it is worth nothing to the partner's bid.  The tertiary
         // level moves both onto the partner without costing the pair anything.
         const Position split = make_position("N:9.42.J. 5.Q.9.A A6.6..6 ..AT.Q2", "E", true);
-        const Solution settled = must_solve(split, "N", take_set);
+        const Solution settled = must_solve(split, "N", take, /*already_set=*/true);
         check("nil set: the pair still takes everything it can",
               settled.nil_side_tricks, 2);
         check("nil set: and its partner ends up holding it", settled.nil_tricks, 0);
@@ -479,7 +491,7 @@ int main(int argc, char** argv) {
         // three tricks, one of which N itself takes.
         const Position costly = make_position("N:7..6.3 6.J.2. J3.7.. 9..3.9", "N", true);
         const Solution protect = must_solve(costly, "N", take);
-        const Solution ignore = must_solve(costly, "N", take_set);
+        const Solution ignore = must_solve(costly, "N", take, /*already_set=*/true);
         check("nil is protected", protect.nil_tricks, 0);
         check("protecting it costs a trick", protect.nil_side_tricks, 2);
         check("already set: primary is off", ignore.nil_tricks, 1);
@@ -490,10 +502,10 @@ int main(int argc, char** argv) {
         for (int variant = 0; variant < 4; ++variant) {
             SearchOptions o;
             o.minimise_own_tricks = (variant & 1) != 0;
-            o.nil_already_set = (variant & 2) != 0;
-            const Solution sol = must_solve(costly, "N", o);
+            const bool already_set = (variant & 2) != 0;
+            const Solution sol = must_solve(costly, "N", o, already_set);
             const std::string label = std::string(o.minimise_own_tricks ? "shed" : "take") +
-                                      (o.nil_already_set ? "/set" : "/live");
+                                      (already_set ? "/set" : "/live");
             check(label + ": sides sum to the tricks played",
                   sol.nil_side_tricks + sol.opponent_tricks, costly.tricks_remaining());
             check(label + ": nil is part of its own side",
@@ -524,14 +536,18 @@ int main(int argc, char** argv) {
         // The whole point of the mode: nothing packed above or below the nil
         // bidder's trick count, so the value IS that count and the window
         // alpha-beta wants is [0, 1] rather than [0, K*K].
-        check("fast weights: primary is 1", nil::objective_weights(4, fast).primary, 1);
-        check("fast weights: no secondary", nil::objective_weights(4, fast).secondary, 0);
-        check("fast weights: no tertiary", nil::objective_weights(4, fast).tertiary, 0);
+        const nil::SeatRoles north_nil = nil::seat_roles_from_nil(nil::SEAT_NORTH, false);
+        check("fast weights: primary is 1",
+              nil::objective_weights(4, north_nil, fast).primary, 1);
+        check("fast weights: no secondary",
+              nil::objective_weights(4, north_nil, fast).secondary, 0);
+        check("fast weights: no tertiary",
+              nil::objective_weights(4, north_nil, fast).tertiary, 0);
         {
             SearchOptions fast_shed = fast;
             fast_shed.minimise_own_tricks = true;
             check("fast weights: the tie-break direction has nothing to point at",
-                  nil::objective_weights(4, fast_shed).secondary, 0);
+                  nil::objective_weights(4, north_nil, fast_shed).secondary, 0);
         }
 
         // E can be forced to take a trick here; this is the same layout the C
@@ -559,9 +575,7 @@ int main(int argc, char** argv) {
         // The caller asserted the only thing this mode computes, so there is
         // nothing to search.
         {
-            SearchOptions fast_set = fast;
-            fast_set.nil_already_set = true;
-            const Solution told = must_solve(forced, "N", fast_set);
+            const Solution told = must_solve(forced, "N", fast, /*already_set=*/true);
             check("fast + already set: answered by assertion", told.nil_fails, true);
             check("fast + already set: without searching", told.nodes, 0ull);
         }
@@ -1036,7 +1050,7 @@ int main(int argc, char** argv) {
                     for (int variant = 0; variant < 4; ++variant) {
                         SearchOptions on;
                         on.minimise_own_tricks = (variant & 1) != 0;
-                        on.nil_already_set = (variant & 2) != 0;
+                        const bool already_set = (variant & 2) != 0;
                         // The claim is about MODE_FULL's OWN search, which
                         // still cannot read a proof stated in nil tricks.  As
                         // of patch 23 a full solve may also run a MODE_FAST
@@ -1046,8 +1060,8 @@ int main(int argc, char** argv) {
                         on.presolve_window = false;
                         SearchOptions off = on;
                         off.use_static_bounds = false;
-                        const Solution a = must_solve(pos, SEAT_NAMES[seat], on);
-                        const Solution b = must_solve(pos, SEAT_NAMES[seat], off);
+                        const Solution a = must_solve(pos, SEAT_NAMES[seat], on, already_set);
+                        const Solution b = must_solve(pos, SEAT_NAMES[seat], off, already_set);
                         if (a.value == b.value &&
                             nil::format_pv_compact(a) == nil::format_pv_compact(b))
                             continue;
@@ -1127,11 +1141,11 @@ int main(int argc, char** argv) {
             const uint32_t base = NIL_FLAG_SPADES_BROKEN | NIL_FLAG_FAST_MODE;
             check("ABI: static bounds on",
                   static_cast<long long>(nil_solve("N:KQ... A2... J3... T4...", NIL_SEAT_EAST, "",
-                                                   NIL_SEAT_NORTH, base, &on, err, sizeof(err))),
+                                                   SEATS_NIL_N, base, &on, err, sizeof(err))),
                   0LL);
             check("ABI: static bounds off",
                   static_cast<long long>(nil_solve("N:KQ... A2... J3... T4...", NIL_SEAT_EAST, "",
-                                                   NIL_SEAT_NORTH,
+                                                   SEATS_NIL_N,
                                                    base | NIL_FLAG_NO_STATIC_BOUNDS, &off, err,
                                                    sizeof(err))),
                   0LL);
@@ -1371,11 +1385,11 @@ int main(int argc, char** argv) {
             const uint32_t base = NIL_FLAG_SPADES_BROKEN | NIL_FLAG_FAST_MODE;
             check("ABI: ordering on",
                   static_cast<long long>(nil_solve("N:KQ... A2... J3... T4...", NIL_SEAT_EAST, "",
-                                                   NIL_SEAT_NORTH, base, &on, err, sizeof(err))),
+                                                   SEATS_NIL_N, base, &on, err, sizeof(err))),
                   0LL);
             check("ABI: ordering off",
                   static_cast<long long>(nil_solve("N:KQ... A2... J3... T4...", NIL_SEAT_EAST, "",
-                                                   NIL_SEAT_NORTH, base | NIL_FLAG_NO_ORDERING,
+                                                   SEATS_NIL_N, base | NIL_FLAG_NO_ORDERING,
                                                    &off, err, sizeof(err))),
                   0LL);
             check("ABI: the switch does not move the answer",
@@ -1587,21 +1601,134 @@ int main(int argc, char** argv) {
     {
         const Position pos = make_position("N:..2. ..A. ..5. ..7.", "N", true);
         const Solution sol = must_solve(pos, "E");
+        const nil::SeatRoles east_nil = nil::seat_roles_from_nil(nil::SEAT_EAST, false);
         nil::Tally tally;
         std::string err;
-        check("good PV replays", nil::replay_pv(pos, sol.pv, 1, tally, err), true);
+        check("good PV replays", nil::replay_pv(pos, sol.pv, east_nil, tally, err), true);
         check("good PV replays to the same value", tally.nil_tricks, 1);
         check("replay tallies the nil's side", tally.nil_side_tricks, 1);
         check("replay tallies the opponents", tally.opponent_tricks, 0);
 
         std::vector<nil::Play> bad = sol.pv;
         std::swap(bad[0], bad[1]);
-        check("out-of-turn PV is rejected", nil::replay_pv(pos, bad, 1, tally, err),
+        check("out-of-turn PV is rejected", nil::replay_pv(pos, bad, east_nil, tally, err),
               false);
 
         std::vector<nil::Play> truncated(sol.pv.begin(), sol.pv.begin() + 2);
-        check("short PV is rejected", nil::replay_pv(pos, truncated, 1, tally, err),
+        check("short PV is rejected", nil::replay_pv(pos, truncated, east_nil, tally, err),
               false);
+    }
+
+    std::cout << "Seat roles\n";
+    {
+        std::string err;
+        nil::SeatRoles roles;
+
+        // The text form runs clockwise from the anchor, so the SAME four values
+        // describe a different deal against a different anchor.  This is the
+        // one thing about the format that can be got wrong quietly, so it is
+        // pinned from both ends.
+        check("roles parse against North",
+              nil::parse_seat_roles("0 3 2 3", nil::SEAT_NORTH, roles, err), true);
+        check("north anchor puts the nil on North", nil::describe_seat_roles(roles),
+              std::string("N=nil E=opponent S=cover W=opponent"));
+        check("roles parse against West",
+              nil::parse_seat_roles("0 3 2 3", nil::SEAT_WEST, roles, err), true);
+        check("west anchor puts the nil on West", nil::describe_seat_roles(roles),
+              std::string("N=opponent E=cover S=opponent W=nil"));
+
+        // Separators are the caller's business, not the format's.
+        nil::SeatRoles spaced;
+        nil::SeatRoles commas;
+        nil::SeatRoles joined;
+        check("space separated", nil::parse_seat_roles("1 3 2 3", nil::SEAT_EAST, spaced, err),
+              true);
+        check("comma separated", nil::parse_seat_roles("1,3,2,3", nil::SEAT_EAST, commas, err),
+              true);
+        check("run together", nil::parse_seat_roles("1323", nil::SEAT_EAST, joined, err), true);
+        check("all three read the same", spaced == commas && commas == joined, true);
+        check("and a nil-set seat is still the nil seat", spaced.nil_seat(),
+              static_cast<int>(nil::SEAT_EAST));
+        check("which reports itself as already set", spaced.nil_already_set(), true);
+
+        // Round trip through the anchor it was written against.
+        check("formatting inverts parsing", nil::seat_roles_to_string(spaced, nil::SEAT_EAST),
+              std::string("1 3 2 3"));
+        check("and re-anchoring rewrites the order",
+              nil::seat_roles_to_string(spaced, nil::SEAT_NORTH), std::string("3 1 3 2"));
+
+        // seat_roles_from_nil is what the old two scalars meant.
+        check("from_nil matches the text form",
+              nil::seat_roles_from_nil(nil::SEAT_WEST, false) ==
+                  (nil::parse_seat_roles("0 3 2 3", nil::SEAT_WEST, roles, err), roles),
+              true);
+        check("a live nil is not already set",
+              nil::seat_roles_from_nil(nil::SEAT_WEST, false).nil_already_set(), false);
+        check("the cover sits across from the nil",
+              nil::seat_roles_from_nil(nil::SEAT_WEST, false).cover_seat(),
+              static_cast<int>(nil::SEAT_EAST));
+        check("the nil bidder is on its own side",
+              nil::seat_roles_from_nil(nil::SEAT_WEST, false).on_nil_side(nil::SEAT_WEST), true);
+        check("and an opponent is not",
+              nil::seat_roles_from_nil(nil::SEAT_WEST, false).on_nil_side(nil::SEAT_NORTH), false);
+
+        // Malformed text.
+        check("four values are required",
+              nil::parse_seat_roles("0 3 2", nil::SEAT_NORTH, roles, err), false);
+        check("and no more than four",
+              nil::parse_seat_roles("0 3 2 3 3", nil::SEAT_NORTH, roles, err), false);
+        check("values stay in range",
+              nil::parse_seat_roles("0 3 2 9", nil::SEAT_NORTH, roles, err), false);
+        check("letters are not roles",
+              nil::parse_seat_roles("N 3 2 3", nil::SEAT_NORTH, roles, err), false);
+
+        // Shapes phase one does not accept.  The two-nil case is refused as a
+        // FEATURE that has not landed, and the message says so, because that is
+        // the distinction a caller has to be able to act on.
+        nil::SeatRoles two_nils;
+        check("two nils parse", nil::parse_seat_roles("0 0 2 2", nil::SEAT_NORTH, two_nils, err),
+              true);
+        check("but do not validate", nil::validate_seat_roles(two_nils, err), false);
+        check("and are refused as unsupported rather than malformed",
+              err.find("not supported yet") != std::string::npos, true);
+
+        nil::SeatRoles no_nil;
+        check("a deal with no nil parses",
+              nil::parse_seat_roles("3 3 2 3", nil::SEAT_NORTH, no_nil, err), true);
+        check("but does not validate", nil::validate_seat_roles(no_nil, err), false);
+
+        nil::SeatRoles bad_cover;
+        check("a cover beside the nil parses",
+              nil::parse_seat_roles("0 2 3 3", nil::SEAT_NORTH, bad_cover, err), true);
+        check("but does not validate", nil::validate_seat_roles(bad_cover, err), false);
+
+        // The whole point: the same deal written against two anchors, with the
+        // roles rotated to match, is one question and gets one answer.
+        const Position from_north =
+            make_position("N:.A2.. .K3.. .54.. .Q6..", "N", true);
+        nil::SeatRoles north_written;
+        nil::SeatRoles west_written;
+        check("north-anchored roles read",
+              nil::parse_seat_roles("3 0 3 2", nil::SEAT_NORTH, north_written, err), true);
+        check("west-anchored roles read",
+              nil::parse_seat_roles("2 3 0 3", nil::SEAT_WEST, west_written, err), true);
+        check("the two spellings agree", north_written == west_written, true);
+        nil::Solution a;
+        nil::Solution b;
+        nil::SearchOptions plain;
+        check("north spelling solves", nil::solve(from_north, north_written, plain, a, err), true);
+        check("west spelling solves", nil::solve(from_north, west_written, plain, b, err), true);
+        check("and they are the same answer", a.value, b.value);
+        check("down to the line", nil::format_pv_compact(a), nil::format_pv_compact(b));
+
+        // solve() refuses an unsupported shape rather than answering something
+        // adjacent to what was asked.
+        nil::Solution refused;
+        check("solve refuses two nils", nil::solve(from_north, two_nils, plain, refused, err),
+              false);
+        std::vector<nil::MoveScore> no_moves;
+        check("and so does solve_moves",
+              nil::solve_moves(from_north, two_nils, plain, refused, no_moves, err), false);
     }
 
     std::cout << "C ABI\n";
@@ -1609,7 +1736,7 @@ int main(int argc, char** argv) {
         nil_result r;
         char err[256] = {0};
         const int32_t rc = nil_solve("N:.A2.. .K3.. .54.. .Q6..", NIL_SEAT_NORTH, "",
-                                     NIL_SEAT_NORTH, NIL_FLAG_SPADES_BROKEN, &r, err, sizeof(err));
+                                     SEATS_NIL_N, NIL_FLAG_SPADES_BROKEN, &r, err, sizeof(err));
         check("nil_solve returns NIL_OK", static_cast<long long>(rc), 0LL);
         check("nil_solve reports the trick", static_cast<long long>(r.nil_tricks), 1LL);
         check("nil_solve reports the side total",
@@ -1622,21 +1749,21 @@ int main(int argc, char** argv) {
 
         char pv[256] = {0};
         const int32_t rc2 = nil_solve_pv("N:..2. ..A. ..5. ..7.", NIL_SEAT_NORTH, "",
-                                         NIL_SEAT_EAST, NIL_FLAG_SPADES_BROKEN, &r, pv, sizeof(pv),
+                                         SEATS_NIL_E, NIL_FLAG_SPADES_BROKEN, &r, pv, sizeof(pv),
                                          err, sizeof(err));
         check("nil_solve_pv returns NIL_OK", static_cast<long long>(rc2), 0LL);
         check("nil_solve_pv writes the PV", std::string(pv), std::string("N:D2 E:DA S:D5 W:D7"));
 
         char tiny[4] = {0};
         const int32_t rc3 = nil_solve_pv("N:..2. ..A. ..5. ..7.", NIL_SEAT_NORTH, "",
-                                         NIL_SEAT_EAST, NIL_FLAG_SPADES_BROKEN, &r, tiny,
+                                         SEATS_NIL_E, NIL_FLAG_SPADES_BROKEN, &r, tiny,
                                          sizeof(tiny), err, sizeof(err));
         check("nil_solve_pv rejects a small buffer", static_cast<long long>(rc3),
               static_cast<long long>(NIL_ERR_BUFFER_TOO_SMALL));
 
         check("nil_fails convenience wrapper",
               static_cast<long long>(nil_fails("N:.A2.. .K3.. .54.. .Q6..", NIL_SEAT_NORTH, "",
-                                               NIL_SEAT_NORTH, NIL_FLAG_SPADES_BROKEN)),
+                                               SEATS_NIL_N, NIL_FLAG_SPADES_BROKEN)),
               1LL);
 
         // Fast mode across the ABI: same boolean, no counts, and asking for a
@@ -1644,7 +1771,7 @@ int main(int argc, char** argv) {
         // empty string or with a slower search the caller did not ask for.
         nil_result fr;
         const int32_t rc_fast =
-            nil_solve("N:.A2.. .K3.. .54.. .Q6..", NIL_SEAT_NORTH, "", NIL_SEAT_NORTH,
+            nil_solve("N:.A2.. .K3.. .54.. .Q6..", NIL_SEAT_NORTH, "", SEATS_NIL_N,
                       NIL_FLAG_SPADES_BROKEN | NIL_FLAG_FAST_MODE, &fr, err, sizeof(err));
         check("fast mode returns NIL_OK", static_cast<long long>(rc_fast), 0LL);
         check("fast mode agrees on the boolean", static_cast<long long>(fr.nil_fails),
@@ -1662,23 +1789,68 @@ int main(int argc, char** argv) {
 
         char fast_pv[256] = {0};
         const int32_t rc_pv_fast =
-            nil_solve_pv("N:..2. ..A. ..5. ..7.", NIL_SEAT_NORTH, "", NIL_SEAT_EAST,
+            nil_solve_pv("N:..2. ..A. ..5. ..7.", NIL_SEAT_NORTH, "", SEATS_NIL_E,
                          NIL_FLAG_SPADES_BROKEN | NIL_FLAG_FAST_MODE, &fr, fast_pv,
                          sizeof(fast_pv), err, sizeof(err));
         check("nil_solve_pv refuses fast mode", static_cast<long long>(rc_pv_fast),
               static_cast<long long>(NIL_ERR_UNSUPPORTED));
         check("and says why", std::strlen(err) > 0, true);
 
-        const int32_t rc4 = nil_solve("garbage", NIL_SEAT_NORTH, "", NIL_SEAT_NORTH, 0, &r, err,
+        const int32_t rc4 = nil_solve("garbage", NIL_SEAT_NORTH, "", SEATS_NIL_N, 0, &r, err,
                                       sizeof(err));
         check("nil_solve rejects garbage", static_cast<long long>(rc4),
               static_cast<long long>(NIL_ERR_PARSE));
         check("nil_solve reports an error message", std::strlen(err) > 0, true);
 
-        const int32_t rc5 = nil_solve("N:A... .A.. ..A. ...A", 9, "", NIL_SEAT_NORTH, 0, &r, err,
+        const int32_t rc5 = nil_solve("N:A... .A.. ..A. ...A", 9, "", SEATS_NIL_N, 0, &r, err,
                                       sizeof(err));
         check("nil_solve rejects a bad leader", static_cast<long long>(rc5),
               static_cast<long long>(NIL_ERR_ILLEGAL_POSITION));
+
+        // A seats array is required, and the two ways of getting it wrong get
+        // different codes.  NIL_SEAT_NORTH is literally 0, so an un-migrated
+        // call site compiles as a null pointer rather than failing to build;
+        // this is what catches it.
+        const int32_t rc_null = nil_solve("N:A... .A.. ..A. ...A", NIL_SEAT_NORTH, "", nullptr, 0,
+                                          &r, err, sizeof(err));
+        check("nil_solve rejects a null seats array", static_cast<long long>(rc_null),
+              static_cast<long long>(NIL_ERR_NULL_ARG));
+
+        const std::int32_t out_of_range[4] = {9, NIL_ROLE_OPPONENT, NIL_ROLE_COVER,
+                                              NIL_ROLE_OPPONENT};
+        const int32_t rc_range = nil_solve("N:A... .A.. ..A. ...A", NIL_SEAT_NORTH, "",
+                                           out_of_range, 0, &r, err, sizeof(err));
+        check("nil_solve rejects an out-of-range role", static_cast<long long>(rc_range),
+              static_cast<long long>(NIL_ERR_ILLEGAL_POSITION));
+
+        const std::int32_t two_nils[4] = {NIL_ROLE_NIL, NIL_ROLE_NIL, NIL_ROLE_COVER,
+                                          NIL_ROLE_COVER};
+        const int32_t rc_two = nil_solve("N:A... .A.. ..A. ...A", NIL_SEAT_NORTH, "", two_nils, 0,
+                                         &r, err, sizeof(err));
+        check("nil_solve reports two nils as unsupported, not malformed",
+              static_cast<long long>(rc_two), static_cast<long long>(NIL_ERR_UNSUPPORTED));
+
+        // The roles are read against the PBN's anchor, so the same deal spelled
+        // two ways is one question across the ABI too.
+        nil_result from_n;
+        nil_result from_w;
+        const std::int32_t nil_on_east_n[4] = {NIL_ROLE_OPPONENT, NIL_ROLE_NIL, NIL_ROLE_OPPONENT,
+                                               NIL_ROLE_COVER};
+        const std::int32_t nil_on_east_w[4] = {NIL_ROLE_COVER, NIL_ROLE_OPPONENT, NIL_ROLE_NIL,
+                                               NIL_ROLE_OPPONENT};
+        check("N-anchored spelling returns NIL_OK",
+              static_cast<long long>(nil_solve("N:..2. ..A. ..5. ..7.", NIL_SEAT_NORTH, "",
+                                               nil_on_east_n, NIL_FLAG_SPADES_BROKEN, &from_n, err,
+                                               sizeof(err))),
+              0LL);
+        check("W-anchored spelling returns NIL_OK",
+              static_cast<long long>(nil_solve("W:..7. ..2. ..A. ..5.", NIL_SEAT_NORTH, "",
+                                               nil_on_east_w, NIL_FLAG_SPADES_BROKEN, &from_w, err,
+                                               sizeof(err))),
+              0LL);
+        check("and the two agree on the nil count",
+              static_cast<long long>(from_n.nil_tricks),
+              static_cast<long long>(from_w.nil_tricks));
 
         check("version string", std::string(nil_solver_version()), std::string("0.1.0"));
     }
@@ -1703,9 +1875,10 @@ int main(int argc, char** argv) {
         pos.spades_broken = true;
 
         nil::SearchOptions opts;
+        const nil::SeatRoles north_nil = nil::seat_roles_from_nil(nil::SEAT_NORTH, false);
         nil::Solution sol;
         std::vector<nil::MoveScore> moves;
-        check("solve_moves succeeds", nil::solve_moves(pos, nil::SEAT_NORTH, opts, sol, moves, err),
+        check("solve_moves succeeds", nil::solve_moves(pos, north_nil, opts, sol, moves, err),
               true);
         check("one row per class", moves.size(), std::size_t{3});
         check("rows are in canonical order",
@@ -1733,7 +1906,7 @@ int main(int argc, char** argv) {
 
         // The move list must not move the position's own answer.
         nil::Solution plain;
-        check("solve succeeds", nil::solve(pos, nil::SEAT_NORTH, opts, plain, err), true);
+        check("solve succeeds", nil::solve(pos, north_nil, opts, plain, err), true);
         check("move list agrees on the value", sol.value, plain.value);
         check("move list agrees on nil_fails", sol.nil_fails, plain.nil_fails);
         check("move list agrees on the nil count", sol.nil_tricks, plain.nil_tricks);
@@ -1760,7 +1933,7 @@ int main(int argc, char** argv) {
             }
 
             nil::Solution after;
-            if (!nil::solve(child, nil::SEAT_NORTH, opts, after, err)) {
+            if (!nil::solve(child, north_nil, opts, after, err)) {
                 ++row_mismatches;
                 continue;
             }
@@ -1779,7 +1952,7 @@ int main(int argc, char** argv) {
         nil::Solution fsol;
         std::vector<nil::MoveScore> fmoves;
         check("fast move list succeeds",
-              nil::solve_moves(pos, nil::SEAT_NORTH, fast, fsol, fmoves, err), true);
+              nil::solve_moves(pos, north_nil, fast, fsol, fmoves, err), true);
         check("fast mode lists the same cards", fmoves.size(), moves.size());
         int boolean_mismatches = 0;
         int counted = 0;
@@ -1799,7 +1972,7 @@ int main(int argc, char** argv) {
         nil::Solution dsol;
         std::vector<nil::MoveScore> dmoves;
         check("an empty position is not an error",
-              nil::solve_moves(done, nil::SEAT_NORTH, opts, dsol, dmoves, err), true);
+              nil::solve_moves(done, north_nil, opts, dsol, dmoves, err), true);
         check("and lists no moves", dmoves.size(), std::size_t{0});
     }
 
@@ -1812,7 +1985,7 @@ int main(int argc, char** argv) {
         char err[256] = {0};
 
         const std::int32_t rc =
-            nil_solve_moves("N:2...  A... K... Q...", NIL_SEAT_NORTH, "", NIL_SEAT_NORTH,
+            nil_solve_moves("N:2...  A... K... Q...", NIL_SEAT_NORTH, "", SEATS_NIL_N,
                             NIL_FLAG_NONE, &r, rows, NIL_MAX_MOVES, &count, err, sizeof err);
         check("nil_solve_moves returns NIL_OK", static_cast<long long>(rc), 0LL);
         check("one legal card", static_cast<long long>(count), 1LL);
@@ -1826,7 +1999,7 @@ int main(int argc, char** argv) {
         // caller to guess.
         std::int32_t needed = -1;
         const std::int32_t rc_small = nil_solve_moves(
-            "N:KQ2.A.. 543.2.. A76.3.. J98.4..", NIL_SEAT_NORTH, "", NIL_SEAT_NORTH,
+            "N:KQ2.A.. 543.2.. A76.3.. J98.4..", NIL_SEAT_NORTH, "", SEATS_NIL_N,
             NIL_FLAG_SPADES_BROKEN, &r, rows, 1, &needed, err, sizeof err);
         check("a small buffer is rejected", static_cast<long long>(rc_small),
               static_cast<long long>(NIL_ERR_BUFFER_TOO_SMALL));
@@ -1836,7 +2009,7 @@ int main(int argc, char** argv) {
         // card's own rank left clear.
         std::int32_t n2 = 0;
         const std::int32_t rc2 = nil_solve_moves(
-            "N:KQ2.A.. 543.2.. A76.3.. J98.4..", NIL_SEAT_NORTH, "", NIL_SEAT_NORTH,
+            "N:KQ2.A.. 543.2.. A76.3.. J98.4..", NIL_SEAT_NORTH, "", SEATS_NIL_N,
             NIL_FLAG_SPADES_BROKEN, &r, rows, NIL_MAX_MOVES, &n2, err, sizeof err);
         check("the equivalence deal returns NIL_OK", static_cast<long long>(rc2), 0LL);
         check("three classes", static_cast<long long>(n2), 3LL);
@@ -1848,7 +2021,7 @@ int main(int argc, char** argv) {
         // Fast mode withholds the counts here too.
         std::int32_t n3 = 0;
         const std::int32_t rc3 = nil_solve_moves(
-            "N:KQ2.A.. 543.2.. A76.3.. J98.4..", NIL_SEAT_NORTH, "", NIL_SEAT_NORTH,
+            "N:KQ2.A.. 543.2.. A76.3.. J98.4..", NIL_SEAT_NORTH, "", SEATS_NIL_N,
             NIL_FLAG_SPADES_BROKEN | NIL_FLAG_FAST_MODE, &r, rows, NIL_MAX_MOVES, &n3, err,
             sizeof err);
         check("fast mode returns NIL_OK", static_cast<long long>(rc3), 0LL);

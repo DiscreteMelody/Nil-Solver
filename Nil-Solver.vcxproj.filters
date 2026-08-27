@@ -44,6 +44,9 @@
     <ClInclude Include="src\nil\search.hpp">
       <Filter>Header Files\nil</Filter>
     </ClInclude>
+    <ClInclude Include="src\nil\seats.hpp">
+      <Filter>Header Files\nil</Filter>
+    </ClInclude>
     <ClInclude Include="src\nil\statekey.hpp">
       <Filter>Header Files\nil</Filter>
     </ClInclude>
@@ -71,6 +74,9 @@
       <Filter>Source Files\nil</Filter>
     </ClCompile>
     <ClCompile Include="src\nil\search.cpp">
+      <Filter>Source Files\nil</Filter>
+    </ClCompile>
+    <ClCompile Include="src\nil\seats.cpp">
       <Filter>Source Files\nil</Filter>
     </ClCompile>
     <ClCompile Include="src\nil\statekey.cpp">

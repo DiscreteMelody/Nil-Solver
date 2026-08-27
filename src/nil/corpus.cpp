@@ -50,13 +50,9 @@ bool load_corpus(const std::string& path, std::vector<CorpusEntry>& out, std::st
         const std::vector<std::string> f = split(trimmed, '|');
         std::ostringstream where;
         where << path << ":" << line_no << ": ";
-        if (f.size() < 10) {
-            err = where.str() + "expected at least 10 '|' separated fields, got " +
+        if (f.size() < 9) {
+            err = where.str() + "expected at least 9 '|' separated fields, got " +
                   std::to_string(f.size());
-            if (f.size() == 8 || f.size() == 9) {
-                err += ". This looks like a corpus from before the lexicographic "
-                       "objective; regenerate it with tools/make_corpus.py";
-            }
             return false;
         }
 
@@ -68,9 +64,19 @@ bool load_corpus(const std::string& path, std::vector<CorpusEntry>& out, std::st
             return false;
         }
         entry.position.leader = parse_seat(f[2]);
-        entry.nil_seat = parse_seat(f[3]);
-        if (entry.position.leader < 0 || entry.nil_seat < 0) {
-            err = where.str() + "bad leader or nil seat";
+        if (entry.position.leader < 0) {
+            err = where.str() + "bad leader seat";
+            return false;
+        }
+        // The roles run clockwise from the seat the PBN names, so they cannot
+        // be read without it.  A row whose PBN parsed above always has one.
+        const int anchor = pbn_anchor(entry.pbn);
+        if (!parse_seat_roles(f[3], anchor, entry.roles, err)) {
+            err = where.str() + err;
+            return false;
+        }
+        if (!validate_seat_roles(entry.roles, err)) {
+            err = where.str() + err;
             return false;
         }
         entry.position.spades_broken = (f[4] == "1");
@@ -88,11 +94,10 @@ bool load_corpus(const std::string& path, std::vector<CorpusEntry>& out, std::st
             return false;
         }
         entry.minimise_own_tricks = (f[6] == "min");
-        entry.nil_already_set = (f[7] == "1");
-        entry.expected_tricks = (f[8] == "?") ? -1 : std::atoi(f[8].c_str());
-        entry.expected_side_tricks = (f[9] == "?") ? -1 : std::atoi(f[9].c_str());
-        if (f.size() > 10) entry.expected_pv = f[10];
-        if (f.size() > 11 && !f[11].empty()) entry.provenance = f[11];
+        entry.expected_tricks = (f[7] == "?") ? -1 : std::atoi(f[7].c_str());
+        entry.expected_side_tricks = (f[8] == "?") ? -1 : std::atoi(f[8].c_str());
+        if (f.size() > 9) entry.expected_pv = f[9];
+        if (f.size() > 10 && !f[10].empty()) entry.provenance = f[10];
 
         if (!validate(entry.position, err)) {
             err = where.str() + err;
@@ -111,11 +116,10 @@ bool load_corpus(const std::string& path, std::vector<CorpusEntry>& out, std::st
 std::string corpus_repro(const CorpusEntry& entry, const std::string& exe) {
     std::ostringstream os;
     os << exe << " --pbn '" << entry.pbn << "'"
-       << " --leader " << SEAT_CHARS[entry.position.leader] << " --nil "
-       << SEAT_CHARS[entry.nil_seat];
+       << " --leader " << SEAT_CHARS[entry.position.leader] << " --seats "
+       << seat_roles_to_string(entry.roles, pbn_anchor(entry.pbn));
     if (entry.position.spades_broken) os << " --spades-broken";
     if (entry.minimise_own_tricks) os << " --secondary min";
-    if (entry.nil_already_set) os << " --nil-already-set";
     if (!entry.trick_text.empty()) os << " --trick '" << entry.trick_text << "'";
     return os.str();
 }

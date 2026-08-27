@@ -126,6 +126,37 @@ def card_str(card: Card) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Seat roles
+#
+# A spec carries them as the corpus does: four digits, clockwise from the seat
+# its own PBN names.  Absolute seat order is what the transforms below need, so
+# these two convert in each direction rather than assuming an anchor.
+# ---------------------------------------------------------------------------
+
+
+def roles_of(spec: Dict) -> List[int]:
+    anchor = SEAT_CHARS.index(spec["pbn"][0].upper())
+    digits = [ch for ch in spec["seats"] if ch.isdigit()]
+    roles = [3, 3, 3, 3]
+    for offset, ch in enumerate(digits):
+        roles[(anchor + offset) % 4] = int(ch)
+    return roles
+
+
+def roles_text(roles: List[int], pbn: str) -> str:
+    anchor = SEAT_CHARS.index(pbn[0].upper())
+    return " ".join(str(roles[(anchor + off) % 4]) for off in range(4))
+
+
+def nil_role_of(spec: Dict) -> int:
+    """The nil bidder's own role: 0 live, 1 already set."""
+    for role in roles_of(spec):
+        if role in (0, 1):
+            return role
+    return -1
+
+
+# ---------------------------------------------------------------------------
 # The transforms
 # ---------------------------------------------------------------------------
 
@@ -136,10 +167,17 @@ def rotate(spec: Dict, k: int) -> Tuple[Dict, Dict]:
     rotated: Hands = [[], [], [], []]
     for seat in range(4):
         rotated[(seat + k) % 4] = hands[seat]
+    roles = roles_of(spec)
     out = dict(spec)
     out["pbn"] = to_pbn(rotated)
     out["leader"] = SEAT_CHARS[(SEAT_CHARS.index(spec["leader"]) + k) % 4]
-    out["nil"] = SEAT_CHARS[(SEAT_CHARS.index(spec["nil"]) + k) % 4]
+    # The roles move with the seats, then get re-anchored against the rotated
+    # deal string -- which to_pbn always writes from North, so the two steps do
+    # not cancel out and both are needed.
+    turned = [0, 0, 0, 0]
+    for seat in range(4):
+        turned[(seat + k) % 4] = roles[seat]
+    out["seats"] = roles_text(turned, out["pbn"])
     # Cards on the trick are listed in play order from the leader, so they are
     # untouched -- only the seat that played them has a new name.
     return out, {"kind": "rotate", "k": k}
@@ -203,16 +241,14 @@ def unmap_pv(pv: str, info: Dict) -> str:
 
 
 def cli_args(exe: str, spec: Dict, mode: str = "full", tt_mb: int = 0) -> List[str]:
-    args = [exe, "--pbn", spec["pbn"], "--leader", spec["leader"], "--nil", spec["nil"],
-            "--compact"]
+    args = [exe, "--pbn", spec["pbn"], "--leader", spec["leader"],
+            "--seats", spec["seats"], "--compact"]
     if mode == "fast":
         args += ["--mode", "fast"]
     if spec.get("broken") == "1":
         args.append("--spades-broken")
     if spec.get("secondary") == "min":
         args += ["--secondary", "min"]
-    if spec.get("nilset") == "1":
-        args.append("--nil-already-set")
     if spec.get("trick"):
         args += ["--trick", spec["trick"]]
     if tt_mb:
@@ -273,7 +309,7 @@ def check(exe: str, spec: Dict, timeout: float, rng: random.Random,
         # lowest, so the split may legitimately move there.  Everywhere else the
         # split is pinned: by the primary when the nil is live, and by the
         # tertiary level when it is set and the pair is taking tricks.
-        undetermined_split = (spec.get("nilset") == "1"
+        undetermined_split = (nil_role_of(spec) == 1
                               and spec.get("secondary") == "min")
         if mode == "fast":
             fields = ["nil_fails"]
@@ -304,8 +340,8 @@ def check(exe: str, spec: Dict, timeout: float, rng: random.Random,
 
 
 def from_corpus(path: str, cards: Optional[str]) -> List[Dict]:
-    fields = ("name", "pbn", "leader", "nil", "broken", "trick",
-              "secondary", "nilset", "nil_tricks", "side_tricks", "pv", "provenance")
+    fields = ("name", "pbn", "leader", "seats", "broken", "trick",
+              "secondary", "nil_tricks", "side_tricks", "pv", "provenance")
     specs = []
     with open(path) as handle:
         for line in handle:
@@ -332,13 +368,17 @@ def from_random(rng: random.Random, count: int, cards: int, suits: int) -> List[
             "name": "rand-%04d" % index,
             "pbn": to_pbn(hands),
             "leader": SEAT_CHARS[rng.randrange(4)],
-            "nil": SEAT_CHARS[rng.randrange(4)],
             "broken": str(rng.randrange(2)),
             "trick": "",
             "secondary": rng.choice(("max", "min")),
-            "nilset": "1" if rng.random() < 0.2 else "0",
             "cards": cards,
         })
+        # to_pbn writes from North, so the roles are written from North too.
+        nil_seat = rng.randrange(4)
+        roles = [3, 3, 3, 3]
+        roles[nil_seat] = 1 if rng.random() < 0.2 else 0
+        roles[(nil_seat + 2) % 4] = 2
+        specs[-1]["seats"] = " ".join(str(r) for r in roles)
     return specs
 
 

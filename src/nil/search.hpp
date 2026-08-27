@@ -29,12 +29,14 @@
 // taking fewer.  That is why one flag sets a coherent direction for both sides
 // at once, and why plain minimax over the packed pair is still well defined.
 //
-// `nil_already_set` drops the primary objective.  Use it once the nil has
-// actually been broken in the real game: there is nothing left to protect or
-// to attack, and only the secondary objective matters.
+// WHO IS WHO.  The caller describes the deal with a role per seat -- see
+// nil/seats.hpp -- rather than with a nil seat and a flag.  Giving the nil
+// bidder ROLE_NIL_SET drops the primary objective: use it once the nil has
+// actually been broken in the real game, because there is nothing left to
+// protect or to attack and only the secondary objective matters.
 //
-// `nil_fails` is (nil_tricks > 0), or forced true when the caller has told us
-// the nil is already set.
+// `nil_fails` is (nil_tricks > 0), or forced true when the roles say the nil is
+// already set.
 //
 // TWO MODES
 // ---------
@@ -113,6 +115,7 @@
 
 #include "nil/position.hpp"
 #include "nil/ranks.hpp"
+#include "nil/seats.hpp"
 
 namespace nil {
 
@@ -178,10 +181,6 @@ struct SearchOptions {
     // Direction of the tie-break.  false: each pair takes as many tricks as it
     // can.  true: each pair takes as few as it can (bag avoidance).
     bool minimise_own_tricks = false;
-
-    // Drop the primary objective: the nil has already been broken, so neither
-    // side has anything left to protect or attack.
-    bool nil_already_set = false;
 
     // Generate one move per class of rank-equivalent cards instead of all of
     // them -- with the jack gone, SK and SQ are one move played under two
@@ -624,7 +623,10 @@ struct Solution {
     // The scalar the search minimised: the packed lexicographic value in
     // MODE_FULL, the nil bidder's trick count in MODE_FAST.
     int value = 0;
-    int nil_seat = 0;
+    // What each seat was doing, as the caller described it.  `nil_seat()` is
+    // the field this used to be.
+    SeatRoles roles;
+    int nil_seat() const { return roles.nil_seat(); }
     // Principal variation, one entry per remaining card.  Empty in MODE_FAST.
     std::vector<Play> pv;
     std::uint64_t nodes = 0;
@@ -659,9 +661,10 @@ struct Solution {
 // which the nil side minimises and the opponents maximise.  With
 // K = tricks remaining + 1, primary is K*K and secondary is +/-K, so each level
 // strictly outranks everything below it and the three compare
-// lexicographically.  primary is zero when the nil is already set.
+// lexicographically.  primary is zero when the roles say the nil is already
+// set.
 //
-// A caveat about the one case the tertiary bites -- a nil already set while the
+// A caveat about the one case the tertiary bites -- ROLE_NIL_SET while the
 // pair is still taking tricks.  There, "the pair maximises its partner's
 // tricks" and "the opponents maximise their own" are not strictly opposed:
 // both sides would rather the nil bidder took nothing, so the split between the
@@ -681,12 +684,13 @@ struct ObjectiveWeights {
     int tertiary = 0;
 };
 
-ObjectiveWeights objective_weights(int tricks_remaining, const SearchOptions& opts);
+ObjectiveWeights objective_weights(int tricks_remaining, const SeatRoles& roles,
+                                   const SearchOptions& opts);
 
 // Validates, searches, then independently replays the PV as a self-check.
 // Returns false and sets `err` on an invalid position or an internal
 // inconsistency.
-bool solve(const Position& pos, int nil_seat, const SearchOptions& opts,
+bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opts,
            Solution& out, std::string& err);
 
 // One legal card at the root, and what playing it leads to.
@@ -748,13 +752,13 @@ struct MoveScore {
 // shared across the root moves, which is what keeps the multiple from being the
 // branching factor.  MODE_FULL is nearer to free: it never cut in the first
 // place, so the extra work is the bookkeeping rather than the search.
-bool solve_moves(const Position& pos, int nil_seat, const SearchOptions& opts, Solution& out,
-                 std::vector<MoveScore>& moves_out, std::string& err);
+bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOptions& opts,
+                 Solution& out, std::vector<MoveScore>& moves_out, std::string& err);
 
 // Replays a PV, checking every play for legality and turn order, and reports
 // who took what.  Also useful for checking a PV produced elsewhere.
-bool replay_pv(const Position& pos, const std::vector<Play>& pv, int nil_seat, Tally& tally_out,
-               std::string& err);
+bool replay_pv(const Position& pos, const std::vector<Play>& pv, const SeatRoles& roles,
+               Tally& tally_out, std::string& err);
 
 // The transposition table is kept between calls, because a corpus run solves
 // hundreds of positions and reallocating tens of megabytes for each one costs

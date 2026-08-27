@@ -28,7 +28,7 @@ usage:
   tools/crosscheck.py --exe build/bin/nil_cli --cases 200 --cards 4
   tools/crosscheck.py --exe build/bin/nil_cli --cases 40 --cards 4-6 --trick-prob 0.5
   tools/crosscheck.py --exe build/bin/nil_cli --pbn 'N:A...2 K...3 Q...4 J...5' \
-                      --leader N --nil N
+                      --leader N --seats 0 3 2 3
 """
 
 from __future__ import annotations
@@ -90,6 +90,10 @@ class Case:
 
         self.leader = rng.randrange(4)
         self.nil_seat = rng.randrange(4)
+        # Roles are indexed by ABSOLUTE seat here, and anchored only on the way
+        # out to a command line.  Filled in below, once the already-set coin has
+        # been drawn -- the draw order is load-bearing, because moving it would
+        # move every deal after it.
         # Spades are broken only when one has LEFT a hand.  A layout still holding
         # all thirteen has had no spade played, and validate() rejects the flag on
         # it -- so draw the coin and then mask it, which keeps the deal stream in
@@ -104,6 +108,7 @@ class Case:
         # Weighted: the live-nil case is the one that matters most, but the
         # already-set case has to be exercised too or it will rot.
         self.nil_already_set = rng.random() < 0.25
+        self.roles = oracle.roles_from_nil(self.nil_seat, self.nil_already_set)
 
         trick: List = []
         broken = self.spades_broken
@@ -138,20 +143,23 @@ class Case:
             self.pbn,
             "--leader",
             SEAT_CHARS[self.leader],
-            "--nil",
-            SEAT_CHARS[self.nil_seat],
+            "--seats",
+            # Anchored to this deal's own PBN, which is how the solver reads it.
+            self.roles_text(),
             "--compact",
         ]
         if self.spades_broken:
             args.append("--spades-broken")
         if self.secondary == "min":
             args += ["--secondary", "min"]
-        if self.nil_already_set:
-            args.append("--nil-already-set")
         if self.trick_text:
             args += ["--trick", self.trick_text]
         args += list(extra)
         return args
+
+    def roles_text(self) -> str:
+        anchor = SEAT_CHARS.index(self.pbn[0].upper())
+        return " ".join(str(self.roles[(anchor + off) % 4]) for off in range(4))
 
     def repro(self, exe: str) -> str:
         parts = []
@@ -279,11 +287,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.add_argument("--quiet", action="store_true", help="only report problems")
     p.add_argument("--pbn", default=None, help="check one specific deal instead")
     p.add_argument("--leader", default="N")
-    p.add_argument("--nil", default="N")
+    p.add_argument("--seats", nargs="+", default=None,
+                   help="roles clockwise from the seat --pbn names [0 3 2 3]")
     p.add_argument("--trick", default="")
     p.add_argument("--spades-broken", action="store_true")
     p.add_argument("--secondary", choices=("max", "min"), default="max")
-    p.add_argument("--nil-already-set", action="store_true")
     args = p.parse_args(argv)
 
     oracle, path = load_oracle(args.oracle)
@@ -303,10 +311,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.pbn:
         case = Case.__new__(Case)
         case.leader = SEAT_CHARS.index(args.leader.upper()[0])
-        case.nil_seat = SEAT_CHARS.index(args.nil.upper()[0])
+        seats_text = " ".join(args.seats) if args.seats else "0 3 2 3"
+        case.roles = oracle.parse_roles(seats_text, oracle.pbn_anchor(args.pbn))
+        oracle.validate_roles(case.roles)
+        case.nil_seat = oracle.nil_seat_of(case.roles)
+        case.nil_already_set = oracle.nil_already_set_of(case.roles)
         case.spades_broken = args.spades_broken
         case.secondary = args.secondary
-        case.nil_already_set = args.nil_already_set
         case.current_trick = tuple(
             oracle.card_from_str(t) for t in args.trick.replace(",", " ").split() if t
         )

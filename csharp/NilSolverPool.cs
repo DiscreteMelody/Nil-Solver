@@ -125,42 +125,42 @@ namespace NilSolver
 
         /// <summary>"Can this nil still be broken?" -- the boolean, on a solver thread.</summary>
         public Task<NilSolution> CanBeBrokenAsync(string pbn, NilSeat leader, string? currentTrick,
-                                                  NilSeat nilSeat, NilFlags flags = NilFlags.None,
+                                                  NilSeatRoles roles, NilFlags flags = NilFlags.None,
                                                   CancellationToken cancellationToken = default)
         {
-            return RunAsync(() => Nil.CanBeBroken(pbn, leader, currentTrick, nilSeat, flags), cancellationToken);
+            return RunAsync(() => Nil.CanBeBroken(pbn, leader, currentTrick, roles, flags), cancellationToken);
         }
 
         /// <summary>The full lexicographic answer, on a solver thread.</summary>
         public Task<NilSolution> SolveFullAsync(string pbn, NilSeat leader, string? currentTrick,
-                                                NilSeat nilSeat, NilFlags flags = NilFlags.None,
+                                                NilSeatRoles roles, NilFlags flags = NilFlags.None,
                                                 CancellationToken cancellationToken = default)
         {
-            return RunAsync(() => Nil.SolveFull(pbn, leader, currentTrick, nilSeat, flags), cancellationToken);
+            return RunAsync(() => Nil.SolveFull(pbn, leader, currentTrick, roles, flags), cancellationToken);
         }
 
         /// <summary>The full answer plus the principal variation, on a solver thread.</summary>
         public Task<NilSolution> SolveWithLineAsync(string pbn, NilSeat leader, string? currentTrick,
-                                                    NilSeat nilSeat, NilFlags flags = NilFlags.None,
+                                                    NilSeatRoles roles, NilFlags flags = NilFlags.None,
                                                     CancellationToken cancellationToken = default)
         {
-            return RunAsync(() => Nil.SolveWithLine(pbn, leader, currentTrick, nilSeat, flags), cancellationToken);
+            return RunAsync(() => Nil.SolveWithLine(pbn, leader, currentTrick, roles, flags), cancellationToken);
         }
 
         /// <summary>Every legal card and whether the nil survives it, on a solver thread.</summary>
         public Task<NilSolution> ScoreMovesAsync(string pbn, NilSeat leader, string? currentTrick,
-                                                 NilSeat nilSeat, NilFlags flags = NilFlags.None,
+                                                 NilSeatRoles roles, NilFlags flags = NilFlags.None,
                                                  CancellationToken cancellationToken = default)
         {
-            return RunAsync(() => Nil.ScoreMoves(pbn, leader, currentTrick, nilSeat, flags), cancellationToken);
+            return RunAsync(() => Nil.ScoreMoves(pbn, leader, currentTrick, roles, flags), cancellationToken);
         }
 
         /// <summary>As ScoreMovesAsync, with each card's trick counts too.</summary>
         public Task<NilSolution> ScoreMovesFullAsync(string pbn, NilSeat leader, string? currentTrick,
-                                                     NilSeat nilSeat, NilFlags flags = NilFlags.None,
+                                                     NilSeatRoles roles, NilFlags flags = NilFlags.None,
                                                      CancellationToken cancellationToken = default)
         {
-            return RunAsync(() => Nil.ScoreMovesFull(pbn, leader, currentTrick, nilSeat, flags), cancellationToken);
+            return RunAsync(() => Nil.ScoreMovesFull(pbn, leader, currentTrick, roles, flags), cancellationToken);
         }
 
         public void Dispose()

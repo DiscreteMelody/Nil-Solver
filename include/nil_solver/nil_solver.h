@@ -7,8 +7,8 @@
  *
  * THE QUESTION THIS ANSWERS
  * -------------------------
- * Given a layout, whose turn it is, and which seat bid nil, the solver plays
- * the hand out under a lexicographic objective:
+ * Given a layout, whose turn it is, and WHAT EACH SEAT IS DOING, the solver
+ * plays the hand out under a lexicographic objective:
  *
  *   PRIMARY    the nil bidder's trick count.  The nil bidder and its covering
  *              partner minimise it; both opponents maximise it.  So
@@ -37,11 +37,11 @@
  * the answer to the nil question -- it only decides what the two pairs do with
  * the tricks that the nil question leaves undetermined.
  *
- * Pass NIL_FLAG_NIL_ALREADY_SET once the nil has actually been broken in the
- * real game.  The primary objective is dropped, both sides stop protecting and
- * attacking it, and only the secondary objective is optimised.
+ * Give the nil bidder NIL_ROLE_NIL_SET once the nil has actually been broken in
+ * the real game.  The primary objective is dropped, both sides stop protecting
+ * and attacking it, and only the secondary objective is optimised.
  *
- * With that flag set and the pair still taking tricks, the tertiary level is
+ * With that role set and the pair still taking tricks, the tertiary level is
  * what decides the split, and it sits BELOW the pair's total on purpose.  The
  * two sides are not strictly opposed there: both would rather the nil bidder
  * took nothing, so the split is slack only one side cares about rather than a
@@ -50,7 +50,7 @@
  * nil_side_tricks - nil_tricks is the partner count the pair can GUARANTEE, not
  * the one it might get if the opponents were being unhelpful to themselves.
  *
- * Combine that flag with NIL_FLAG_MINIMISE_OWN_TRICKS and the tertiary level is
+ * Combine that role with NIL_FLAG_MINIMISE_OWN_TRICKS and the tertiary level is
  * off: bags accrue to the pair whoever won, the two partners are
  * interchangeable, and nil_tricks is then whatever the tie-break produced
  * rather than an answer to a question anyone asked.
@@ -114,6 +114,40 @@ extern "C" {
 #define NIL_SEAT_SOUTH 2
 #define NIL_SEAT_WEST 3
 
+/* WHO IS WHO: the `seats` argument.
+ *
+ * Every entry point takes a four-element array of these, and it describes the
+ * whole objective.  It replaced two arguments in patch 54 -- a nil seat and an
+ * already-set flag -- because two scalars can only describe ONE nil, and real
+ * spades puts two on the table often enough that the optimal line changes.
+ *
+ * ORDER.  The four values run CLOCKWISE FROM THE SEAT THE `pbn` STRING NAMES,
+ * which is the same order the hands in that string are in.  So with
+ * "W:..." the array reads West, North, East, South, and
+ *
+ *     seats = { NIL_ROLE_NIL, NIL_ROLE_OPPONENT, NIL_ROLE_COVER,
+ *               NIL_ROLE_OPPONENT }
+ *
+ * says West bid the nil, East is covering it, and North and South are trying to
+ * break it.  Note that `leader` is NOT relative in this way: it is an absolute
+ * NIL_SEAT_*, as it always was.
+ *
+ * WHAT IS ACCEPTED TODAY.  Exactly one seat holds a nil, exactly one covers it,
+ * the cover sits across from the nil bidder, and the other two oppose.  Any
+ * other arrangement is refused: a value outside 0..3 or a malformed layout as
+ * NIL_ERR_ILLEGAL_POSITION, and a well-formed layout with two nils in it as
+ * NIL_ERR_UNSUPPORTED, so a caller can tell a typo from a feature that has not
+ * landed yet. */
+/* A nil bidder that has not yet taken a trick. */
+#define NIL_ROLE_NIL 0
+/* A nil bidder whose nil is already broken.  This is what the retired
+ * NIL_FLAG_NIL_ALREADY_SET used to say. */
+#define NIL_ROLE_NIL_SET 1
+/* The nil bidder's partner, covering it. */
+#define NIL_ROLE_COVER 2
+/* A seat on a side with no nil bid. */
+#define NIL_ROLE_OPPONENT 3
+
 /* Flags for the `flags` argument. */
 #define NIL_FLAG_NONE 0x0u
 /* Spades are already broken in the given position. */
@@ -122,10 +156,11 @@ extern "C" {
  * than as many.  Applies to both pairs at once, which is coherent because
  * their trick counts sum to a constant. */
 #define NIL_FLAG_MINIMISE_OWN_TRICKS 0x10u
-/* The nil has already been broken in the real game.  Drops the primary
- * objective; only the secondary one is optimised.  `nil_fails` is then
- * reported as 1 because you said so, not because it was computed. */
-#define NIL_FLAG_NIL_ALREADY_SET 0x20u
+/* Bit 0x20u is RETIRED AND BURNED, not free.  It was NIL_FLAG_NIL_ALREADY_SET,
+ * which said the nil had already been broken; that is now NIL_ROLE_NIL_SET in
+ * the `seats` array.  The bit is left unassigned rather than recycled so an old
+ * caller gets an ignored flag rather than a silently different objective, the
+ * same treatment 0x2u got in patch 45. */
 /* Disable the transposition table.  The table caches a pure function, so it
  * changes neither the answer nor the principal variation; this flag exists only
  * to make the search maximally dumb when cross-checking.  It is also very much
@@ -141,8 +176,8 @@ extern "C" {
  * trick counts come back as NIL_TRICKS_UNKNOWN and there is no principal
  * variation, so nil_solve_pv rejects this flag.
  *
- * Combined with NIL_FLAG_NIL_ALREADY_SET the answer is 1 with no search at all,
- * since that flag asserts the only thing this mode computes.
+ * Combined with NIL_ROLE_NIL_SET the answer is 1 with no search at all, since
+ * that role asserts the only thing this mode computes.
  * NIL_FLAG_MINIMISE_OWN_TRICKS is inert here: it points at a tie-break level
  * this mode does not have. */
 #define NIL_FLAG_FAST_MODE 0x80u
@@ -188,8 +223,8 @@ extern "C" {
  * Same value and same principal variation either way -- the bound is derived
  * from the objective's own weights, not estimated -- so this flag is a control
  * arm and a way to pay nothing on positions where the presolve will not help.
- * Inert under NIL_FLAG_FAST_MODE, which is the presolve, and inert when the nil
- * is already set, where the value range has no gap in it to exploit. */
+ * Inert under NIL_FLAG_FAST_MODE, which is the presolve, and inert under
+ * NIL_ROLE_NIL_SET, where the value range has no gap in it to exploit. */
 #define NIL_FLAG_NO_PRESOLVE 0x800u
 
 /* Search the final trick rather than evaluating it.  With four cards left every
@@ -399,19 +434,19 @@ extern "C" {
 #define NIL_ERR_ILLEGAL_POSITION (-3)
 #define NIL_ERR_BUFFER_TOO_SMALL (-4)
 #define NIL_ERR_INTERNAL (-5)
-/* The flags asked for something this entry point cannot produce -- today, a
- * principal variation in fast mode. */
+/* The call asked for something this build cannot produce: a principal variation
+ * in fast mode, or a `seats` array with more than one nil in it. */
 #define NIL_ERR_UNSUPPORTED (-6)
 
 typedef struct nil_result {
     /* 1 if the opponents can force the nil bidder to take at least one trick
-     * against best defence of the nil, 0 if the nil can be held.  Always 1 when
-     * NIL_FLAG_NIL_ALREADY_SET was passed, since that is a fact you supplied
-     * rather than one the search discovered. */
+     * against best defence of the nil, 0 if the nil can be held.  Always 1 under
+     * NIL_ROLE_NIL_SET, since that is a fact you supplied rather than one the
+     * search discovered. */
     int32_t nil_fails;
     /* Tricks the nil bidder takes from this position onward.  Not meaningful
-     * when NIL_FLAG_NIL_ALREADY_SET and NIL_FLAG_MINIMISE_OWN_TRICKS are both
-     * set; see the note above.  NIL_TRICKS_UNKNOWN under
+     * when NIL_ROLE_NIL_SET and NIL_FLAG_MINIMISE_OWN_TRICKS are both in play;
+     * see the note above.  NIL_TRICKS_UNKNOWN under
      * NIL_FLAG_FAST_MODE, which never computes it. */
     int32_t nil_tricks;
     /* Tricks the nil bidder and its covering partner take between them.
@@ -440,7 +475,8 @@ typedef struct nil_result {
  *   current_trick Cards already played to the trick in progress, in play order
  *                 starting from `leader`, e.g. "H4 HK".  May be NULL or "".
  *                 At most 3 cards.
- *   nil_seat      Seat that bid nil (NIL_SEAT_*).
+ *   seats         Four NIL_ROLE_* values, clockwise from the seat `pbn` names.
+ *                 See the NIL_ROLE_* block above; NULL is an error.
  *   flags         Bitwise OR of NIL_FLAG_*.
  *   out           Filled in on success.  Required.
  *   err_buf       Optional buffer for a human-readable error message.
@@ -449,8 +485,9 @@ typedef struct nil_result {
  * Returns NIL_OK or a negative NIL_ERR_* code.
  */
 NIL_SOLVER_API int32_t NIL_SOLVER_CALL nil_solve(const char* pbn, int32_t leader,
-                                                 const char* current_trick, int32_t nil_seat,
-                                                 uint32_t flags, nil_result* out, char* err_buf,
+                                                 const char* current_trick,
+                                                 const int32_t* seats, uint32_t flags,
+                                                 nil_result* out, char* err_buf,
                                                  int32_t err_len);
 
 /* As nil_solve, but also writes the principal variation as a space-separated
@@ -468,8 +505,9 @@ NIL_SOLVER_API int32_t NIL_SOLVER_CALL nil_solve(const char* pbn, int32_t leader
  * principal variation, and quietly running the slower mode instead -- or
  * quietly returning an empty string -- are both worse than saying so. */
 NIL_SOLVER_API int32_t NIL_SOLVER_CALL nil_solve_pv(const char* pbn, int32_t leader,
-                                                    const char* current_trick, int32_t nil_seat,
-                                                    uint32_t flags, nil_result* out, char* pv_buf,
+                                                    const char* current_trick,
+                                                    const int32_t* seats, uint32_t flags,
+                                                    nil_result* out, char* pv_buf,
                                                     int32_t pv_len, char* err_buf,
                                                     int32_t err_len);
 
@@ -482,8 +520,8 @@ NIL_SOLVER_API int32_t NIL_SOLVER_CALL nil_solve_pv(const char* pbn, int32_t lea
  * what nil_solve gives without the flag; only the work done to reach it
  * differs. */
 NIL_SOLVER_API int32_t NIL_SOLVER_CALL nil_fails(const char* pbn, int32_t leader,
-                                                 const char* current_trick, int32_t nil_seat,
-                                                 uint32_t flags);
+                                                 const char* current_trick,
+                                                 const int32_t* seats, uint32_t flags);
 
 /* Legal cards a position can offer.  Thirteen is the most any hand holds, and
  * the equivalent-card reduction only ever returns fewer, so a buffer of this
@@ -560,7 +598,7 @@ typedef struct nil_move {
  * Returns NIL_OK or a negative NIL_ERR_* code. */
 NIL_SOLVER_API int32_t NIL_SOLVER_CALL nil_solve_moves(const char* pbn, int32_t leader,
                                                        const char* current_trick,
-                                                       int32_t nil_seat, uint32_t flags,
+                                                       const int32_t* seats, uint32_t flags,
                                                        nil_result* out, nil_move* moves,
                                                        int32_t moves_cap, int32_t* moves_len,
                                                        char* err_buf, int32_t err_len);

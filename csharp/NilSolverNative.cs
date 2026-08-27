@@ -38,6 +38,217 @@ namespace NilSolver
     }
 
     /// <summary>
+    /// What one seat is doing. Replaced a nil seat plus an already-set flag,
+    /// because two scalars can only ever describe ONE nil and real spades puts
+    /// two on the table often enough to change the optimal line.
+    /// </summary>
+    public enum NilSeatRole
+    {
+        /// <summary>A nil bidder that has not yet taken a trick.</summary>
+        Nil = 0,
+
+        /// <summary>
+        /// A nil bidder whose nil is already broken. What the retired
+        /// NilFlags.NilAlreadySet used to say: the primary objective is dropped
+        /// and only the tie-break matters.
+        /// </summary>
+        NilSet = 1,
+
+        /// <summary>The nil bidder's partner, covering it.</summary>
+        Cover = 2,
+
+        /// <summary>A seat on a side with no nil bid.</summary>
+        Opponent = 3
+    }
+
+    /// <summary>
+    /// What all four seats are doing. Held by ABSOLUTE seat, so North is always
+    /// North here whatever the deal string says.
+    /// </summary>
+    /// <remarks>
+    /// The native side wants these clockwise from the seat the PBN names, in the
+    /// same order as its hands. <see cref="ToPbnOrder"/> does that rotation and
+    /// the wrapper in NilSolver.cs calls it for you, so a caller building roles
+    /// with <see cref="ForNil"/> or the constructor never thinks about anchors.
+    /// Use <see cref="FromPbnOrder"/> only when you already have the values in
+    /// the deal string's order.
+    ///
+    /// WHAT IS ACCEPTED TODAY: exactly one nil, exactly one cover, the cover
+    /// across from the nil bidder, and the other two opposing. Anything else
+    /// comes back from the solver as <see cref="NilStatus.IllegalPosition"/>,
+    /// except a well-formed layout holding two nils, which is
+    /// <see cref="NilStatus.Unsupported"/> -- a legal deal this build cannot
+    /// answer yet, not a mistake in the call.
+    /// </remarks>
+    public readonly struct NilSeatRoles : IEquatable<NilSeatRoles>
+    {
+        private readonly NilSeatRole _north;
+        private readonly NilSeatRole _east;
+        private readonly NilSeatRole _south;
+        private readonly NilSeatRole _west;
+
+        public NilSeatRoles(NilSeatRole north, NilSeatRole east, NilSeatRole south, NilSeatRole west)
+        {
+            _north = north;
+            _east = east;
+            _south = south;
+            _west = west;
+        }
+
+        public NilSeatRole North => _north;
+        public NilSeatRole East => _east;
+        public NilSeatRole South => _south;
+        public NilSeatRole West => _west;
+
+        public NilSeatRole this[NilSeat seat]
+        {
+            get
+            {
+                switch (seat)
+                {
+                    case NilSeat.North: return _north;
+                    case NilSeat.East: return _east;
+                    case NilSeat.South: return _south;
+                    case NilSeat.West: return _west;
+                    default: throw new ArgumentOutOfRangeException(nameof(seat));
+                }
+            }
+        }
+
+        /// <summary>
+        /// The arrangement a nil seat and an already-set flag used to describe:
+        /// that seat bidding, its partner covering, the other pair opposing.
+        /// </summary>
+        public static NilSeatRoles ForNil(NilSeat nilSeat, bool alreadySet = false)
+        {
+            var roles = new NilSeatRole[4];
+            for (int i = 0; i < 4; i++) roles[i] = NilSeatRole.Opponent;
+            roles[(int)nilSeat] = alreadySet ? NilSeatRole.NilSet : NilSeatRole.Nil;
+            roles[((int)nilSeat + 2) & 3] = NilSeatRole.Cover;
+            return new NilSeatRoles(roles[0], roles[1], roles[2], roles[3]);
+        }
+
+        /// <summary>The seat a PBN string is named for; its hands run clockwise from there.</summary>
+        public static NilSeat PbnAnchor(string pbn)
+        {
+            if (pbn == null) throw new ArgumentNullException(nameof(pbn));
+            string t = pbn.TrimStart();
+            int seat = t.Length >= 2 && t[1] == ':' ? "NESW".IndexOf(char.ToUpperInvariant(t[0])) : -1;
+            if (seat < 0)
+            {
+                throw new ArgumentException(
+                    "PBN deal must start with a seat letter and a colon, e.g. 'N:'", nameof(pbn));
+            }
+            return (NilSeat)seat;
+        }
+
+        /// <summary>
+        /// Read four roles given CLOCKWISE FROM THE SEAT <paramref name="pbn"/>
+        /// NAMES -- the order the native side and the corpus both use.
+        /// </summary>
+        public static NilSeatRoles FromPbnOrder(string pbn, params NilSeatRole[] clockwiseFromAnchor)
+        {
+            if (clockwiseFromAnchor == null) throw new ArgumentNullException(nameof(clockwiseFromAnchor));
+            if (clockwiseFromAnchor.Length != 4)
+            {
+                throw new ArgumentException("expected exactly four seat roles",
+                                            nameof(clockwiseFromAnchor));
+            }
+            int anchor = (int)PbnAnchor(pbn);
+            var roles = new NilSeatRole[4];
+            for (int offset = 0; offset < 4; offset++)
+            {
+                roles[(anchor + offset) & 3] = clockwiseFromAnchor[offset];
+            }
+            return new NilSeatRoles(roles[0], roles[1], roles[2], roles[3]);
+        }
+
+        /// <summary>The array to hand to the native side, in that deal string's order.</summary>
+        public int[] ToPbnOrder(string pbn)
+        {
+            int anchor = (int)PbnAnchor(pbn);
+            var wire = new int[4];
+            for (int offset = 0; offset < 4; offset++)
+            {
+                wire[offset] = (int)this[(NilSeat)((anchor + offset) & 3)];
+            }
+            return wire;
+        }
+
+        public bool IsNil(NilSeat seat)
+        {
+            NilSeatRole role = this[seat];
+            return role == NilSeatRole.Nil || role == NilSeatRole.NilSet;
+        }
+
+        /// <summary>Is this seat on the side protecting a nil, rather than attacking one?</summary>
+        public bool OnNilSide(NilSeat seat) => this[seat] != NilSeatRole.Opponent;
+
+        /// <summary>The seat holding a nil. Throws if none does.</summary>
+        public NilSeat NilSeat
+        {
+            get
+            {
+                for (int i = 0; i < 4; i++)
+                {
+                    if (IsNil((NilSeat)i)) return (NilSeat)i;
+                }
+                throw new InvalidOperationException("no seat bid nil (" + Describe() + ")");
+            }
+        }
+
+        /// <summary>The seat covering the nil. Throws if none does.</summary>
+        public NilSeat CoverSeat
+        {
+            get
+            {
+                for (int i = 0; i < 4; i++)
+                {
+                    if (this[(NilSeat)i] == NilSeatRole.Cover) return (NilSeat)i;
+                }
+                throw new InvalidOperationException("no cover partner (" + Describe() + ")");
+            }
+        }
+
+        public bool NilAlreadySet
+        {
+            get
+            {
+                for (int i = 0; i < 4; i++)
+                {
+                    if (this[(NilSeat)i] == NilSeatRole.NilSet) return true;
+                }
+                return false;
+            }
+        }
+
+        /// <summary>Absolute and unambiguous: "N=Nil E=Opponent S=Cover W=Opponent".</summary>
+        public string Describe()
+        {
+            return string.Format("N={0} E={1} S={2} W={3}", _north, _east, _south, _west);
+        }
+
+        public override string ToString() => Describe();
+
+        public bool Equals(NilSeatRoles other)
+        {
+            return _north == other._north && _east == other._east
+                && _south == other._south && _west == other._west;
+        }
+
+        public override bool Equals(object? obj) => obj is NilSeatRoles other && Equals(other);
+
+        public override int GetHashCode()
+        {
+            return (int)_north | ((int)_east << 2) | ((int)_south << 4) | ((int)_west << 6);
+        }
+
+        public static bool operator ==(NilSeatRoles a, NilSeatRoles b) => a.Equals(b);
+
+        public static bool operator !=(NilSeatRoles a, NilSeatRoles b) => !a.Equals(b);
+    }
+
+    /// <summary>
     /// Bitwise options for a solve. See the header for the full argument behind
     /// each one; the summaries here are the short version.
     /// </summary>
@@ -61,12 +272,10 @@ namespace NilSolver
         /// <summary>Tie-break direction: each pair takes as FEW tricks as it can, not as many.</summary>
         MinimiseOwnTricks = 0x10u,
 
-        /// <summary>
-        /// The nil has already been broken in the real game. Drops the primary
-        /// objective; NilFails then reads 1 because you said so, not because it
-        /// was computed.
-        /// </summary>
-        NilAlreadySet = 0x20u,
+        // Bit 0x20u is RETIRED AND BURNED, not free. It was NilAlreadySet, which
+        // is now NilSeatRole.NilSet in the roles passed alongside. The bit stays
+        // unassigned rather than recycled so an old caller gets an ignored flag
+        // rather than a silently different objective.
 
         /// <summary>Generate every legal card rather than one per rank-equivalent class. Diagnostic.</summary>
         NoCollapse = 0x40u,
@@ -174,18 +383,28 @@ namespace NilSolver
     }
 
     /// <summary>Return codes. <see cref="Ok"/> is success; everything else is negative.</summary>
+    /// <remarks>
+    /// These had drifted from the header. -4 was once NIL_ERR_TOO_MANY_CARDS,
+    /// reporting a refusal that no longer exists; the header dropped it and moved
+    /// everything below up by one, and this mirror was not moved with it. Every
+    /// code from -4 down therefore read as the wrong name, and
+    /// <see cref="Unsupported"/> could not be produced at all -- which matters
+    /// now that a roles array holding two nils returns exactly that.
+    /// </remarks>
     public enum NilStatus
     {
         Ok = 0,
         NullArgument = -1,
         Parse = -2,
         IllegalPosition = -3,
-        TooManyCards = -4,
-        BufferTooSmall = -5,
-        Internal = -6,
+        BufferTooSmall = -4,
+        Internal = -5,
 
-        /// <summary>The flags asked for something this entry point cannot produce -- today, a PV in fast mode.</summary>
-        Unsupported = -7
+        /// <summary>
+        /// The call asked for something this build cannot produce: a principal
+        /// variation in fast mode, or a roles array with more than one nil in it.
+        /// </summary>
+        Unsupported = -6
     }
 
     /// <summary>
@@ -288,7 +507,7 @@ namespace NilSolver
             [MarshalAs(UnmanagedType.LPStr)] string pbn,
             int leader,
             [MarshalAs(UnmanagedType.LPStr)] string currentTrick,
-            int nilSeat,
+            [In] int[] seats,
             uint flags,
             out NilResult result,
             StringBuilder errBuf,
@@ -299,7 +518,7 @@ namespace NilSolver
             [MarshalAs(UnmanagedType.LPStr)] string pbn,
             int leader,
             [MarshalAs(UnmanagedType.LPStr)] string currentTrick,
-            int nilSeat,
+            [In] int[] seats,
             uint flags,
             out NilResult result,
             StringBuilder pvBuf,
@@ -312,7 +531,7 @@ namespace NilSolver
             [MarshalAs(UnmanagedType.LPStr)] string pbn,
             int leader,
             [MarshalAs(UnmanagedType.LPStr)] string currentTrick,
-            int nilSeat,
+            [In] int[] seats,
             uint flags,
             out NilResult result,
             [Out] NilMove[] moves,
@@ -326,7 +545,7 @@ namespace NilSolver
             [MarshalAs(UnmanagedType.LPStr)] string pbn,
             int leader,
             [MarshalAs(UnmanagedType.LPStr)] string currentTrick,
-            int nilSeat,
+            [In] int[] seats,
             uint flags);
 
         /// <summary>

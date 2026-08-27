@@ -22,8 +22,8 @@
 //   nil_bench --random --cards 7 --count 10 --seed 1     # timing only, no answers
 //
 // Corpus entries carry their own objective settings (tie-break direction and
-// the already-set flag), so a corpus run exercises all of them; --secondary and
-// --nil-already-set only apply to --random runs.
+// the seat roles), so a corpus run exercises all of them; --secondary and
+// --seats only apply to --random runs.
 //
 // MODES
 // -----
@@ -43,6 +43,7 @@
 #include <chrono>
 #include <ctime>
 #include <cmath>
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -58,6 +59,7 @@
 #include "nil/position.hpp"
 #include "nil/rules.hpp"
 #include "nil/search.hpp"
+#include "nil/seats.hpp"
 
 #ifndef NIL_BUILD_CONFIG
 #define NIL_BUILD_CONFIG "unknown"
@@ -316,8 +318,10 @@ void append_history(const std::string& path, const Provenance& prov, const std::
     row("all", all_positions, all_nodes, all_ms);
 }
 
-// Deal `cards` to each seat, plus a random leader/nil/broken flag.
-nil::Position random_position(Rng& rng, int cards, int& nil_seat) {
+// Deal `cards` to each seat, plus a random leader/nil/broken flag.  `pattern`
+// is the role list to hang on the drawn nil seat -- see --seats below.
+nil::Position random_position(Rng& rng, int cards, const nil::SeatRoles& pattern,
+                              nil::SeatRoles& roles_out) {
     int deck[52];
     for (int i = 0; i < 52; ++i) deck[i] = nil::make_card(i / 13, i % 13 + 2);
     for (int i = 51; i > 0; --i) {
@@ -346,7 +350,14 @@ nil::Position random_position(Rng& rng, int cards, int& nil_seat) {
         spades_dealt += nil::count_cards(pos.hands[seat] & nil::suit_mask(nil::SUIT_SPADES));
     const bool broken_coin = (rng.below(2) != 0);
     pos.spades_broken = spades_dealt < 13 && broken_coin;
-    nil_seat = static_cast<int>(rng.below(4));
+    // The draw stays exactly where it was in the stream, because moving it
+    // would move every deal after it and orphan every node count banked on this
+    // generator.
+    const int nil_seat = static_cast<int>(rng.below(4));
+    const int pattern_nil = pattern.nil_seat();
+    for (int offset = 0; offset < 4; ++offset) {
+        roles_out.role[(nil_seat + offset) & 3] = pattern.role[(pattern_nil + offset) & 3];
+    }
     return pos;
 }
 
@@ -367,7 +378,10 @@ void usage(const char* argv0) {
               << "                    each mode and requires the two to agree\n"
               << "  --secondary max|min  tie-break direction for --random runs; corpus\n"
               << "                    entries carry their own\n"
-              << "  --nil-already-set    likewise, for --random runs\n"
+              << "  --seats <r r r r> role list for --random runs, clockwise from the\n"
+              << "                    seat the generator draws as the nil bidder; 0 = nil,\n"
+              << "                    1 = nil already broken, 2 = cover, 3 = opponent.\n"
+              << "                    Corpus rows carry their own    [0 3 2 3]\n"
               << "  --check-pv        also require the recorded PV to match (see below)\n"
               << "  --check-moves     also score every legal card at each position and\n"
               << "                    require the list to agree with the position\n"
@@ -508,6 +522,10 @@ int main(int argc, char** argv) {
     int cards_only = 0;
     std::uint64_t seed = 1;
     nil::SearchOptions opts;
+    // The role SHAPE for --random deals.  Re-anchored per deal onto the seat
+    // the generator draws, so only the pattern here matters, not the seats.
+    nil::SeatRoles random_roles;
+    std::string err_text;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -595,8 +613,41 @@ int main(int argc, char** argv) {
                 return 2;
             }
             opts.minimise_own_tricks = (mode == "min");
-        } else if (arg == "--nil-already-set") {
-            opts.nil_already_set = true;
+        } else if (arg == "--seats" && has_next) {
+            std::string text = argv[++i];
+            int digits = 0;
+            for (char ch : text) {
+                if (std::isdigit(static_cast<unsigned char>(ch))) ++digits;
+            }
+            while (i + 1 < argc && digits < 4) {
+                const std::string next = argv[i + 1];
+                // Digits, commas and spaces only, and at least one digit -- so
+                // '0 3 2 3' quoted into one argument works as well as four
+                // separate words, and the next --flag ends the list.
+                bool all_role_chars = true;
+                bool has_digit = false;
+                for (char ch : next) {
+                    if (std::isdigit(static_cast<unsigned char>(ch))) {
+                        has_digit = true;
+                    } else if (ch != ',' && !std::isspace(static_cast<unsigned char>(ch))) {
+                        all_role_chars = false;
+                    }
+                }
+                if (!all_role_chars || !has_digit) break;
+                for (char ch : next) {
+                    if (std::isdigit(static_cast<unsigned char>(ch))) ++digits;
+                }
+                text += ' ';
+                text += next;
+                ++i;
+            }
+            // Read against North, then re-anchored per deal onto whichever seat
+            // the generator drew.  Only the SHAPE of the list matters here.
+            if (!nil::parse_seat_roles(text, nil::SEAT_NORTH, random_roles, err_text) ||
+                !nil::validate_seat_roles(random_roles, err_text)) {
+                std::cerr << "error: --seats: " << err_text << "\n";
+                return 2;
+            }
         } else if (arg == "--check-moves") {
             check_moves = true;
         } else if (arg == "--check-pv") {
@@ -643,9 +694,8 @@ int main(int argc, char** argv) {
     struct Item {
         std::string name;
         nil::Position position;
-        int nil_seat;
+        nil::SeatRoles roles;
         bool minimise_own;
-        bool nil_already_set;
         int expected;
         int expected_side;
         std::string expected_pv;
@@ -666,9 +716,9 @@ int main(int argc, char** argv) {
         }
         for (const nil::CorpusEntry& e : entries) {
             if (cards_only && e.position.cards_per_hand() != cards_only) continue;
-            items.push_back(Item{e.name, e.position, e.nil_seat,
-                                 e.minimise_own_tricks, e.nil_already_set, e.expected_tricks,
-                                 e.expected_side_tricks, e.expected_pv, nil::corpus_repro(e)});
+            items.push_back(Item{e.name, e.position, e.roles, e.minimise_own_tricks,
+                                 e.expected_tricks, e.expected_side_tricks, e.expected_pv,
+                                 nil::corpus_repro(e)});
         }
         if (items.empty()) {
             std::cerr << "error: corpus has no positions matching the filter\n";
@@ -677,12 +727,12 @@ int main(int argc, char** argv) {
     } else {
         Rng rng(seed);
         for (int i = 0; i < count; ++i) {
-            int nil_seat = 0;
-            nil::Position pos = random_position(rng, cards, nil_seat);
+            nil::SeatRoles roles;
+            nil::Position pos = random_position(rng, cards, random_roles, roles);
             std::ostringstream name;
             name << "r" << cards << "-" << std::setw(4) << std::setfill('0') << i;
-            items.push_back(Item{name.str(), pos, nil_seat, opts.minimise_own_tricks,
-                                 opts.nil_already_set, -1, -1, "", ""});
+            items.push_back(Item{name.str(), pos, roles, opts.minimise_own_tricks,
+                                 -1, -1, "", ""});
         }
     }
 
@@ -732,8 +782,7 @@ int main(int argc, char** argv) {
             const Clock::time_point t0 = Clock::now();
             nil::SearchOptions run_opts = opts;
             run_opts.minimise_own_tricks = item.minimise_own;
-            run_opts.nil_already_set = item.nil_already_set;
-            if (!nil::solve(item.position, item.nil_seat, run_opts, sol, err)) {
+            if (!nil::solve(item.position, item.roles, run_opts, sol, err)) {
                 std::cerr << "FAIL " << item.name << ": solve failed: " << err << "\n";
                 ++failures;
                 break;
@@ -748,8 +797,8 @@ int main(int argc, char** argv) {
             // Fast mode computes no trick counts, so what a corpus row pins
             // here is the boolean those counts imply.  A row with no recorded
             // answer at all pins nothing, in either mode.
-            if (solved && (item.expected >= 0 || item.nil_already_set)) {
-                const bool want = item.nil_already_set || item.expected > 0;
+            if (solved && (item.expected >= 0 || item.roles.nil_already_set())) {
+                const bool want = item.roles.nil_already_set() || item.expected > 0;
                 if (sol.nil_fails != want) {
                     std::cout << "FAIL " << item.name << ": expected nil_fails=" << (want ? 1 : 0)
                               << ", got " << (sol.nil_fails ? 1 : 0) << "\n  " << item.repro
@@ -776,9 +825,8 @@ int main(int argc, char** argv) {
             nil::SearchOptions full_opts = opts;
             full_opts.mode = nil::MODE_FULL;
             full_opts.minimise_own_tricks = item.minimise_own;
-            full_opts.nil_already_set = item.nil_already_set;
             nil::Solution full;
-            if (!nil::solve(item.position, item.nil_seat, full_opts, full, err)) {
+            if (!nil::solve(item.position, item.roles, full_opts, full, err)) {
                 std::cout << "FAIL " << item.name << ": full-mode solve failed: " << err << "\n  "
                           << item.repro << "\n";
                 ++failures;
@@ -792,7 +840,7 @@ int main(int argc, char** argv) {
                               << "\n";
                     ++failures;
                 }
-                if (item.nil_already_set) {
+                if (item.roles.nil_already_set()) {
                     ++mode_unsearched;
                 } else {
                     cmp_full_nodes += full.nodes;
@@ -808,10 +856,9 @@ int main(int argc, char** argv) {
         if (check_moves && solved) {
             nil::SearchOptions move_opts = opts;
             move_opts.minimise_own_tricks = item.minimise_own;
-            move_opts.nil_already_set = item.nil_already_set;
             nil::Solution msol;
             std::vector<nil::MoveScore> scored;
-            if (!nil::solve_moves(item.position, item.nil_seat, move_opts, msol, scored, err)) {
+            if (!nil::solve_moves(item.position, item.roles, move_opts, msol, scored, err)) {
                 std::cout << "FAIL " << item.name << ": solve_moves failed: " << err << "\n  "
                           << item.repro << "\n";
                 ++failures;
