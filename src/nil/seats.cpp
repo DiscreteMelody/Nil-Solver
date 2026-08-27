@@ -2,6 +2,7 @@
 
 #include <cctype>
 #include <sstream>
+#include <string>
 
 namespace nil {
 
@@ -44,10 +45,31 @@ SeatRoles seat_roles_from_nil(int nil_seat, bool already_set) {
     return out;
 }
 
+int nil_count(const SeatRoles& roles) {
+    int n = 0;
+    for (int s = 0; s < 4; ++s) {
+        if (roles.is_nil(s)) ++n;
+    }
+    return n;
+}
+
+unsigned nil_seat_mask(const SeatRoles& roles) {
+    unsigned mask = 0;
+    for (int s = 0; s < 4; ++s) {
+        if (roles.is_nil(s)) mask |= 1u << s;
+    }
+    return mask;
+}
+
 bool validate_seat_roles(const SeatRoles& roles, std::string& err) {
+    return seat_shape(roles, err) != SHAPE_UNSUPPORTED;
+}
+
+SeatShape seat_shape(const SeatRoles& roles, std::string& err) {
     int nils = 0;
     int covers = 0;
     int nil_at = -1;
+    int second_nil_at = -1;
     int cover_at = -1;
     for (int s = 0; s < 4; ++s) {
         const int r = static_cast<int>(roles.role[s]);
@@ -56,11 +78,15 @@ bool validate_seat_roles(const SeatRoles& roles, std::string& err) {
             os << "seat " << SEAT_CHARS[s] << " has role " << r
                << "; expected 0 (nil), 1 (nil-set), 2 (cover) or 3 (opponent)";
             err = os.str();
-            return false;
+            return SHAPE_UNSUPPORTED;
         }
         if (roles.is_nil(s)) {
             ++nils;
-            if (nil_at < 0) nil_at = s;
+            if (nil_at < 0) {
+                nil_at = s;
+            } else if (second_nil_at < 0) {
+                second_nil_at = s;
+            }
         }
         if (r == ROLE_COVER) {
             ++covers;
@@ -71,35 +97,57 @@ bool validate_seat_roles(const SeatRoles& roles, std::string& err) {
     if (nils == 0) {
         err = "no seat bid nil (" + describe_seat_roles(roles) +
               "); one seat must have role 0 or 1";
-        return false;
+        return SHAPE_UNSUPPORTED;
     }
-    // The one refusal that is about a feature rather than about a mistake.  Say
-    // so plainly: a caller passing two nils has described a legal spades deal,
-    // and the solver is the thing that is not ready.
-    if (nils > 1) {
-        err = "more than one nil bid (" + describe_seat_roles(roles) +
-              "); solving with multiple nils is not supported yet";
-        return false;
+
+    if (nils == 1) {
+        if (covers == 0) {
+            err = "no cover partner for " + std::string(1, SEAT_CHARS[nil_at]) + "'s nil (" +
+                  describe_seat_roles(roles) + "); one seat must have role 2";
+            return SHAPE_UNSUPPORTED;
+        }
+        if (covers > 1) {
+            err = "more than one cover partner (" + describe_seat_roles(roles) +
+                  "); exactly one seat may have role 2";
+            return SHAPE_UNSUPPORTED;
+        }
+        if (cover_at != ((nil_at + 2) & 3)) {
+            std::ostringstream os;
+            os << "the cover partner must sit across from the nil bidder: " << SEAT_CHARS[nil_at]
+               << " bid nil, so the cover is " << SEAT_CHARS[(nil_at + 2) & 3] << " and not "
+               << SEAT_CHARS[cover_at] << " (" << describe_seat_roles(roles) << ")";
+            err = os.str();
+            return SHAPE_UNSUPPORTED;
+        }
+        return SHAPE_SINGLE_NIL;
     }
-    if (covers == 0) {
-        err = "no cover partner for " + std::string(1, SEAT_CHARS[nil_at]) + "'s nil (" +
-              describe_seat_roles(roles) + "); one seat must have role 2";
-        return false;
+
+    if (nils == 2) {
+        if (second_nil_at != ((nil_at + 2) & 3)) {
+            err = "the two nil bidders are not partners (" + describe_seat_roles(roles) +
+                  "); nils on OPPOSING sides are not supported yet";
+            return SHAPE_UNSUPPORTED;
+        }
+        if (covers > 0) {
+            err = "a pair that both bid nil has nobody left to cover (" +
+                  describe_seat_roles(roles) + "); the other two seats must both have role 3";
+            return SHAPE_UNSUPPORTED;
+        }
+        // The primary level counts bids that are still alive, so one already
+        // down beside one still standing has no meaning yet.
+        for (int s = 0; s < 4; ++s) {
+            if (roles.role[s] == ROLE_NIL_SET) {
+                err = "an already-broken nil alongside a live one is not supported yet (" +
+                      describe_seat_roles(roles) + ")";
+                return SHAPE_UNSUPPORTED;
+            }
+        }
+        return SHAPE_PARTNER_NILS;
     }
-    if (covers > 1) {
-        err = "more than one cover partner (" + describe_seat_roles(roles) +
-              "); exactly one seat may have role 2";
-        return false;
-    }
-    if (cover_at != ((nil_at + 2) & 3)) {
-        std::ostringstream os;
-        os << "the cover partner must sit across from the nil bidder: " << SEAT_CHARS[nil_at]
-           << " bid nil, so the cover is " << SEAT_CHARS[(nil_at + 2) & 3] << " and not "
-           << SEAT_CHARS[cover_at] << " (" << describe_seat_roles(roles) << ")";
-        err = os.str();
-        return false;
-    }
-    return true;
+
+    err = std::to_string(nils) + " nils (" + describe_seat_roles(roles) +
+          "); more than two is not supported yet";
+    return SHAPE_UNSUPPORTED;
 }
 
 bool parse_seat_roles(const std::string& text, int anchor, SeatRoles& out, std::string& err) {

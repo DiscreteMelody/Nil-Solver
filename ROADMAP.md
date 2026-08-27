@@ -38,6 +38,7 @@ expensive node. Read items 11 and 31 in that light.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ✅ | ~~Two nils on one side: the C++ solver~~ | patch 58 | **correct first, fast never -- and the measurement says the shape was never the problem.** `validate_seat_roles` grows a `seat_shape()` mirroring the oracle's `role_shape()`; `State` carries a broken-nil mask; `score_trick()` forks the trick accounting so the primary weight is charged once per bidder on its FIRST trick rather than on every trick it takes; `objective_weights` forks to `K*K * (bids down)`. **All 150 oracle rows match**, and single-nil is unmoved at 39,701 / 278,059 / 49,084 with 22/22. **The shape is nearly free and the gating is not**: same deals, both questions, all machinery off on both sides, two nils costs 1.05x / 1.03x / 1.09x at 4/5/6 cards. On the same deals the machinery the shape gives up is worth **3.0x / 4.9x / 7.6x** -- and it GROWS with card count, which is the number that matters for 13. **The internal consistency check caught the one real bug**: it re-packed the value with the single-nil formula and reported 60 against the search's correct 35, on a position where the search had already agreed with the oracle. A check that is not forked alongside the thing it checks silently stops checking. **MODE_FAST refuses the shape** rather than answering it |
 | ✅ | ~~One corpus schema for both shapes, and a proposal withdrawn~~ | patch 57 | **the format I proposed was wrong, and measuring it said so.** The plan was four PER-SEAT trick counts as the universal answer column, on the reasoning that `nil_tricks` names "the nil bidder" and that has two answers when a pair both bid. **An answer column may only hold what the OBJECTIVE pins**, and per-seat counts are not pinned: nothing in either objective constrains how the opponents split tricks between themselves, or how a pair that has already lost both bids splits its own. Re-searching all 140 solved two-nil rows preferring the LAST equally-good card instead of the first -- which is exactly what a move-ordering change does -- **moved the value on 0 rows and moved the per-seat counts on 43**. Recording them would have made the corpus fail the first time move ordering changed, which is the thing its header has always warned about for the PV. **What shipped instead is one new column**, `nils_set`, and a uniform reading of the two that were already there: `nil_tricks` is now *tricks taken by seats holding a nil bid* -- the bidder's own count with one bidder, pinned by the primary; the pair's total with two, pinned by the secondary, where it equals `side_tricks` because there is no cover to add. One definition, both shapes, always determined. All three corpora now share a schema, so `corpus_view.py` and the C++ loader read `multinil.txt` without a special case, and `nil_bench` checks the recorded count rather than inferring a boolean from a trick count. **Unmoved**: 39,701 fast / 278,059 full / 49,084, all 560 values matching, 22/22. `make_multinil_corpus.py` regenerates the converted rows byte-for-byte |
 | ✅ | ~~`nil_fails` widened from a flag to a count~~ | patch 56 | **a boolean with two answers, asked of a question that has three.** `nil_fails` was 0 or 1: was THE nil broken. A pair that both bid has three answers, so the field is now `nils_set`, an integer count of how many bids are down. **A widening, not a break**: with a single nil the count is 0 or 1, numerically what the flag held, so `if (nils_set)` reads exactly as `if (nil_fails)` did and no caller's logic inverts. A bid the caller declared broken with `ROLE_NIL_SET` counts toward it, since the question is how many are down rather than how many the search knocked down. **The single-nil search is untouched and the numbers say so** -- 39,701 fast / 278,059 full / 49,084 on `large.txt` all unmoved, 22/22, `--mode both` agrees on every one of the 560. The change is at the REPORTING boundary only: `MODE_FAST` still searches the nil bidder's trick count over a `[0, 1]` window and the count is read off at the end, because moving the fast-mode value to a 0/1/2 scale would move the fail-soft returns and orphan every banked count. Renamed through `Solution`, `MoveScore`, `nil_result`, `nil_move`, both CLIs' compact output, `nil_oracle.py` (where single-nil `Solution` grows a `nils_set` property so both result types answer in the same units) and the Python tools. The ABI entry point `nil_fails()` becomes `nil_count_set()`, since a function named for a predicate that returns a count is a trap. C# got the rename ONLY -- a renamed P/Invoke target fails at runtime rather than at compile time, so leaving it would have been a landmine; the real C# work is still pending |
 | ✅ | ~~Two nils on one side, in the oracle~~ | patch 55 | **the ground truth goes first, and the measurement is half the deliverable.** `nil_oracle.py` answers `--seats 0 3 0 3`: one pair bid two nils, the other pair is trying to set both. Objective is lexicographic as specified -- **primary** how many of the two nils are set (opponents maximize, the pair minimizes), **secondary** the pair's own trick count under `--secondary`. **This could not reuse the existing search, and the reason is structural.** The single-nil objective is ADDITIVE: every completed trick contributes a fixed amount, so `_search` accumulates as it unwinds and needs no memory. *How many nils got set* is a step function -- a nil bidder's FIRST trick costs the whole primary level and every later one costs nothing -- so the value of a subtree depends on which nils were already broken on the way in. `_search_multi` carries that as a two-bit mask in its state and in its memo key, the same way `spades_broken` already travels. **The two levels are coupled in a way the single-nil pair is not**: every trick the pair takes is taken BY a bidder, so having lost one bid the pair funnels everything through the seat already broken and keeps the other alive -- which is what a spades player does, and what a naive *minimize our own tricks* objective gets wrong. Pinned by selftest. **Coalitions here come from the roles, not from parity** -- new code, no ground truth to preserve, so it does the correct thing; the two agree whenever the nils sit N/S. `replay_pv` is now a reading of a new role-agnostic `replay_pv_by_seat`, so the two verifiers cannot disagree; the 560-row corpus and `crosscheck.py` confirm nothing moved. **New corpus** `tests/corpus/multinil.txt`: 150 oracle-computed rows at 4-6 cards plus 6 constructed 13-card deals with `?` answers for local timing, all 150 re-verified independently by PV replay. **Not wired into ctest** -- the C++ solver still refuses the shape, by design. **Three measurements, and the first one is a negative result**: see below |
@@ -3443,6 +3444,36 @@ there for exactly that, and the honest first number is a node count with every
 bound disabled, so the cost of the shape is separated from the cost of the
 bounds not applying to it.
 
+### 61. The transposition table for two nils — ⭐⭐⭐⭐⭐ — **next, and measure it alone**
+
+The table is OFF for the shape, because two positions identical in cards but
+reached under different broken-nil masks are not the same position and the key
+does not carry the mask. Adding it is a two-bit widening of
+`encode_state_key`.
+
+The oracle already priced it: distinct memo entries went up **9-12%**, not 4x,
+because most positions are only ever reached under one mask value. That is a
+LOWER bound -- a fixed-size table under more distinct keys loses more than the
+key count alone says -- and it is the whole reason this gets its own patch and
+its own A/B rather than riding in with the bound re-derivations.
+
+### 62. Re-deriving the bounds for two nils — ⭐⭐⭐⭐⭐
+
+Where all the remaining value is. The all-off baseline in patch 58 is the
+control arm, and the target is the 3.0x / 4.9x / 7.6x the single-nil solver
+gets on the same deals.
+
+Order by what the measurement says, not by what is easiest. `target_bounds` is
+the big one and the hardest: it takes the extremes of `per_nil * n +
+per_partner * p` at the vertices of a triangle, and the two-nil primary is a
+step function of `n` and `p`, so vertex evaluation proves nothing. It needs a
+genuinely new derivation over the three outcomes `nils_set in {0,1,2}` rather
+than a port. `nil_cannot_be_forced` is the cheapest win: the PREDICATE is still
+true, and only its consumer -- "the primary term vanishes" -- is wrong, so it
+becomes "this bidder's own bid survives" and settles one of the two levels
+rather than the whole value. **Exhaustive property test before wiring anything**;
+150 rows is evidence about 150 rows.
+
 ### 60. Nils on OPPOSING sides — ⭐⭐⭐
 
 `0 3 0 3` was chosen first because it is the easy one: the two bidders are
@@ -3466,7 +3497,7 @@ whether this one is affordable at all.
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 36 ✅ → 41 ✅ → 42 ⊘ → 47 ✅ → 43 ⊘→✅ → 43b ⊘ → 44 ⏸ → 54 ✅ → 58 ✅ → 56 ✅ → 57 ✅ → 59 → 45 → 29b (single-suit) → 9 ⊘ → 10 ⊘ → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 36 ✅ → 41 ✅ → 42 ⊘ → 47 ✅ → 43 ⊘→✅ → 43b ⊘ → 44 ⏸ → 54 ✅ → 58 ✅ → 56 ✅ → 57 ✅ → 59 ✅ → 61 → 62 → 45 → 29b (single-suit) → 9 ⊘ → 10 ⊘ → measure → 11..14
 ```
 
 **Patch 47 comes before all of it, and it is not an optimisation.** The random

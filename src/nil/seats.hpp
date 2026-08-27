@@ -92,12 +92,30 @@ struct SeatRoles {
 // the other pair opposing.
 SeatRoles seat_roles_from_nil(int nil_seat, bool already_set);
 
-// PHASE ONE'S SHAPE CHECK.  Exactly one seat holds a nil, exactly one covers
-// it, the cover is that seat's partner, and the remaining two oppose.  Sets
-// `err` and returns false otherwise, naming what is wrong -- in particular, an
-// arrangement with two nils is refused as unsupported rather than as malformed,
-// because that is what it is.
+// The arrangements the solver can answer, and the name each goes by.  Mirrors
+// role_shape() in nil_oracle.py, which is the specification.
+enum SeatShape : int {
+    SHAPE_UNSUPPORTED = 0,
+    // One nil, its partner covering, two opponents.
+    SHAPE_SINGLE_NIL = 1,
+    // Both members of one pair bid; the other two oppose and there is no cover.
+    SHAPE_PARTNER_NILS = 2,
+};
+
+// Name the arrangement, or SHAPE_UNSUPPORTED with `err` saying why.  An
+// arrangement nobody has implemented is refused rather than answered as some
+// adjacent question -- in particular nils on OPPOSING sides, which is a legal
+// spades deal and not a malformed argument.
+SeatShape seat_shape(const SeatRoles& roles, std::string& err);
+
+// True for any shape the solver can answer.  See seat_shape.
 bool validate_seat_roles(const SeatRoles& roles, std::string& err);
+
+// How many seats hold a bid: 1 or 2 on any accepted shape.
+int nil_count(const SeatRoles& roles);
+
+// Bit `s` set for each seat holding a bid.
+unsigned nil_seat_mask(const SeatRoles& roles);
 
 // Text form, ANCHORED: four values running clockwise from `anchor`, matching
 // the hand order of a PBN string named for the same seat.  Accepts them

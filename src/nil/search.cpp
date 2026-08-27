@@ -18,6 +18,18 @@ struct State {
     CardId trick[3];
     int trick_len;
     bool broken;
+    // Bit `s` set for each NIL BIDDER that has already taken a trick on the way
+    // to this node.  Zero and untouched under a single nil.
+    //
+    // WHY THIS IS PATH STATE.  The single-nil objective is additive: every
+    // completed trick contributes a fixed amount, so a subtree's value does not
+    // depend on how it was reached.  "How many nils are set" is a step
+    // function -- a bidder's FIRST trick costs the whole primary level and
+    // every later one costs nothing -- so it does.  This is what carries that,
+    // and it is why the transposition table is switched off for the shape: two
+    // positions identical in cards but reached under different masks are not
+    // the same position, and the key does not say so yet.  See ROADMAP item 61.
+    unsigned char nils_broken;
 
     bool empty() const { return (hands[0] | hands[1] | hands[2] | hands[3]) == 0; }
     int to_play() const { return (leader + trick_len) & 3; }
@@ -58,6 +70,13 @@ constexpr int WINDOW_MAX = 1 << 29;
 
 struct Ctx {
     int nil_seat = 0;
+    // A pair that both bid nil.  The primary level then counts BIDS DOWN rather
+    // than weighting one seat's tricks, so `primary_weight` is charged once per
+    // bidder on its first trick instead of on every trick it takes.
+    bool multi_nil = false;
+    // Bit `s` for each seat holding a bid.  Equal to (1 << nil_seat) unless
+    // multi_nil.
+    unsigned char nil_mask = 0;
     int primary_weight = 0;    // K*K, or 0 when the nil is already set
     int secondary_weight = -1; // -K the nil side wants tricks, +K it wants rid of them
     int tertiary_weight = 0;   // 1 when the cover partner's share is what counts
@@ -407,6 +426,36 @@ inline Hand ranks_read_by_set_proof(const Hand hands[4], int nil_seat) {
 //
 // Split out of search()'s loop so that solve_moves() below runs the identical
 // transition rather than a second copy of it.  Two copies of this arithmetic is
+// What a completed trick is worth, and what it does to the broken-nil mask.
+//
+// TWO OBJECTIVES, ONE FUNCTION.  Under a single nil the primary level weights
+// the bidder's trick COUNT, so its weight is charged every time that seat wins.
+// Under a pair that both bid it counts BIDS DOWN, so the weight is charged on a
+// bidder's first trick and on none after it -- which is why the mask exists and
+// why it has to travel with the state rather than being recomputed.
+//
+// The secondary level is the same in both: the bidding side's own tricks,
+// wanted or shed according to the sign of the weight.  With two bidders every
+// trick the side takes is taken BY a bidder, so the two levels pull against
+// each other and the lexicographic order does real work -- having lost one bid,
+// the pair funnels everything through the seat already broken.
+inline int score_trick(const Ctx& ctx, const State& st, int winner, State& next) {
+    next.nils_broken = st.nils_broken;
+    int gained = 0;
+    if (ctx.multi_nil) {
+        const unsigned bit = 1u << winner;
+        if ((ctx.nil_mask & bit) && !(st.nils_broken & bit)) {
+            gained += ctx.primary_weight;
+            next.nils_broken = static_cast<unsigned char>(st.nils_broken | bit);
+        }
+    } else if (winner == ctx.nil_seat) {
+        gained += ctx.primary_weight + ctx.tertiary_weight;
+    }
+    if (((winner ^ ctx.nil_seat) & 1) == 0) gained += ctx.secondary_weight;
+    return gained;
+}
+
+
 // how a move list would come to disagree with the search that produced it.
 int advance(const Ctx& ctx, const State& st, CardId card, State& next) {
     const int seat = st.to_play();
@@ -425,10 +474,7 @@ int advance(const Ctx& ctx, const State& st, CardId card, State& next) {
     const int winner = trick_winner(st.leader, played, 4);
     next.leader = winner;
     next.trick_len = 0;
-    int gained = 0;
-    if (winner == ctx.nil_seat) gained += ctx.primary_weight + ctx.tertiary_weight;
-    if (((winner ^ ctx.nil_seat) & 1) == 0) gained += ctx.secondary_weight;
-    return gained;
+    return score_trick(ctx, st, winner, next);
 }
 
 // The value of playing `card` at `st`, against the window `st` was given.
@@ -537,9 +583,9 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
                                       lowest_card(st.hands[(st.leader + 2) & 3]),
                                       lowest_card(st.hands[(st.leader + 3) & 3])};
             const int winner = trick_winner(st.leader, played, 4);
-            int gained = 0;
-            if (winner == ctx.nil_seat) gained += ctx.primary_weight + ctx.tertiary_weight;
-            if (((winner ^ ctx.nil_seat) & 1) == 0) gained += ctx.secondary_weight;
+            // Nothing follows the last trick, so the updated mask is discarded.
+            State ignored_next;
+            const int gained = score_trick(ctx, st, winner, ignored_next);
             best_move = played[0];
             // The same by-rank test value_after() applies to every other trick.
             // `winner` is a seat, so the winning CARD is the one at that seat's
@@ -1232,6 +1278,43 @@ int value_after(Ctx& ctx, const State& st, CardId card, int alpha, int beta, Sta
 // weights differ between the modes -- a fast-mode 1 and a full-mode 1 are not
 // the same number.  new_search() on every solve is what keeps one mode's
 // entries out of the other's search, and it is not optional.
+// EVERYTHING THAT ASSUMES ONE NIL, SWITCHED OFF FOR A PAIR THAT BOTH BID.
+//
+// Not caution for its own sake.  Each of these is sound because of a specific
+// property of the single-nil objective that the two-nil one does not have:
+//
+//   static_bounds     bounds.hpp proves things about "the nil bidder" and "the
+//                     cover partner" as two hands with opposite jobs.  There is
+//                     no cover here, and the side's own tricks are the thing it
+//                     is trying not to take.  nil_cannot_be_forced is the sharp
+//                     case: the PREDICATE stays true -- that seat really cannot
+//                     win another trick -- but its consumer concludes the
+//                     primary term vanishes, and the partner's bid can still go
+//                     down.  A sound proof wired to a stale consumer returns a
+//                     confidently wrong value with nothing to catch it.
+//   target_bounds     reads value = per_nil * n + per_partner * p and takes the
+//                     extremes of a LINEAR function at the vertices of a
+//                     triangle.  The two-nil primary is a step function of n
+//                     and p, so vertex evaluation says nothing about the
+//                     interior.  later_tricks, quick_tricks and spade_matrix
+//                     all ride on it.
+//   the table         two positions identical in cards but reached under
+//                     different broken-nil masks are different positions, and
+//                     the key does not carry the mask yet.  Item 61.
+//
+// Everything here is a correctness gate, not a tuning choice, and it is also
+// the all-off baseline every re-derivation gets A/B'd against.
+void disable_single_nil_machinery(Ctx& ctx) {
+    ctx.static_bounds = false;
+    ctx.full_static_bounds = false;
+    ctx.target_bounds = false;
+    ctx.later_tricks = false;
+    ctx.quick_tricks = false;
+    ctx.spade_matrix = false;
+    ctx.tt_narrow = false;
+    ctx.tt = nullptr;
+}
+
 void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
                const ObjectiveWeights& weights) {
     // The search still reasons about ONE nil seat and takes the coalitions from
@@ -1239,6 +1322,8 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
     // The roles array is the caller's description; this is where phase two will
     // stop collapsing it to a scalar.
     ctx.nil_seat = roles.nil_seat();
+    ctx.multi_nil = nil_count(roles) > 1;
+    ctx.nil_mask = static_cast<unsigned char>(nil_seat_mask(roles));
     ctx.primary_weight = weights.primary;
     ctx.secondary_weight = weights.secondary;
     ctx.tertiary_weight = weights.tertiary;
@@ -1323,6 +1408,9 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
         table.new_search();               // this solve may not see the last one's values
         ctx.tt = &table;
     }
+
+    // Last, so that nothing set above can turn a gate back on.
+    if (ctx.multi_nil) disable_single_nil_machinery(ctx);
 }
 
 // Walk the chosen moves down from `st`, starting with `first`, recovering the
@@ -1395,6 +1483,9 @@ State state_of(const Position& pos) {
     st.trick_len = pos.trick_len;
     for (int i = 0; i < 3; ++i) st.trick[i] = pos.trick[i];
     st.broken = pos.spades_broken;
+    // Nothing has been won yet from here; a bid the caller declared already
+    // broken is handled by its weight, not by this mask.
+    st.nils_broken = 0;
     return st;
 }
 
@@ -1414,6 +1505,21 @@ std::string with_commas(std::uint64_t n) {
 
 ObjectiveWeights objective_weights(int tricks_remaining, const SeatRoles& roles,
                                    const SearchOptions& opts) {
+    // TWO BIDS ON ONE SIDE.  The primary level counts BIDS DOWN, 0..2, rather
+    // than weighting one seat's trick count 0..t.  K*K still separates the
+    // levels: the secondary can reach K*t in absolute value, and K*t < K*K, so
+    // no run of tricks outweighs one more bid going down.  There is no tertiary
+    // -- a pair that both bid has no cover partner whose share could break a
+    // tie -- and no MODE_FAST fork, because solve() refuses that combination
+    // before this is reached.
+    if (nil_count(roles) > 1) {
+        const int k = tricks_remaining + 1;
+        ObjectiveWeights w;
+        w.primary = k * k;
+        w.secondary = opts.minimise_own_tricks ? k : -k;
+        w.tertiary = 0;
+        return w;
+    }
     if (opts.mode == MODE_FAST) {
         // Nothing packed above or below the nil bidder's trick count, so the
         // value IS that count and the window is [0, 1].  minimise_own_tricks is
@@ -1474,6 +1580,22 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
     if (!validate(pos, err)) return false;
 
     const ObjectiveWeights weights = objective_weights(pos.tricks_remaining(), roles, opts);
+
+    // FAST MODE IS A SINGLE-NIL QUESTION, and refuses to be asked another.
+    //
+    // It answers "with perfect play, can the specified player make nil?" over a
+    // [0, 1] window.  With two bidders there is no specified player, and asking
+    // it of one of them is not merely ambiguous: whether one bid survives is not
+    // defined on its own, because it depends on how the pair trades the two off
+    // against each other, which is the whole objective.  Refusing here also
+    // keeps the [0, 1] window -- and every node count banked on it -- out of
+    // reach of the new shape.
+    if (opts.mode == MODE_FAST && nil_count(roles) > 1) {
+        err = "fast mode answers whether ONE named seat can make nil, and " +
+              describe_seat_roles(roles) +
+              " has two bidders; ask in full mode, which reports how many are down";
+        return false;
+    }
 
     // ---- fast mode: the nil question, and nothing else ---------------------
     if (opts.mode == MODE_FAST) {
@@ -1556,7 +1678,7 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
     int root_beta = WINDOW_MAX;
     std::uint64_t presolve_nodes = 0;
     TTStats presolve_stats;
-    if (opts.presolve_window && !roles.nil_already_set() &&
+    if (opts.presolve_window && !roles.nil_already_set() && nil_count(roles) == 1 &&
         pos.tricks_remaining() >= PRESOLVE_MIN_TRICKS) {
         SearchOptions probe_opts = opts;
         probe_opts.mode = MODE_FAST;
@@ -1618,8 +1740,16 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
         err = "internal inconsistency: " + err;
         return false;
     }
-    const int replayed = (weights.primary + weights.tertiary) * tally.nil_tricks +
-                         weights.secondary * tally.nil_side_tricks;
+    // Re-packed the way the objective in force packs it.  Under two bids the
+    // primary weight is charged once per bidder that went down, not once per
+    // trick a bidder took -- so this is a different sum, not a special case of
+    // the same one, and getting it wrong here would silently stop the check
+    // from checking anything.
+    const int replayed = ctx.multi_nil
+                             ? weights.primary * tally.nils_set +
+                                   weights.secondary * tally.nil_side_tricks
+                             : (weights.primary + weights.tertiary) * tally.nil_tricks +
+                                   weights.secondary * tally.nil_side_tricks;
     if (replayed != value) {
         std::ostringstream os;
         os << "internal inconsistency: search says " << value << ", replaying the PV gives "
@@ -1634,7 +1764,9 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
     out.opponent_tricks = tally.opponent_tricks;
     // When the caller has told us the nil is already broken, that is a fact
     // about the game, not something for the search to rediscover.
-    out.nils_set = (roles.nil_already_set() || tally.nil_tricks > 0) ? 1 : 0;
+    // The replay counts distinct bidders broken, which is the primary level
+    // itself under two bids and agrees with (nil_tricks > 0) under one.
+    out.nils_set = roles.nil_already_set() ? 1 : tally.nils_set;
     out.value = value;
     out.roles = roles;
     out.mode = MODE_FULL;
@@ -1668,6 +1800,12 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
     moves_out.clear();
     if (!validate_seat_roles(roles, err)) return false;
     const int nil_seat = roles.nil_seat();
+    if (opts.mode == MODE_FAST && nil_count(roles) > 1) {
+        err = "fast mode answers whether ONE named seat can make nil, and " +
+              describe_seat_roles(roles) +
+              " has two bidders; ask in full mode, which reports how many are down";
+        return false;
+    }
     if (!validate(pos, err)) return false;
 
     out = Solution();
@@ -1739,7 +1877,7 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
     // window would hand back a bound for exactly the rows a caller most wants
     // a number on.  Those rows -- and only those -- are re-searched wide below.
     int tight_beta = beta;
-    if (!fast && opts.presolve_window && !roles.nil_already_set() &&
+    if (!fast && opts.presolve_window && !roles.nil_already_set() && nil_count(roles) == 1 &&
         pos.tricks_remaining() >= PRESOLVE_MIN_TRICKS) {
         SearchOptions probe_opts = opts;
         probe_opts.mode = MODE_FAST;
@@ -1867,7 +2005,7 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
         ms.nil_tricks = tally.nil_tricks;
         ms.nil_side_tricks = tally.nil_side_tricks;
         ms.opponent_tricks = tally.opponent_tricks;
-        ms.nils_set = (roles.nil_already_set() || tally.nil_tricks > 0) ? 1 : 0;
+        ms.nils_set = roles.nil_already_set() ? 1 : tally.nils_set;
 
         // The first best move in canonical order is the one solve() would have
         // picked -- it enumerates from the bottom and replaces the incumbent
@@ -1902,6 +2040,7 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
 }
 bool replay_pv(const Position& pos, const std::vector<Play>& pv, const SeatRoles& roles,
                Tally& tally_out, std::string& err) {
+    unsigned broken_seats = 0;
     Hand hands[4];
     for (int s = 0; s < 4; ++s) hands[s] = pos.hands[s];
     int leader = pos.leader;
@@ -1946,7 +2085,12 @@ bool replay_pv(const Position& pos, const std::vector<Play>& pv, const SeatRoles
         trick[trick_len++] = card;
         if (trick_len == 4) {
             const int winner = trick_winner(leader, trick, 4);
-            if (roles.is_nil(winner)) ++tally_out.nil_tricks;
+            if (roles.is_nil(winner)) {
+                ++tally_out.nil_tricks;
+                // The COUNT of bids down, not the count of tricks: a seat that
+                // wins three still only has one bid to lose.
+                broken_seats |= 1u << winner;
+            }
             if (roles.on_nil_side(winner)) {
                 ++tally_out.nil_side_tricks;
             } else {
@@ -1960,6 +2104,10 @@ bool replay_pv(const Position& pos, const std::vector<Play>& pv, const SeatRoles
     if (trick_len) {
         err = "PV ends mid-trick";
         return false;
+    }
+    tally_out.nils_set = 0;
+    for (int seat = 0; seat < 4; ++seat) {
+        if (broken_seats & (1u << seat)) ++tally_out.nils_set;
     }
     if (hands[0] | hands[1] | hands[2] | hands[3]) {
         err = "PV does not play out every card";

@@ -609,6 +609,10 @@ struct SearchOptions {
 
 // Who took what along a line.
 struct Tally {
+    // Distinct bidders that took at least one trick: 0 or 1 with a single nil,
+    // 0..2 with a pair that both bid.  Counted from the replay, so it is an
+    // independent reading of the line rather than a copy of the search's.
+    int nils_set = 0;
     int nil_tricks = 0;       // the nil bidder alone
     int nil_side_tricks = 0;  // the nil bidder and its covering partner
     int opponent_tricks = 0;  // the other pair
