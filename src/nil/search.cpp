@@ -688,14 +688,69 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
     // needs 0 >= 1.  The gate is therefore the mode rather than a measurement.
     if (ctx.target_bounds && !ctx.value_is_nil_tricks && st.trick_len == 0) {
         const int t = count_cards(st.hands[ctx.nil_seat]);
-        const int all_nil = (ctx.primary_weight + ctx.tertiary_weight + ctx.secondary_weight) * t;
-        const int all_partner = ctx.secondary_weight * t;
         int hi = 0;
-        if (all_nil > hi) hi = all_nil;
-        if (all_partner > hi) hi = all_partner;
         int lo = 0;
-        if (all_nil < lo) lo = all_nil;
-        if (all_partner < lo) lo = all_partner;
+        if (ctx.multi_nil) {
+            // THE SAME IDEA, A DIFFERENT REGION.  With a pair that both bid,
+            // the subtree is worth
+            //
+            //     value = primary * d + secondary * u
+            //
+            // for d bids going down from here and u tricks to the pair from
+            // here.  The single-nil derivation above does not port, because its
+            // primary weights a trick COUNT and this one counts BIDS: d is a
+            // step function of who wins what, not a linear function of it.
+            //
+            // What DOES port is the method.  The reachable region is still a
+            // convex polygon and the function is still linear over it, so the
+            // extremes are still at the vertices.  Only the polygon changes:
+            //
+            //     0 <= d <= D        D = min(live bids still standing, t)
+            //     d <= u <= t        EACH BID THAT GOES DOWN COSTS THE PAIR A
+            //                        TRICK, because a bid dies exactly when its
+            //                        own seat wins one, and no two bids can die
+            //                        on the same trick
+            //
+            // That is a trapezoid rather than a simplex -- the u >= d edge is
+            // the whole difference -- with vertices (0,0), (0,t), (D,D) and
+            // (D,t).  Four evaluations instead of three, still reading no cards.
+            //
+            // The u >= d edge is what makes this worth having rather than a
+            // bounding box: without it the maximiser's bound would have to
+            // allow d bids down AND the pair taking nothing for them, which no
+            // line can do.
+            //
+            // Over-approximating the region stays sound in both directions --
+            // hi only grows, lo only shrinks -- so the coupling being an
+            // inequality rather than an equality costs tightness and never
+            // correctness.
+            int standing = 0;
+            for (int seat = 0; seat < 4; ++seat) {
+                const unsigned bit = 1u << seat;
+                if ((ctx.nil_mask & bit) && !(st.nils_broken & bit)) ++standing;
+            }
+            const int d_max = standing < t ? standing : t;
+            const int corners[4] = {
+                0,                                                  // (0, 0)
+                ctx.secondary_weight * t,                           // (0, t)
+                (ctx.primary_weight + ctx.secondary_weight) * d_max,  // (D, D)
+                ctx.primary_weight * d_max + ctx.secondary_weight * t,  // (D, t)
+            };
+            hi = corners[0];
+            lo = corners[0];
+            for (int i = 1; i < 4; ++i) {
+                if (corners[i] > hi) hi = corners[i];
+                if (corners[i] < lo) lo = corners[i];
+            }
+        } else {
+            const int all_nil =
+                (ctx.primary_weight + ctx.tertiary_weight + ctx.secondary_weight) * t;
+            const int all_partner = ctx.secondary_weight * t;
+            if (all_nil > hi) hi = all_nil;
+            if (all_partner > hi) hi = all_partner;
+            if (all_nil < lo) lo = all_nil;
+            if (all_partner < lo) lo = all_partner;
+        }
         if (hi <= alpha) {
             best_move = first_legal_move(st);
             return hi;
@@ -733,7 +788,7 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
         // MODE_FAST is unreachable here for the same reason the bound above is
         // -- the gate is the mode.  This is a MODE_FULL item and the flag is
         // documented as one.
-        if (ctx.later_tricks) {
+        if (ctx.later_tricks && !ctx.multi_nil) {
             const int per_nil =
                 ctx.primary_weight + ctx.tertiary_weight + ctx.secondary_weight;
             const int per_partner = ctx.secondary_weight;
@@ -1292,12 +1347,13 @@ int value_after(Ctx& ctx, const State& st, CardId card, int alpha, int beta, Sta
 //                     primary term vanishes, and the partner's bid can still go
 //                     down.  A sound proof wired to a stale consumer returns a
 //                     confidently wrong value with nothing to catch it.
-//   target_bounds     reads value = per_nil * n + per_partner * p and takes the
-//                     extremes of a LINEAR function at the vertices of a
-//                     triangle.  The two-nil primary is a step function of n
-//                     and p, so vertex evaluation says nothing about the
-//                     interior.  later_tricks, quick_tricks and spade_matrix
-//                     all ride on it.
+//   later_tricks      its three cases are stated as constraints on "the nil
+//                     bidder" and "the cover partner", and there is no cover
+//                     here.  quick_tricks and spade_matrix ride on it.
+//
+// target_bounds is NOT in this list any more: patch 66 re-derived it over the
+// region the two-nil objective actually reaches, which is a trapezoid rather
+// than a simplex.  See the derivation at its call site.
 // The transposition table is NOT in this list any more: since patch 59 the key
 // carries the broken-nil mask and the shape has its own value tag, so entries
 // from the two objectives cannot be confused for each other.  `tt_narrow` still
@@ -1309,7 +1365,6 @@ int value_after(Ctx& ctx, const State& st, CardId card, int alpha, int beta, Sta
 void disable_single_nil_machinery(Ctx& ctx) {
     ctx.static_bounds = false;
     ctx.full_static_bounds = false;
-    ctx.target_bounds = false;
     ctx.later_tricks = false;
     ctx.quick_tricks = false;
     ctx.spade_matrix = false;
