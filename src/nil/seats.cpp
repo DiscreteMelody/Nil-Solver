@@ -53,10 +53,18 @@ int nil_count(const SeatRoles& roles) {
     return n;
 }
 
-unsigned nil_seat_mask(const SeatRoles& roles) {
+int nil_set_count(const SeatRoles& roles) {
+    int n = 0;
+    for (int s = 0; s < 4; ++s) {
+        if (roles.role[s] == ROLE_NIL_SET) ++n;
+    }
+    return n;
+}
+
+unsigned live_nil_mask(const SeatRoles& roles) {
     unsigned mask = 0;
     for (int s = 0; s < 4; ++s) {
-        if (roles.is_nil(s)) mask |= 1u << s;
+        if (roles.role[s] == ROLE_NIL) mask |= 1u << s;
     }
     return mask;
 }
@@ -133,14 +141,14 @@ SeatShape seat_shape(const SeatRoles& roles, std::string& err) {
                   describe_seat_roles(roles) + "); the other two seats must both have role 3";
             return SHAPE_UNSUPPORTED;
         }
-        // The primary level counts bids that are still alive, so one already
-        // down beside one still standing has no meaning yet.
-        for (int s = 0; s < 4; ++s) {
-            if (roles.role[s] == ROLE_NIL_SET) {
-                err = "an already-broken nil alongside a live one is not supported yet (" +
-                      describe_seat_roles(roles) + ")";
-                return SHAPE_UNSUPPORTED;
-            }
+        // A bid already down is a fact about the deal, not an unimplemented
+        // shape: it is the state a real hand reaches the moment one of two nils
+        // breaks, and re-solving from it is the point.  Both down is different
+        // -- there is then nothing left to play for and no primary level at all.
+        if (nil_set_count(roles) == 2) {
+            err = "both bids are already down (" + describe_seat_roles(roles) +
+                  "); there is no nil left to play for";
+            return SHAPE_UNSUPPORTED;
         }
         return SHAPE_PARTNER_NILS;
     }

@@ -1324,7 +1324,10 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
     // stop collapsing it to a scalar.
     ctx.nil_seat = roles.nil_seat();
     ctx.multi_nil = nil_count(roles) > 1;
-    ctx.nil_mask = static_cast<unsigned char>(nil_seat_mask(roles));
+    // LIVE bids only.  An already-broken one carries no primary weight, and
+    // leaving its bit in would charge the pair a second time for a bid it has
+    // already lost.
+    ctx.nil_mask = static_cast<unsigned char>(live_nil_mask(roles));
     ctx.primary_weight = weights.primary;
     ctx.secondary_weight = weights.secondary;
     ctx.tertiary_weight = weights.tertiary;
@@ -1750,7 +1753,7 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
     // the same one, and getting it wrong here would silently stop the check
     // from checking anything.
     const int replayed = ctx.multi_nil
-                             ? weights.primary * tally.nils_set +
+                             ? weights.primary * tally.live_nils_broken +
                                    weights.secondary * tally.nil_side_tricks
                              : (weights.primary + weights.tertiary) * tally.nil_tricks +
                                    weights.secondary * tally.nil_side_tricks;
@@ -1770,7 +1773,9 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
     // about the game, not something for the search to rediscover.
     // The replay counts distinct bidders broken, which is the primary level
     // itself under two bids and agrees with (nil_tricks > 0) under one.
-    out.nils_set = roles.nil_already_set() ? 1 : tally.nils_set;
+    // The replay already folds in bids the caller declared down, so this is
+    // one expression for both shapes rather than a special case for each.
+    out.nils_set = tally.nils_set;
     out.value = value;
     out.roles = roles;
     out.mode = MODE_FULL;
@@ -2002,7 +2007,7 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
         // the shape went looking.  A verifier not forked alongside the thing it
         // verifies does not fail loudly; it stops verifying.
         const int replayed = ctx.multi_nil
-                                 ? weights.primary * tally.nils_set +
+                                 ? weights.primary * tally.live_nils_broken +
                                        weights.secondary * tally.nil_side_tricks
                                  : (weights.primary + weights.tertiary) * tally.nil_tricks +
                                        weights.secondary * tally.nil_side_tricks;
@@ -2017,7 +2022,7 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
         ms.nil_tricks = tally.nil_tricks;
         ms.nil_side_tricks = tally.nil_side_tricks;
         ms.opponent_tricks = tally.opponent_tricks;
-        ms.nils_set = roles.nil_already_set() ? 1 : tally.nils_set;
+        ms.nils_set = tally.nils_set;
 
         // The first best move in canonical order is the one solve() would have
         // picked -- it enumerates from the bottom and replaces the incumbent
@@ -2100,8 +2105,9 @@ bool replay_pv(const Position& pos, const std::vector<Play>& pv, const SeatRoles
             if (roles.is_nil(winner)) {
                 ++tally_out.nil_tricks;
                 // The COUNT of bids down, not the count of tricks: a seat that
-                // wins three still only has one bid to lose.
-                broken_seats |= 1u << winner;
+                // wins three still only has one bid to lose.  Restricted to LIVE
+                // bids, because one already down cannot go down again.
+                if (roles.role[winner] == ROLE_NIL) broken_seats |= 1u << winner;
             }
             if (roles.on_nil_side(winner)) {
                 ++tally_out.nil_side_tricks;
@@ -2117,10 +2123,11 @@ bool replay_pv(const Position& pos, const std::vector<Play>& pv, const SeatRoles
         err = "PV ends mid-trick";
         return false;
     }
-    tally_out.nils_set = 0;
+    tally_out.live_nils_broken = 0;
     for (int seat = 0; seat < 4; ++seat) {
-        if (broken_seats & (1u << seat)) ++tally_out.nils_set;
+        if (broken_seats & (1u << seat)) ++tally_out.live_nils_broken;
     }
+    tally_out.nils_set = tally_out.live_nils_broken + nil_set_count(roles);
     if (hands[0] | hands[1] | hands[2] | hands[3]) {
         err = "PV does not play out every card";
         return false;

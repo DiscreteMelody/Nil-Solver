@@ -111,11 +111,21 @@ SeatShape seat_shape(const SeatRoles& roles, std::string& err);
 // True for any shape the solver can answer.  See seat_shape.
 bool validate_seat_roles(const SeatRoles& roles, std::string& err);
 
-// How many seats hold a bid: 1 or 2 on any accepted shape.
+// How many seats hold a bid, live or already down: 1 or 2 on any accepted
+// shape.
 int nil_count(const SeatRoles& roles);
 
-// Bit `s` set for each seat holding a bid.
-unsigned nil_seat_mask(const SeatRoles& roles);
+// How many bids the caller has already declared down.  Those carry no
+// primary weight -- a bid cannot go down twice -- but they are still counted
+// in the reported `nils_set`, which is how many are down and not how many
+// the search knocked down.
+int nil_set_count(const SeatRoles& roles);
+
+// Bit `s` set for each seat holding a bid that is STILL LIVE.  This is what
+// the search charges its primary weight against: an already-broken bid has
+// nothing left to lose, so its seat plays exactly as a cover partner does --
+// freely, its tricks still counting for the pair's secondary total.
+unsigned live_nil_mask(const SeatRoles& roles);
 
 // Text form, ANCHORED: four values running clockwise from `anchor`, matching
 // the hand order of a PBN string named for the same seat.  Accepts them

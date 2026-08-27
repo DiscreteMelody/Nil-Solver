@@ -609,9 +609,13 @@ struct SearchOptions {
 
 // Who took what along a line.
 struct Tally {
-    // Distinct bidders that took at least one trick: 0 or 1 with a single nil,
-    // 0..2 with a pair that both bid.  Counted from the replay, so it is an
-    // independent reading of the line rather than a copy of the search's.
+    // Distinct LIVE bidders that took at least one trick.  This is what the
+    // search charges its primary weight against, so it is what a re-packing
+    // self-check has to compare with.
+    int live_nils_broken = 0;
+    // How many bids are down in total: the above plus any the caller declared
+    // already broken.  This is what gets reported, because the question is how
+    // many are down and not how many the search knocked down.
     int nils_set = 0;
     int nil_tricks = 0;       // the nil bidder alone
     int nil_side_tricks = 0;  // the nil bidder and its covering partner

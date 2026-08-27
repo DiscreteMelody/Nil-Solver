@@ -1753,7 +1753,7 @@ int main(int argc, char** argv) {
         const Refusal refusals[] = {
             {"0 0 3 3", "nils on opposing sides"},
             {"0 3 0 2", "a cover with nobody left to cover"},
-            {"1 3 0 3", "one bid already down beside a live one"},
+            {"1 3 0 1", "both bids already down"},
             {"0 0 0 3", "three nils"},
         };
         for (const Refusal& r : refusals) {
@@ -1829,6 +1829,29 @@ int main(int argc, char** argv) {
             check("nor the count of bids down", a.nils_set, b.nils_set);
             check("nor the pair's trick total", a.nil_side_tricks, b.nil_side_tricks);
         }
+
+        // ONE BID ALREADY DOWN, ONE STILL ALIVE.  The state a real hand reaches
+        // the moment one of two nils breaks, and the reason re-solving from it
+        // matters: the dead seat has nothing left to protect, so the pair
+        // funnels every trick it cannot avoid through THAT seat and keeps the
+        // live bid standing.  The same funnel deal, with N's bid already gone.
+        nil::SeatRoles one_down;
+        check("a broken bid beside a live one parses",
+              nil::parse_seat_roles("1 3 0 3", nil::SEAT_NORTH, one_down, err), true);
+        check("and validates", nil::validate_seat_roles(one_down, err), true);
+        nil::Solution dsol;
+        check("it solves", nil::solve(funnel, one_down, plain, dsol, err), true);
+        check("both tricks still land on the pair", dsol.nil_side_tricks, 2);
+        check("the live bid survives", dsol.nils_set, 1);
+        check("because the dead seat took them all", dsol.nil_tricks, 2);
+
+        // The declared bid counts toward the reported total even when the seat
+        // never wins a trick -- it is down because the caller said so.
+        nil::Solution safe_down;
+        check("the safe deal solves with one bid declared down",
+              nil::solve(safe, one_down, plain, safe_down, err), true);
+        check("and reports that one as down", safe_down.nils_set, 1);
+        check("with no tricks to the pair", safe_down.nil_side_tricks, 0);
 
         // FAST MODE REFUSES THE SHAPE.  It asks whether ONE named seat can make
         // nil, and there is no named seat here -- nor is one bid's survival

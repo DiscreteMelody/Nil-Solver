@@ -38,6 +38,7 @@ expensive node. Read items 11 and 31 in that light.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ✅ | ~~A live twin nil beside one already broken~~ | patch 61 | **the commonest twin-nil state in real play, and it was refused.** `--seats 1 3 0 3`: partner's bid died at trick three, yours is still standing, re-solve from here. Patch 58 turned it away as unimplemented; it is not a shape, it is a FACT about the deal. **The rule is that only LIVE bids carry primary weight** -- a bid cannot go down twice -- so `ctx.nil_mask` narrows from every bidder to every live bidder, and the dead seat keeps only its half of the secondary level. That makes it play exactly as a cover partner does: freely, because there is nothing left to protect. The search finds the right line unprompted, funnelling every unavoidable trick through the seat already lost to keep the live bid standing. **Reporting unified rather than special-cased**: `Tally` splits into `live_nils_broken` (what the search charges, what a re-packing check compares against) and `nils_set` (that plus whatever the caller declared down, which is what gets reported). `out.nils_set = tally.nils_set` is now one expression for every shape, replacing a `nil_already_set() ? 1 :` special case in two places. **Verified**: 120 random deals across both rotations against the oracle, zero mismatches; 25/25; single-nil unmoved. Both bids down is still refused -- there is then no primary level at all |
 | ✅ | ~~Test and benchmark coverage for two nils~~ | patch 60 | **the shape had shipped twice with no test of its own, and adding one found a bug in the first hour.** Nothing in ctest, nothing in `tests/`, nothing in `scripts/` touched the partner-nils path -- `multinil.txt` was deliberately unwired in patch 55 because the solver could not read it, and nobody wired it back after patch 58 could. **Three ctest entries**: `corpus_multinil` (all 150 oracle rows plus the six 13-card deals, `--check-pv`, 1.5s), `corpus_multinil_quick` for the inner loop, and `corpus_multinil_no_tt` -- the control arm for patch 59's key, because a missing mask bit does not crash, it returns a value from a line where different bids were already down. **A unit-test block** covering shape acceptance and the four refusals next door, weight separation at 2-13 tricks, table-on against table-off on three deals, fast mode refused, and the CONCENTRATION property that distinguishes the two levels: two unavoidable tricks funnelled through one seat kill one bid, split kill two, and the trick COUNT is identical either way so only the primary tells them apart. **A third benchmark leg** in `run-bench.sh` and `.cmd`, separate rather than averaged in, because a change that helps one nil can do nothing for two. **The bug**: `solve_moves` had its own per-move consistency check still re-packing with the single-nil formula. Patch 58 forked the one in `solve()` and missed this one, so it had been reporting a number nothing computed ever since -- silently, because a verifier that is not forked alongside the thing it verifies does not fail loudly, it stops verifying. Also fixed: fast mode with two bidders returned `NIL_ERR_INTERNAL` across the ABI instead of `NIL_ERR_UNSUPPORTED`, losing exactly the typo-versus-feature distinction that code exists for. 25/25, single-nil unmoved |
 | ✅ | ~~The transposition table for two nils~~ | patch 59 | **the shape is usable at thirteen cards, and the table is why.** Two changes, both small. The key carries the broken-nil mask as four raw seat bits, and the shape gets its own `TAG_MULTI_NIL` -- the key says which POSITION an entry is about and the tag says which QUESTION, so a two-nil value can never be read by a one-nil search at the same cards. **The packing is OPTIONAL and that is the whole trick**: under one bid the objective is additive, the mask is not part of the position, and packing it would shift every field after it and change which positions fit -- moving node counts a dozen measurements are banked against. Four bits spent only when carried means the single-nil key is bit-identical, and 39,701 / 278,059 / 49,084 confirm it. **A/B on the same 150 rows**, table off against on: **2.01x / 3.32x / 5.42x** fewer nodes at 4/5/6 cards, growing with card count exactly as the oracle's distinct-entry count predicted it would matter. All 150 still match the oracle with the table on, `--check-pv` included. **FIRST THIRTEEN-CARD NUMBERS FOR THE SHAPE**: all six `m13-` deals solve, 13.3M nodes total, **worst case 748 ms** and median around 100 ms, at 10.4M nodes/sec. That is with every bound still gated off, so it is a ceiling on how bad item 62 can be, not a floor |
 | ✅ | ~~Two nils on one side: the C++ solver~~ | patch 58 | **correct first, fast never -- and the measurement says the shape was never the problem.** `validate_seat_roles` grows a `seat_shape()` mirroring the oracle's `role_shape()`; `State` carries a broken-nil mask; `score_trick()` forks the trick accounting so the primary weight is charged once per bidder on its FIRST trick rather than on every trick it takes; `objective_weights` forks to `K*K * (bids down)`. **All 150 oracle rows match**, and single-nil is unmoved at 39,701 / 278,059 / 49,084 with 22/22. **The shape is nearly free and the gating is not**: same deals, both questions, all machinery off on both sides, two nils costs 1.05x / 1.03x / 1.09x at 4/5/6 cards. On the same deals the machinery the shape gives up is worth **3.0x / 4.9x / 7.6x** -- and it GROWS with card count, which is the number that matters for 13. **The internal consistency check caught the one real bug**: it re-packed the value with the single-nil formula and reported 60 against the search's correct 35, on a position where the search had already agreed with the oracle. A check that is not forked alongside the thing it checks silently stops checking. **MODE_FAST refuses the shape** rather than answering it |
@@ -3463,7 +3464,30 @@ at four cards against the table-off baseline would have looked far better than
 it will be worth once the table is on. **Every measurement in item 62 must be
 taken with the table ON**, which is now the default for the shape.
 
-### 62. Re-deriving the bounds for two nils — ⭐⭐⭐⭐⭐ — **next**
+### 62. Re-deriving the bounds for two nils — ⭐⭐ — **measured at 1.31x; deprioritised**
+
+**Re-measured with the table on, and it is worth far less than patch 58 said.**
+That patch reported the single-nil machinery at 3.0x / 4.9x / 7.6x, against a
+table-OFF baseline. Patch 59 gave the shape a table and took most of it back.
+The ceiling for this item is what the bounds add ON TOP of a table, at the size
+that matters:
+
+```
+single nil, 13 cards, everything on: 162,744,179 nodes
+single nil, 13 cards, table only:    212,738,186 nodes   ->  1.31x
+```
+
+**1.31x**, for a set of bounds every one of which needs a new derivation rather
+than a port, on a shape whose worst case is already 748 ms. That is a poor
+trade against anything else on this list. It stays open because 1.31x is not
+nothing, and `nil_cannot_be_forced` remains the cheapest single piece -- the
+predicate is still true and only its consumer is wrong -- but it is no longer
+next.
+
+**The lesson is about the measurement, not the bounds.** A ceiling taken against
+a baseline missing another mechanism will overstate by whatever that mechanism
+was worth. Patch 59 predicted this in its own note and it still needed
+re-measuring to believe.
 
 **Fork every self-check alongside every objective fork.** Twice now a re-packing
 check has been left on the single-nil formula while the thing it checks moved --

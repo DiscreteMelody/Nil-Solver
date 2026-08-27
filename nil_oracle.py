@@ -169,6 +169,11 @@ def role_shape(roles: Sequence[int]) -> str:
         return SHAPE_SINGLE_NIL
 
     if len(nils) == 2:
+        if all(roles[s] == ROLE_NIL_SET for s in nils):
+            raise ValueError(
+                f"both bids are already down ({describe_roles(roles)}); there is "
+                "no nil left to play for"
+            )
         if (nils[0] + 2) % 4 != nils[1]:
             raise ValueError(
                 f"the two nil bidders are not partners ({described}); nils on "
@@ -846,13 +851,22 @@ def solve_partner_nils(
     shape = role_shape(roles)
     if shape != SHAPE_PARTNER_NILS:
         raise ValueError(f"solve_partner_nils needs two partners bidding, got {shape}")
-    if ROLE_NIL_SET in tuple(roles):
-        raise ValueError(
-            "an already-broken nil alongside a live one is not supported yet; "
-            "the primary level counts bids that are still alive"
-        )
 
-    nil_seats = tuple(s for s, r in enumerate(roles) if r in (ROLE_NIL, ROLE_NIL_SET))
+    # ONLY LIVE BIDS ARE PLAYED FOR.  A bid the caller marked ROLE_NIL_SET is
+    # already down and cannot go down twice, so it carries no primary weight and
+    # the mask never tracks it.  What that seat DOES keep is its half of the
+    # secondary level: its tricks still count for the pair, so it plays exactly
+    # as a cover partner does -- freely, because there is nothing left to
+    # protect.  This is the state a real hand reaches the moment one of two nils
+    # breaks, and re-solving from it is the point.
+    live_seats = tuple(s for s, r in enumerate(roles) if r == ROLE_NIL)
+    already_down = sum(1 for r in roles if r == ROLE_NIL_SET)
+    if not live_seats:
+        raise ValueError(
+            f"both bids are already down ({describe_roles(roles)}); there is no "
+            "nil left to play for"
+        )
+    nil_seats = live_seats
     primary_weight, secondary_weight = multi_objective_weights(
         position.tricks_remaining, secondary
     )
@@ -876,20 +890,27 @@ def solve_partner_nils(
     # recovers the per-seat counts independently, and re-encoding them must land
     # back on the value the search reported.
     seat_tricks = replay_pv_by_seat(position, list(pv))
-    nils_set = sum(1 for seat in nil_seats if seat_tricks[seat] > 0)
-    nil_side = sum(seat_tricks[seat] for seat in nil_seats)
-    replayed = primary_weight * nils_set + secondary_weight * nil_side
+    live_broken = sum(1 for seat in nil_seats if seat_tricks[seat] > 0)
+    # The value the search optimised only counts LIVE bids going down, so that
+    # is what has to be re-encoded -- but the reported count is how many bids
+    # are down in total, which includes the ones the caller declared.
+    nils_set = live_broken + already_down
+    # Every seat on the pair, live or not: the secondary level is the PAIR's
+    # tricks, and a broken bidder's tricks still count for it.
+    pair_seats = tuple(s for s, r in enumerate(roles) if r in (ROLE_NIL, ROLE_NIL_SET))
+    nil_side = sum(seat_tricks[seat] for seat in pair_seats)
+    replayed = primary_weight * live_broken + secondary_weight * nil_side
     if replayed != value:
         raise AssertionError(
             f"internal inconsistency: search says {value}, replaying the PV gives "
-            f"{replayed} (nils_set={nils_set}, nil_side={nil_side})"
+            f"{replayed} (live bids down={live_broken}, nil_side={nil_side})"
         )
 
     return MultiNilSolution(
         roles=list(roles),
         seat_tricks=seat_tricks,
         nils_set=nils_set,
-        nil_seats=list(nil_seats),
+        nil_seats=list(pair_seats),
         nil_side_tricks=nil_side,
         opponent_tricks=sum(seat_tricks) - nil_side,
         value=value,
