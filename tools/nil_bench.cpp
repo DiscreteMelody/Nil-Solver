@@ -29,7 +29,7 @@
 // -----
 // --mode full (default) is the lexicographic search: every corpus row's trick
 // counts get checked.  --mode fast is the boolean nil search, which computes no
-// trick counts, so only nil_fails gets checked.  --mode both runs each position
+// trick counts, so only nils_set gets checked.  --mode both runs each position
 // twice and requires the two to agree -- fast mode has no principal variation
 // to replay against itself, so this is what stands in for full mode's internal
 // self-check.  The timed and recorded rows in --mode both are the fast ones.
@@ -374,7 +374,7 @@ void usage(const char* argv0) {
               << "  --cards-only <n>  restrict a corpus run to one hand size\n"
               << "  --no-memo         disable the full-state memo\n"
               << "  --mode full|fast|both   full (default) checks trick counts; fast\n"
-              << "                    checks only nil_fails; both runs each position in\n"
+              << "                    checks only nils_set; both runs each position in\n"
               << "                    each mode and requires the two to agree\n"
               << "  --secondary max|min  tie-break direction for --random runs; corpus\n"
               << "                    entries carry their own\n"
@@ -799,9 +799,9 @@ int main(int argc, char** argv) {
             // answer at all pins nothing, in either mode.
             if (solved && (item.expected >= 0 || item.roles.nil_already_set())) {
                 const bool want = item.roles.nil_already_set() || item.expected > 0;
-                if (sol.nil_fails != want) {
-                    std::cout << "FAIL " << item.name << ": expected nil_fails=" << (want ? 1 : 0)
-                              << ", got " << (sol.nil_fails ? 1 : 0) << "\n  " << item.repro
+                if ((sol.nils_set > 0) != want) {
+                    std::cout << "FAIL " << item.name << ": expected nils_set=" << (want ? 1 : 0)
+                              << ", got " << sol.nils_set << "\n  " << item.repro
                               << "\n";
                     ++failures;
                 }
@@ -832,10 +832,10 @@ int main(int argc, char** argv) {
                 ++failures;
             } else {
                 ++mode_checked;
-                if (full.nil_fails != sol.nil_fails) {
+                if (full.nils_set != sol.nils_set) {
                     std::cout << "FAIL " << item.name << ": the modes disagree -- fast says "
-                              << (sol.nil_fails ? "FAILS" : "MAKES") << ", full says "
-                              << (full.nil_fails ? "FAILS" : "MAKES") << " (full mode has the nil "
+                              << (sol.nils_set ? "FAILS" : "MAKES") << ", full says "
+                              << (full.nils_set ? "FAILS" : "MAKES") << " (full mode has the nil "
                               << "bidder taking " << full.nil_tricks << ")\n  " << item.repro
                               << "\n";
                     ++failures;
@@ -864,7 +864,7 @@ int main(int argc, char** argv) {
                 ++failures;
             } else {
                 ++moves_checked;
-                if (msol.nil_fails != sol.nil_fails || msol.nil_tricks != sol.nil_tricks ||
+                if (msol.nils_set != sol.nils_set || msol.nil_tricks != sol.nil_tricks ||
                     msol.nil_side_tricks != sol.nil_side_tricks) {
                     std::cout << "FAIL " << item.name
                               << ": the move list disagrees with the position\n  " << item.repro

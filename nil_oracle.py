@@ -945,6 +945,17 @@ class Solution:
     secondary: str = "max"
     nil_already_set: bool = False
 
+    @property
+    def nils_set(self) -> int:
+        """How many bids are broken: 0 or 1 here, 0..2 for a pair that both bid.
+
+        The count rather than a flag, so that both result types answer the same
+        question in the same units.  A bid the caller declared already broken
+        counts toward it, since the question is how many are down and not how
+        many the search knocked down.
+        """
+        return 1 if (self.nil_already_set or self.tricks > 0) else 0
+
 
 def solve(
     position: Position,
@@ -1280,6 +1291,7 @@ def format_solution(solution: Solution, compact: bool = False) -> str:
     pos = solution.position
     if compact:
         return (
+            f"nils_set={solution.nils_set}\n"
             f"tricks={solution.tricks}\n"
             f"side_tricks={solution.side_tricks}\n"
             f"opponent_tricks={solution.opponent_tricks}\n"

@@ -71,7 +71,7 @@ namespace NilSolver
         /// opponent, true means this card breaks it. One fact rather than two,
         /// because a double dummy answer does not depend on who asked.
         /// </summary>
-        public bool NilFails { get; init; }
+        public bool NilsSet { get; init; }
 
         /// <summary>
         /// Tricks the nil bidder takes down the line this card leads to, INCLUDING
@@ -108,7 +108,7 @@ namespace NilSolver
             Suit = Suit,
             Rank = rank,
             EqualRanks = Array.Empty<int>(),
-            NilFails = NilFails,
+            NilsSet = NilsSet,
             NilTricks = NilTricks,
             NilSideTricks = NilSideTricks,
             OpponentTricks = OpponentTricks,
@@ -145,7 +145,7 @@ namespace NilSolver
                 Suit = m.Suit,
                 Rank = m.Rank,
                 EqualRanks = equals,
-                NilFails = m.NilFails != 0,
+                NilsSet = m.NilsSet != 0,
                 NilTricks = m.NilTricks,
                 NilSideTricks = m.NilSideTricks,
                 OpponentTricks = m.OpponentTricks,
@@ -185,7 +185,7 @@ namespace NilSolver
         /// best defence. This is the answer a game client usually wants, and it is
         /// the same in both modes.
         /// </summary>
-        public bool NilFails { get; init; }
+        public bool NilsSet { get; init; }
 
         /// <summary>
         /// Tricks the nil bidder takes from here on, or
@@ -235,7 +235,7 @@ namespace NilSolver
         /// class's scores, because that is what being in a class means.
         ///
         /// Cards from one class are genuinely indistinguishable here: they share
-        /// NilFails, the trick counts and IsBest. Nothing is lost by picking any of
+        /// NilsSet, the trick counts and IsBest. Nothing is lost by picking any of
         /// them, which is the whole reason the solver searched only one.
         /// </summary>
         public IReadOnlyList<NilMoveScore> AllMoves => _allMoves ??= ExpandClasses(Moves);
@@ -287,7 +287,7 @@ namespace NilSolver
             return new NilSolution
             {
                 Status = NilStatus.Ok,
-                NilFails = r.NilFails != 0,
+                NilsSet = r.NilsSet != 0,
                 NilTricks = r.NilTricks,
                 NilSideTricks = r.NilSideTricks,
                 OpponentTricks = r.OpponentTricks,
@@ -303,7 +303,7 @@ namespace NilSolver
             return new NilSolution
             {
                 Status = NilStatus.Ok,
-                NilFails = r.NilFails != 0,
+                NilsSet = r.NilsSet != 0,
                 NilTricks = r.NilTricks,
                 NilSideTricks = r.NilSideTricks,
                 OpponentTricks = r.OpponentTricks,
@@ -357,7 +357,7 @@ namespace NilSolver
         }
 
         /// <summary>
-        /// The full lexicographic answer: nil_fails plus the three trick counts.
+        /// The full lexicographic answer: nils_set plus the three trick counts.
         /// Exhaustive, so it is limited to <see cref="NilSolverNative.CardLimit"/>
         /// cards a hand unless you pass <see cref="NilFlags.ForceLarge"/> and mean
         /// it.

@@ -294,7 +294,7 @@ int main(int argc, char** argv) {
                   << "tricks=" << sol.nil_tricks << "\n"
                   << "side_tricks=" << sol.nil_side_tricks << "\n"
                   << "opponent_tricks=" << sol.opponent_tricks << "\n"
-                  << "nil_fails=" << (sol.nil_fails ? 1 : 0) << "\n"
+                  << "nils_set=" << sol.nils_set << "\n"
                   << "nodes=" << sol.nodes << "\n"
                   << "pv=" << nil::format_pv_compact(sol) << "\n";
         // Extra keys, and only on request: the scripts that parse this build a
@@ -306,7 +306,7 @@ int main(int argc, char** argv) {
         // whether it is one of the best, and the equal cards it stands for.
         for (const nil::MoveScore& m : scored) {
             std::cout << "move=" << nil::card_to_string(m.card) << ':'
-                      << (m.nil_fails ? 1 : 0) << ':' << m.nil_tricks << ':'
+                      << m.nils_set << ':' << m.nil_tricks << ':'
                       << m.nil_side_tricks << ':' << m.opponent_tricks << ':'
                       << (m.is_best ? 1 : 0) << ':';
             bool first = true;
@@ -335,7 +335,7 @@ int main(int argc, char** argv) {
             for (const nil::MoveScore& m : scored) {
                 std::cout << "  " << (m.is_best ? '*' : ' ') << ' '
                           << nil::card_to_string(m.card) << "  "
-                          << (m.nil_fails ? "nil FAILS " : "nil holds ");
+                          << (m.nils_set ? "nil FAILS " : "nil holds ");
                 if (!fast) {
                     std::cout << "  " << nil::SEAT_CHARS[sol.nil_seat()] << '=' << m.nil_tricks
                               << "  side=" << m.nil_side_tricks

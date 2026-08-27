@@ -121,7 +121,7 @@ std::int32_t prepare(const char* pbn, std::int32_t leader, const char* current_t
 }
 
 void fill_result(nil_result* out, const nil::Solution& sol, int tricks_remaining) {
-    out->nil_fails = sol.nil_fails ? 1 : 0;
+    out->nils_set = sol.nils_set;
     // nil::TRICKS_NOT_COMPUTED and NIL_TRICKS_UNKNOWN are the same -1; the two
     // names exist so neither side of the boundary has to include the other's
     // header to say what it means.
@@ -219,7 +219,7 @@ NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve_pv(const char* pbn, std::i
     return NIL_OK;
 }
 
-NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_fails(const char* pbn, std::int32_t leader,
+NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_count_set(const char* pbn, std::int32_t leader,
                                                       const char* current_trick,
                                                       const std::int32_t* seats,
                                                       std::uint32_t flags) {
@@ -229,7 +229,7 @@ NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_fails(const char* pbn, std::int3
     // remember the flag is the point of this entry point existing.
     const std::int32_t rc = solve_impl(pbn, leader, current_trick, seats,
                                        flags | NIL_FLAG_FAST_MODE, &result, nullptr, nullptr, 0);
-    return rc == NIL_OK ? result.nil_fails : rc;
+    return rc == NIL_OK ? result.nils_set : rc;
 }
 
 NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve_moves(
@@ -286,7 +286,7 @@ NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve_moves(
         }
         dst.equal_ranks = equal_ranks;
 
-        dst.nil_fails = src.nil_fails ? 1 : 0;
+        dst.nils_set = src.nils_set;
         dst.nil_tricks = src.nil_tricks;
         dst.nil_side_tricks = src.nil_side_tricks;
         dst.opponent_tricks = src.opponent_tricks;

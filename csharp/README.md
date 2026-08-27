@@ -82,7 +82,7 @@ var r = Nil.CanBeBroken(
     flags:        NilFlags.ForceLarge);
 
 if (!r.Success) throw new InvalidOperationException(r.Error);
-Console.WriteLine(r.NilFails ? "the nil is dead" : "the nil survives");
+Console.WriteLine(r.NilsSet ? "the nil is dead" : "the nil survives");
 ```
 
 ## Building the arguments
@@ -144,14 +144,14 @@ CGA-seat-to-DDS-seat conversion it carries over unchanged.
 
 `CanBeBroken` runs the pruned boolean search — an AND-OR search on a `[0, 1]`
 window — and answers a full thirteen-card hand in a median 150 ms. It reports
-`NilFails` and nothing else: the three trick counts come back as `-1`, which is
+`NilsSet` and nothing else: the three trick counts come back as `-1`, which is
 deliberately not `0` because zero is a real answer to "how many tricks did the
 nil bidder take". Check `TrickCountsKnown` before reading them.
 
 `SolveFull` is exhaustive and answers everything, and its cost grows about
 sixfold per card. Nine cards a hand is the point where it stops being
 interactive, which is why that is the limit it enforces. Both modes always agree
-on `NilFails`; that agreement is a test that runs on every build.
+on `NilsSet`; that agreement is a test that runs on every build.
 
 ### The card limit is not a mode thing
 
@@ -175,7 +175,7 @@ var r = await _pool.ScoreMovesAsync(pbn, leader, trick, roles,
 
 foreach (var m in r.Moves)
 {
-    Console.WriteLine($"{m}  {(m.NilFails ? "throws it away" : "safe")}"
+    Console.WriteLine($"{m}  {(m.NilsSet ? "throws it away" : "safe")}"
                     + (m.IsBest ? "  <- best" : ""));
 }
 ```
@@ -184,7 +184,7 @@ foreach (var m in r.Moves)
 information expanded to one entry per legal card, which is usually what a UI
 wants — see below.
 
-Read `NilFails` from whichever side you are on: for the nil bidder or its
+Read `NilsSet` from whichever side you are on: for the nil bidder or its
 covering partner, false means the card holds the nil together; for an opponent,
 true means it breaks it. One fact rather than two, because a double dummy answer
 does not depend on who asked.
@@ -218,13 +218,13 @@ card plus one entry per rank in its `EqualRanks`:
 
 ```csharp
 foreach (var card in r.AllMoves)
-    Highlight(card.Suit, card.Rank, safe: !card.NilFails, best: card.IsBest);
+    Highlight(card.Suit, card.Rank, safe: !card.NilsSet, best: card.IsBest);
 ```
 
 Both are computed on first read, so a solve that never asked for a move list pays
 nothing, and both come out in canonical order — spades, hearts, diamonds, clubs,
 ascending by rank. Cards from one class are genuinely indistinguishable in them:
-same `NilFails`, same counts, same `IsBest`. That is what being in a class means.
+same `NilsSet`, same counts, same `IsBest`. That is what being in a class means.
 
 `BestMoves` is derived from the solver's own `IsBest` rather than by comparing
 each card's score against the position's, which is how the DDS wrapper does it.
@@ -238,8 +238,8 @@ people up: the card's **own rank is not in `EqualRanks`**.
 ```csharp
 foreach (var m in r.Moves)
 {
-    Emit(m.Suit, m.Rank, m.NilFails);                       // the card itself
-    foreach (var rank in m.EqualRanks) Emit(m.Suit, rank, m.NilFails);
+    Emit(m.Suit, m.Rank, m.NilsSet);                       // the card itself
+    foreach (var rank in m.EqualRanks) Emit(m.Suit, rank, m.NilsSet);
 }
 ```
 
@@ -309,7 +309,7 @@ if (!r.Success)
     return null;
 }
 
-// r.NilFails            true if the nil can be forced to take a trick
+// r.NilsSet            true if the nil can be forced to take a trick
 // r.NilTricks           tricks the nil bidder takes from here
 // r.NilSideTricks       the nil bidder and its covering partner, NilTricks included
 // r.OpponentTricks      NilSideTricks + OpponentTricks == TricksRemaining
@@ -343,7 +343,7 @@ From a Developer Command Prompt:
 dumpbin /exports build-vs\bin\x64\Release\nil_solver.dll
 ```
 
-Six names, undecorated: `nil_solve`, `nil_solve_pv`, `nil_fails`,
+Six names, undecorated: `nil_solve`, `nil_solve_pv`, `nil_count_set`,
 `nil_set_table_size`, `nil_release_table`, `nil_solver_version`. Anything else —
 mangled C++ names, or an empty list — and the problem is the build, not the C#.
 

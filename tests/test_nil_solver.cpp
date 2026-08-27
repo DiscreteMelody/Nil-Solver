@@ -237,8 +237,8 @@ int main(int argc, char** argv) {
         check("single trick, nil E", must_solve(pos, "E").nil_tricks, 1);
         check("single trick, nil N", must_solve(pos, "N").nil_tricks, 0);
         check("single trick, nil S", must_solve(pos, "S").nil_tricks, 0);
-        check("single trick, nil E fails", must_solve(pos, "E").nil_fails, true);
-        check("single trick, nil N makes", must_solve(pos, "N").nil_fails, false);
+        check("single trick, nil E fails", must_solve(pos, "E").nils_set, 1);
+        check("single trick, nil N makes", must_solve(pos, "N").nils_set, 0);
         check("single trick PV", nil::format_pv_compact(must_solve(pos, "E")),
               std::string("N:D2 E:DA S:D5 W:D7"));
     }
@@ -247,7 +247,7 @@ int main(int argc, char** argv) {
         // one trick, regardless of anyone's intentions.
         const Position pos = make_position("N:.A2.. .K3.. .54.. .Q6..", "N", true);
         check("bare ace guarantees a trick", must_solve(pos, "N").nil_tricks, 1);
-        check("bare ace kills the nil", must_solve(pos, "N").nil_fails, true);
+        check("bare ace kills the nil", must_solve(pos, "N").nils_set, 1);
     }
     {
         // Squander test.  All hearts, two cards each:
@@ -266,7 +266,7 @@ int main(int argc, char** argv) {
         // must give the same answer.
         const Position rotated = make_position("N:.Q6.. .K2.. .A3.. .54..", "E", true);
         check("squander rotated onto E", must_solve(rotated, "E").nil_tricks, 1);
-        check("squander rotated: N/S now maximise", must_solve(rotated, "E").nil_fails, true);
+        check("squander rotated: N/S now maximise", must_solve(rotated, "E").nils_set, 1);
     }
     {
         // Spade-break restriction actually constrains the opening lead.
@@ -284,7 +284,7 @@ int main(int argc, char** argv) {
         const Position pos = make_position("N:2... .3.. .5.. .7..", "W", false);
         const Solution sol = must_solve(pos, "N");
         check("void nil must ruff and take the trick", sol.nil_tricks, 1);
-        check("void nil fails", sol.nil_fails, true);
+        check("void nil fails", sol.nils_set, 1);
     }
     {
         // Position resumed mid-trick: W led H7, N followed with H2, E played
@@ -496,7 +496,7 @@ int main(int argc, char** argv) {
         check("protecting it costs a trick", protect.nil_side_tricks, 2);
         check("already set: primary is off", ignore.nil_tricks, 1);
         check("already set: N/S now take everything", ignore.nil_side_tricks, 3);
-        check("already set: nil_fails is asserted, not computed", ignore.nil_fails, true);
+        check("already set: nil_fails is asserted, not computed", ignore.nils_set, 1);
 
         // Tallies stay consistent whatever the knobs say.
         for (int variant = 0; variant < 4; ++variant) {
@@ -555,8 +555,8 @@ int main(int argc, char** argv) {
         const Position forced = make_position("N:.A2.. .K3.. .54.. .Q6..", "N", true);
         const Solution fast_sol = must_solve(forced, "N", fast);
         const Solution full_sol = must_solve(forced, "N", full);
-        check("fast mode answers the question", fast_sol.nil_fails, true);
-        check("and agrees with full mode", fast_sol.nil_fails, full_sol.nil_fails);
+        check("fast mode answers the question", fast_sol.nils_set, 1);
+        check("and agrees with full mode", fast_sol.nils_set, full_sol.nils_set);
         check("fast mode records its mode", fast_sol.mode == nil::MODE_FAST, true);
         check("full mode records its mode", full_sol.mode == nil::MODE_FULL, true);
 
@@ -576,7 +576,7 @@ int main(int argc, char** argv) {
         // nothing to search.
         {
             const Solution told = must_solve(forced, "N", fast, /*already_set=*/true);
-            check("fast + already set: answered by assertion", told.nil_fails, true);
+            check("fast + already set: answered by assertion", told.nils_set, 1);
             check("fast + already set: without searching", told.nodes, 0ull);
         }
 
@@ -586,8 +586,8 @@ int main(int argc, char** argv) {
             SearchOptions fast_shed = fast;
             fast_shed.minimise_own_tricks = true;
             const Solution shed_sol = must_solve(forced, "N", fast_shed);
-            check("fast mode ignores the tie-break: answer", shed_sol.nil_fails,
-                  fast_sol.nil_fails);
+            check("fast mode ignores the tie-break: answer", shed_sol.nils_set,
+                  fast_sol.nils_set);
             check("fast mode ignores the tie-break: nodes", shed_sol.nodes, fast_sol.nodes);
         }
 
@@ -607,8 +607,8 @@ int main(int argc, char** argv) {
                         SearchOptions b = a;
                         b.mode = nil::MODE_FAST;
                         ++checked;
-                        if (must_solve(pos, seat, a).nil_fails !=
-                            must_solve(pos, seat, b).nil_fails) {
+                        if (must_solve(pos, seat, a).nils_set !=
+                            must_solve(pos, seat, b).nils_set) {
                             ++disagreed;
                         }
                     }
@@ -630,7 +630,7 @@ int main(int argc, char** argv) {
         fast.mode = nil::MODE_FAST;
         const Solution slow = must_solve(pos, "N", full);
         const Solution quick = must_solve(pos, "N", fast);
-        check("alpha-beta agrees with the exhaustive search", quick.nil_fails, slow.nil_fails);
+        check("alpha-beta agrees with the exhaustive search", quick.nils_set, slow.nils_set);
         check("alpha-beta visits fewer nodes", quick.nodes < slow.nodes, true);
 
         // MODE_FULL is still asked between sentinels no value can reach, so the
@@ -837,10 +837,10 @@ int main(int argc, char** argv) {
                 none.use_memo = false;
                 SearchOptions tiny = memo;
                 tiny.tt_megabytes = 1;
-                const bool a = must_solve(pos, seat, memo).nil_fails;
+                const bool a = must_solve(pos, seat, memo).nils_set;
                 ++checked;
-                if (must_solve(pos, seat, none).nil_fails != a) ++disagreed;
-                if (must_solve(pos, seat, tiny).nil_fails != a) ++disagreed;
+                if (must_solve(pos, seat, none).nils_set != a) ++disagreed;
+                if (must_solve(pos, seat, tiny).nils_set != a) ++disagreed;
             }
         }
         check("bounded entries do not change the boolean", disagreed, 0);
@@ -859,11 +859,11 @@ int main(int argc, char** argv) {
                 SearchOptions full;
                 SearchOptions fast;
                 fast.mode = nil::MODE_FAST;
-                const bool fast_first = must_solve(pos, seat, fast).nil_fails;
+                const bool fast_first = must_solve(pos, seat, fast).nils_set;
                 const Solution then_full = must_solve(pos, seat, full);
-                const bool fast_after = must_solve(pos, seat, fast).nil_fails;
-                if (fast_first != then_full.nil_fails) ++disagreed;
-                if (fast_after != then_full.nil_fails) ++disagreed;
+                const bool fast_after = must_solve(pos, seat, fast).nils_set;
+                if (fast_first != then_full.nils_set) ++disagreed;
+                if (fast_after != then_full.nils_set) ++disagreed;
                 // The interleaved full solve must also still be internally
                 // consistent, which solve() checks by replaying its own PV --
                 // must_solve would have exited if it were not.
@@ -889,8 +889,8 @@ int main(int argc, char** argv) {
                     SearchOptions b = a;
                     b.mode = nil::MODE_FAST;
                     ++checked;
-                    if (must_solve(pos, seat, a).nil_fails !=
-                        must_solve(pos, seat, b).nil_fails) {
+                    if (must_solve(pos, seat, a).nils_set !=
+                        must_solve(pos, seat, b).nils_set) {
                         ++disagreed;
                     }
                 }
@@ -1016,18 +1016,18 @@ int main(int argc, char** argv) {
             // Safe: the nil bidder holds the two lowest clubs and nothing else,
             // and E is on lead.
             const Position safe = make_position("N:...32 ...AK ...QJ ...T9", "E", true);
-            check("safe proof: same answer", must_solve(safe, "N", on).nil_fails,
-                  must_solve(safe, "N", off).nil_fails);
-            check("safe proof: and it is 'makes'", must_solve(safe, "N", on).nil_fails, false);
+            check("safe proof: same answer", must_solve(safe, "N", on).nils_set,
+                  must_solve(safe, "N", off).nils_set);
+            check("safe proof: and it is 'makes'", must_solve(safe, "N", on).nils_set, 0);
             check("safe proof: settled at the root", must_solve(safe, "N", on).nodes, 1ull);
             check("safe proof: which the search had to work for",
                   must_solve(safe, "N", off).nodes > 1ull, true);
 
             // Set: the nil bidder holds SK SQ with the ace outstanding.
             const Position set = make_position("N:KQ... A2... J3... T4...", "E", true);
-            check("set proof: same answer", must_solve(set, "N", on).nil_fails,
-                  must_solve(set, "N", off).nil_fails);
-            check("set proof: and it is 'fails'", must_solve(set, "N", on).nil_fails, true);
+            check("set proof: same answer", must_solve(set, "N", on).nils_set,
+                  must_solve(set, "N", off).nils_set);
+            check("set proof: and it is 'fails'", must_solve(set, "N", on).nils_set, 1);
             check("set proof: settled at the root", must_solve(set, "N", on).nodes, 1ull);
             check("set proof: which the search had to work for",
                   must_solve(set, "N", off).nodes > 1ull, true);
@@ -1122,7 +1122,7 @@ int main(int argc, char** argv) {
                     const Solution a = must_solve(pos, seat, on);
                     const Solution b = must_solve(pos, seat, off);
                     ++checked;
-                    if (a.nil_fails != b.nil_fails) ++disagreed;
+                    if (a.nils_set != b.nils_set) ++disagreed;
                     with += static_cast<long long>(a.nodes);
                     without += static_cast<long long>(b.nodes);
                 }
@@ -1150,8 +1150,8 @@ int main(int argc, char** argv) {
                                                    sizeof(err))),
                   0LL);
             check("ABI: the switch does not move the answer",
-                  static_cast<long long>(on.nil_fails), static_cast<long long>(off.nil_fails));
-            check("ABI: and the answer is 'fails'", static_cast<long long>(on.nil_fails), 1LL);
+                  static_cast<long long>(on.nils_set), static_cast<long long>(off.nils_set));
+            check("ABI: and the answer is 'fails'", static_cast<long long>(on.nils_set), 1LL);
         }
     }
 
@@ -1338,7 +1338,7 @@ int main(int argc, char** argv) {
                 const Solution a = must_solve(pos, seat, on);
                 const Solution b = must_solve(pos, seat, off);
                 ++checked;
-                if (a.nil_fails != b.nil_fails) ++disagreed;
+                if (a.nils_set != b.nils_set) ++disagreed;
                 ordered_nodes += static_cast<long long>(a.nodes);
                 canonical_nodes += static_cast<long long>(b.nodes);
             }
@@ -1393,7 +1393,7 @@ int main(int argc, char** argv) {
                                                    &off, err, sizeof(err))),
                   0LL);
             check("ABI: the switch does not move the answer",
-                  static_cast<long long>(on.nil_fails), static_cast<long long>(off.nil_fails));
+                  static_cast<long long>(on.nils_set), static_cast<long long>(off.nils_set));
         }
     }
 
@@ -1743,7 +1743,7 @@ int main(int argc, char** argv) {
               static_cast<long long>(r.nil_side_tricks), 1LL);
         check("nil_solve reports the opponents",
               static_cast<long long>(r.opponent_tricks), 1LL);
-        check("nil_solve reports failure", static_cast<long long>(r.nil_fails), 1LL);
+        check("nil_solve reports failure", static_cast<long long>(r.nils_set), 1LL);
         check("nil_solve reports tricks remaining", static_cast<long long>(r.tricks_remaining),
               2LL);
 
@@ -1762,7 +1762,7 @@ int main(int argc, char** argv) {
               static_cast<long long>(NIL_ERR_BUFFER_TOO_SMALL));
 
         check("nil_fails convenience wrapper",
-              static_cast<long long>(nil_fails("N:.A2.. .K3.. .54.. .Q6..", NIL_SEAT_NORTH, "",
+              static_cast<long long>(nil_count_set("N:.A2.. .K3.. .54.. .Q6..", NIL_SEAT_NORTH, "",
                                                SEATS_NIL_N, NIL_FLAG_SPADES_BROKEN)),
               1LL);
 
@@ -1774,8 +1774,8 @@ int main(int argc, char** argv) {
             nil_solve("N:.A2.. .K3.. .54.. .Q6..", NIL_SEAT_NORTH, "", SEATS_NIL_N,
                       NIL_FLAG_SPADES_BROKEN | NIL_FLAG_FAST_MODE, &fr, err, sizeof(err));
         check("fast mode returns NIL_OK", static_cast<long long>(rc_fast), 0LL);
-        check("fast mode agrees on the boolean", static_cast<long long>(fr.nil_fails),
-              static_cast<long long>(r.nil_fails));
+        check("fast mode agrees on the boolean", static_cast<long long>(fr.nils_set),
+              static_cast<long long>(r.nils_set));
         check("fast mode reports unknown nil tricks", static_cast<long long>(fr.nil_tricks),
               static_cast<long long>(NIL_TRICKS_UNKNOWN));
         check("fast mode reports unknown side tricks",
@@ -1908,7 +1908,7 @@ int main(int argc, char** argv) {
         nil::Solution plain;
         check("solve succeeds", nil::solve(pos, north_nil, opts, plain, err), true);
         check("move list agrees on the value", sol.value, plain.value);
-        check("move list agrees on nil_fails", sol.nil_fails, plain.nil_fails);
+        check("move list agrees on nil_fails", sol.nils_set, plain.nils_set);
         check("move list agrees on the nil count", sol.nil_tricks, plain.nil_tricks);
         check("move list reproduces the principal variation", nil::format_pv_compact(sol),
               nil::format_pv_compact(plain));
@@ -1939,7 +1939,7 @@ int main(int argc, char** argv) {
             }
             // The child reports the REST of the hand; the row also carries the
             // trick this card completed, which mid-trick is none.
-            if (after.nil_tricks != m.nil_tricks || after.nil_fails != m.nil_fails) {
+            if (after.nil_tricks != m.nil_tricks || after.nils_set != m.nils_set) {
                 ++row_mismatches;
             }
         }
@@ -1958,7 +1958,7 @@ int main(int argc, char** argv) {
         int counted = 0;
         for (std::size_t i = 0; i < fmoves.size() && i < moves.size(); ++i) {
             if (fmoves[i].card != moves[i].card) ++boolean_mismatches;
-            if (fmoves[i].nil_fails != moves[i].nil_fails) ++boolean_mismatches;
+            if (fmoves[i].nils_set != moves[i].nils_set) ++boolean_mismatches;
             if (fmoves[i].nil_tricks != nil::TRICKS_NOT_COMPUTED) ++counted;
         }
         check("fast mode agrees card for card on the boolean", boolean_mismatches, 0);

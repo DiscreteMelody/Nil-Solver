@@ -419,7 +419,7 @@ namespace NilSolver
         /// against best defence, 0 if the nil can be held. Always 1 when
         /// <see cref="NilFlags.NilAlreadySet"/> was passed.
         /// </summary>
-        public int NilFails;
+        public int NilsSet;
 
         /// <summary>
         /// Tricks the nil bidder takes from this position onward.
@@ -462,8 +462,8 @@ namespace NilSolver
         /// </summary>
         public int EqualRanks;
 
-        /// <summary>1 if the nil fails after this card is played. See <see cref="NilMoveScore.NilFails"/>.</summary>
-        public int NilFails;
+        /// <summary>1 if the nil fails after this card is played. See <see cref="NilMoveScore.NilsSet"/>.</summary>
+        public int NilsSet;
 
         public int NilTricks;
         public int NilSideTricks;
@@ -541,7 +541,7 @@ namespace NilSolver
             int errLen);
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
-        public static extern int nil_fails(
+        public static extern int nil_count_set(
             [MarshalAs(UnmanagedType.LPStr)] string pbn,
             int leader,
             [MarshalAs(UnmanagedType.LPStr)] string currentTrick,

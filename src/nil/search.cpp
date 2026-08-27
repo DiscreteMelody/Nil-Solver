@@ -1489,7 +1489,7 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
         // to expose has no output to land in here, because fast mode reports no
         // trick counts.  Ask in full mode if you want those numbers.
         if (roles.nil_already_set()) {
-            out.nil_fails = true;
+            out.nils_set = 1;
             return true;
         }
 
@@ -1526,7 +1526,7 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
             return false;
         }
 
-        out.nil_fails = fast_value > 0;
+        out.nils_set = fast_value > 0 ? 1 : 0;
         out.value = fast_value;
         out.nodes = fast_ctx.nodes;
         out.tt_probes = fast_stats.probes;
@@ -1572,7 +1572,7 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
         // A failed presolve is not a failed solve.  It is an optimisation, and
         // the full search below is complete without it, so anything that goes
         // wrong here is dropped and the sentinels stand.
-        if (solve(pos, roles, probe_opts, probe, probe_err) && !probe.nil_fails) {
+        if (solve(pos, roles, probe_opts, probe, probe_err) && probe.nils_set == 0) {
             root_beta = max_value_if_nil_safe(pos.tricks_remaining(), weights) + 1;
         }
         presolve_nodes = probe.nodes;
@@ -1634,7 +1634,7 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
     out.opponent_tricks = tally.opponent_tricks;
     // When the caller has told us the nil is already broken, that is a fact
     // about the game, not something for the search to rediscover.
-    out.nil_fails = roles.nil_already_set() || tally.nil_tricks > 0;
+    out.nils_set = (roles.nil_already_set() || tally.nil_tricks > 0) ? 1 : 0;
     out.value = value;
     out.roles = roles;
     out.mode = MODE_FULL;
@@ -1686,7 +1686,7 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
         out.nil_tricks = fast ? TRICKS_NOT_COMPUTED : 0;
         out.nil_side_tricks = fast ? TRICKS_NOT_COMPUTED : 0;
         out.opponent_tricks = fast ? TRICKS_NOT_COMPUTED : 0;
-        out.nil_fails = roles.nil_already_set();
+        out.nils_set = roles.nil_already_set() ? 1 : 0;
         return true;
     }
 
@@ -1709,7 +1709,7 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
     // computes.  Every legal card gets the same answer, because it is not an
     // answer about the cards.
     if (fast && roles.nil_already_set()) {
-        out.nil_fails = true;
+        out.nils_set = 1;
         out.nil_tricks = TRICKS_NOT_COMPUTED;
         out.nil_side_tricks = TRICKS_NOT_COMPUTED;
         out.opponent_tricks = TRICKS_NOT_COMPUTED;
@@ -1719,7 +1719,7 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
             ms.card = card;
             ms.equals = opts.collapse_equivalents ? equivalent_moves(card, legal, relevant)
                                                   : card_bit(card);
-            ms.nil_fails = true;
+            ms.nils_set = 1;
             ms.is_best = true;
             moves_out.push_back(ms);
         }
@@ -1752,7 +1752,7 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
         // schedule.
         Solution probe;
         std::string probe_err;
-        if (solve(pos, roles, probe_opts, probe, probe_err) && !probe.nil_fails) {
+        if (solve(pos, roles, probe_opts, probe, probe_err) && probe.nils_set == 0) {
             tight_beta = max_value_if_nil_safe(pos.tricks_remaining(), weights) + 1;
         }
         presolve_nodes = probe.nodes;
@@ -1808,7 +1808,7 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
     if (fast) {
         if ((best_value > 0) != (root_value > 0)) {
             std::ostringstream os;
-            os << "internal inconsistency: the position says nil_fails=" << (root_value > 0)
+            os << "internal inconsistency: the position says nils_set=" << (root_value > 0 ? 1 : 0)
                << " and the best of its " << moves_out.size() << " move(s) says "
                << (best_value > 0);
             err = os.str();
@@ -1825,7 +1825,7 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
     for (MoveScore& ms : moves_out) {
         ms.is_best = ms.value == best_value;
         if (fast) {
-            ms.nil_fails = ms.value > 0;
+            ms.nils_set = ms.value > 0 ? 1 : 0;
             continue;
         }
         // MODE_FULL owes each move its trick counts, and they are recovered the
@@ -1867,7 +1867,7 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
         ms.nil_tricks = tally.nil_tricks;
         ms.nil_side_tricks = tally.nil_side_tricks;
         ms.opponent_tricks = tally.opponent_tricks;
-        ms.nil_fails = roles.nil_already_set() || tally.nil_tricks > 0;
+        ms.nils_set = (roles.nil_already_set() || tally.nil_tricks > 0) ? 1 : 0;
 
         // The first best move in canonical order is the one solve() would have
         // picked -- it enumerates from the bottom and replaces the incumbent
@@ -1886,7 +1886,7 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
         }
     }
     out.value = fast ? root_value : best_value;
-    out.nil_fails = fast ? root_value > 0 : best->nil_fails;
+    out.nils_set = fast ? (root_value > 0 ? 1 : 0) : best->nils_set;
     out.nil_tricks = best->nil_tricks;
     out.nil_side_tricks = best->nil_side_tricks;
     out.opponent_tricks = best->opponent_tricks;
@@ -2058,7 +2058,7 @@ std::string format_solution(const Position& pos, const Solution& sol,
         os << "Nil            ALREADY SET (told, not computed)\n";
     } else {
         os << "Nil            "
-           << (sol.nil_fails ? "FAILS  (can be forced to take a trick)"
+           << (sol.nils_set ? "FAILS  (can be forced to take a trick)"
                              : "MAKES  (cannot be forced to take a trick)")
            << '\n';
     }

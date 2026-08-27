@@ -12,8 +12,8 @@
  *
  *   PRIMARY    the nil bidder's trick count.  The nil bidder and its covering
  *              partner minimise it; both opponents maximise it.  So
- *              `nil_fails == 1` means the nil is dead however it is played,
- *              and `nil_fails == 0` means the nil side has a line that
+ *              `nils_set == 1` means the nil is dead however it is played,
+ *              and `nils_set == 0` means the nil side has a line that
  *              survives.
  *
  *   SECONDARY  each pair's own trick count, used only to choose among lines
@@ -59,10 +59,10 @@
  * ---------
  * All of the above describes the FULL mode, which is the default and which
  * answers everything.  NIL_FLAG_FAST_MODE asks the boolean question alone:
- * `nil_fails` comes back, the three trick counts come back as
+ * `nils_set` comes back, the three trick counts come back as
  * NIL_TRICKS_UNKNOWN, and there is no principal variation.
  *
- * The two modes always agree on nil_fails.  They have to: full mode packs the
+ * The two modes always agree on nils_set.  They have to: full mode packs the
  * nil bidder's trick count into a scalar with two tie-break levels below it,
  * fast mode drops those levels and searches the count on its own, and the
  * levels below could never have moved the level above.  What fast mode buys is
@@ -78,7 +78,7 @@
  *
  * Which to call, from a game client:
  *
- *   "can this nil still be broken?"        fast mode (or nil_fails(), which
+ *   "can this nil still be broken?"        fast mode (or nil_count_set(), which
  *                                          selects it for you)
  *   "what is the score if we play on?"     full mode
  *   "show me the line"                     full mode; nil_solve_pv refuses the
@@ -172,7 +172,7 @@ extern "C" {
  * turns that off.  Same answer and same principal variation either way -- it is
  * a diagnostic, and it is several times slower. */
 #define NIL_FLAG_NO_COLLAPSE 0x40u
-/* Answer the nil question and nothing else.  nil_fails is filled in; the three
+/* Answer the nil question and nothing else.  nils_set is filled in; the three
  * trick counts come back as NIL_TRICKS_UNKNOWN and there is no principal
  * variation, so nil_solve_pv rejects this flag.
  *
@@ -403,7 +403,7 @@ extern "C" {
  * What moves without it: the principal variation walks a different line, and
  * the move list names a different single card as achieving the position's
  * value.  What does NOT move, with or without it: every value, every trick
- * count, nil_fails, and the set of cards flagged best.  Where the value alone
+ * count, nils_set, and the set of cards flagged best.  Where the value alone
  * cannot pin nil_tricks -- with the nil already set and a minimising tie-break,
  * which makes a nil trick worth exactly zero -- the re-derivation runs anyway
  * and this flag does not reach it, because there it is the only thing making
@@ -415,7 +415,7 @@ extern "C" {
 /* What the trick counts read under NIL_FLAG_FAST_MODE.  Deliberately not zero:
  * zero is a real answer to "how many tricks did the nil bidder take", and a
  * caller that mistook one for the other would read a failing nil as a made
- * one.  Test nil_fails, or ask again without the flag. */
+ * one.  Test nils_set, or ask again without the flag. */
 #define NIL_TRICKS_UNKNOWN (-1)
 
 /* Status codes.  0 is success, everything else is a failure.
@@ -439,11 +439,14 @@ extern "C" {
 #define NIL_ERR_UNSUPPORTED (-6)
 
 typedef struct nil_result {
-    /* 1 if the opponents can force the nil bidder to take at least one trick
-     * against best defence of the nil, 0 if the nil can be held.  Always 1 under
-     * NIL_ROLE_NIL_SET, since that is a fact you supplied rather than one the
-     * search discovered. */
-    int32_t nil_fails;
+    /* HOW MANY BIDS ARE BROKEN under best play by both sides -- not whether one
+     * is.  With a single nil that is 0 or 1, which is what the old `nil_fails`
+     * held, so a caller testing it for truth reads the same answer it always
+     * did; the field is a count because a pair that both bid nil has three
+     * possible answers rather than two.  A bid declared broken by the caller
+     * with NIL_ROLE_NIL_SET counts toward it, since the question is how many are
+     * down and not how many the search knocked down. */
+    int32_t nils_set;
     /* Tricks the nil bidder takes from this position onward.  Not meaningful
      * when NIL_ROLE_NIL_SET and NIL_FLAG_MINIMISE_OWN_TRICKS are both in play;
      * see the note above.  NIL_TRICKS_UNKNOWN under
@@ -519,7 +522,7 @@ NIL_SOLVER_API int32_t NIL_SOLVER_CALL nil_solve_pv(const char* pbn, int32_t lea
  * therefore implied and passing it changes nothing.  The answer is identical to
  * what nil_solve gives without the flag; only the work done to reach it
  * differs. */
-NIL_SOLVER_API int32_t NIL_SOLVER_CALL nil_fails(const char* pbn, int32_t leader,
+NIL_SOLVER_API int32_t NIL_SOLVER_CALL nil_count_set(const char* pbn, int32_t leader,
                                                  const char* current_trick,
                                                  const int32_t* seats, uint32_t flags);
 
@@ -558,7 +561,7 @@ typedef struct nil_move {
      * covering partner, 0 means this card holds the nil together; for an
      * opponent, 1 means this card breaks it.  One fact rather than two, because
      * a double dummy answer does not depend on who asked. */
-    int32_t nil_fails;
+    int32_t nils_set;
     /* As nil_result's, but for the line this card leads to, and INCLUDING the
      * trick this card completes if it completes one.  All three are
      * NIL_TRICKS_UNKNOWN under NIL_FLAG_FAST_MODE. */

@@ -49,7 +49,7 @@ CHECKING THE BOOLEAN SEARCH
 ---------------------------
 --mode fast checks the pruned search instead of the exhaustive one.  It is a
 weaker check per position -- fast mode reports no trick counts and no principal
-variation, so only nil_fails can be compared -- but it is the check that
+variation, so only nils_set can be compared -- but it is the check that
 reaches furthest.  Below about nine cards, agreement with full mode is a
 stronger statement and `nil_bench --mode both` already makes it on every build.
 Above that full mode cannot finish, and these transforms become the only
@@ -277,7 +277,7 @@ def check(exe: str, spec: Dict, timeout: float, rng: random.Random,
     """Returns (checks run, failures, message).
 
     In fast mode the solver reports no trick counts and no principal variation,
-    so `nil_fails` is the whole of what there is to compare.  That is a weaker
+    so `nils_set` is the whole of what there is to compare.  That is a weaker
     check per position than full mode's, and it is the only one there is at
     hand sizes full mode cannot finish -- which, now that fast mode prunes and
     full mode does not, starts at around ten cards.
@@ -312,7 +312,7 @@ def check(exe: str, spec: Dict, timeout: float, rng: random.Random,
         undetermined_split = (nil_role_of(spec) == 1
                               and spec.get("secondary") == "min")
         if mode == "fast":
-            fields = ["nil_fails"]
+            fields = ["nils_set"]
         else:
             fields = ["side_tricks", "opponent_tricks"]
             if not (info["kind"] == "suits" and undetermined_split):
@@ -405,7 +405,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         "skipped rather than failed [30]")
     p.add_argument("--mode", default="full", choices=("full", "fast"),
                    help="which search to check.  full compares trick counts and "
-                        "the principal variation; fast compares only nil_fails, "
+                        "the principal variation; fast compares only nils_set, "
                         "and is the only thing that reaches the hand sizes full "
                         "mode cannot finish [full]")
     p.add_argument("--quiet", action="store_true")

@@ -35,8 +35,12 @@
 // actually been broken in the real game, because there is nothing left to
 // protect or to attack and only the secondary objective matters.
 //
-// `nil_fails` is (nil_tricks > 0), or forced true when the roles say the nil is
-// already set.
+// `nils_set` is HOW MANY BIDS ARE BROKEN, not whether one is.  With a single
+// nil that is 0 or 1 -- numerically what the old boolean `nil_fails` held, so
+// `if (nils_set)` still reads "the nil failed" -- and it is the count rather
+// than the flag because a pair that both bid has three answers, not two.  A bid
+// the caller declared already broken with ROLE_NIL_SET counts toward it, since
+// the question is how many are down, not how many the search knocked down.
 //
 // TWO MODES
 // ---------
@@ -64,7 +68,7 @@
 // The nil question itself is boolean, and a boolean question wants a boolean
 // search.  MODE_FAST zeroes the secondary and tertiary weights and gives the
 // primary weight 1, so the value is literally the nil bidder's trick count and
-// the window worth searching is [0, 1].  It answers `nil_fails` and nothing
+// the window worth searching is [0, 1].  It answers `nils_set` and nothing
 // else: no trick counts, no principal variation.
 //
 // That window is what MODE_FAST spends.  A window of width one has no integers
@@ -88,7 +92,7 @@
 // Full mode checks itself by replaying its own principal variation and
 // re-deriving the value from the replayed trick counts.  Fast mode has no PV to
 // replay, so it has no such internal witness; what stands in for it is that the
-// two modes must agree on `nil_fails` for every position.  `nil_bench --mode
+// two modes must agree on `nils_set` for every position.  `nil_bench --mode
 // both` runs a whole corpus that way and the `corpus_modes` test does it on
 // every build.
 //
@@ -619,7 +623,8 @@ struct Solution {
     int nil_side_tricks = 0;
     int opponent_tricks = 0;
     // The one field both modes fill in, and the one they must agree on.
-    bool nil_fails = false;
+    // How many of the bids are broken.  0 or 1 with a single nil.
+    int nils_set = 0;
     // The scalar the search minimised: the packed lexicographic value in
     // MODE_FULL, the nil bidder's trick count in MODE_FAST.
     int value = 0;
@@ -720,7 +725,8 @@ struct MoveScore {
     // covering partner, false means this card holds the nil together; for an
     // opponent, true means this card breaks it.  It is one fact rather than
     // two, because a double-dummy answer does not depend on who asked.
-    bool nil_fails = false;
+    // How many of the bids are broken.  0 or 1 with a single nil.
+    int nils_set = 0;
 
     // As Solution's, but for the position after this card, and INCLUDING the
     // trick this card completes if it completes one.  TRICKS_NOT_COMPUTED in

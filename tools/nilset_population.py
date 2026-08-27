@@ -12,7 +12,7 @@ how many of them a proof could actually reach. So: compute both predicates in
 Python, take the solver as ground truth, and split the outcomes.
 
 Ground truth is exact -- MODE_FAST's value is the nil bidder's trick count and
-the opponents maximise it, so `nil_fails` IS "the opponents can force a trick",
+the opponents maximise it, so `nils_set` IS "the opponents can force a trick",
 which is precisely what the proof claims.
 
 Usage:  nilset_population.py [--cards N] [--count N] [--seed N]
@@ -136,7 +136,7 @@ def main():
         r = subprocess.run(cmd, capture_output=True, text=True)
         if r.returncode != 0:
             continue
-        forced = "nil_fails=1" in r.stdout
+        forced = "nils_set=1" in r.stdout
         total += 1
 
         if proof_today(mine, others):

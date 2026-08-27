@@ -218,7 +218,7 @@ def run_cpp(exe: str, case: Case, extra: Sequence[str] = ()) -> Tuple[int, int, 
             int(fields["tricks"]),
             int(fields["side_tricks"]),
             int(fields["opponent_tricks"]),
-            int(fields["nil_fails"]),
+            int(fields["nils_set"]),
             fields["pv"],
         )
     except KeyError as exc:
@@ -248,7 +248,7 @@ def compare(case: Case, oracle, cpp) -> List[str]:
         problems.append("nil-side tricks: c++ %d, oracle %d" % (c_side, o_side))
     if c_opp != o_opp:
         problems.append("opponent tricks: c++ %d, oracle %d" % (c_opp, o_opp))
-    # nil_fails is asserted rather than computed once the nil is already set.
+    # nils_set is asserted rather than computed once the nil is already set.
     want_fails = 1 if (case.nil_already_set or o_nil > 0) else 0
     if c_fails != want_fails:
         problems.append("nil verdict: c++ %d, expected %d" % (c_fails, want_fails))
