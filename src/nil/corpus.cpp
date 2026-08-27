@@ -50,9 +50,13 @@ bool load_corpus(const std::string& path, std::vector<CorpusEntry>& out, std::st
         const std::vector<std::string> f = split(trimmed, '|');
         std::ostringstream where;
         where << path << ":" << line_no << ": ";
-        if (f.size() < 9) {
-            err = where.str() + "expected at least 9 '|' separated fields, got " +
+        if (f.size() < 10) {
+            err = where.str() + "expected at least 10 '|' separated fields, got " +
                   std::to_string(f.size());
+            if (f.size() == 9) {
+                err += ". This looks like a corpus from before the nils_set column; "
+                       "regenerate it with tools/make_corpus.py";
+            }
             return false;
         }
 
@@ -94,10 +98,11 @@ bool load_corpus(const std::string& path, std::vector<CorpusEntry>& out, std::st
             return false;
         }
         entry.minimise_own_tricks = (f[6] == "min");
-        entry.expected_tricks = (f[7] == "?") ? -1 : std::atoi(f[7].c_str());
-        entry.expected_side_tricks = (f[8] == "?") ? -1 : std::atoi(f[8].c_str());
-        if (f.size() > 9) entry.expected_pv = f[9];
-        if (f.size() > 10 && !f[10].empty()) entry.provenance = f[10];
+        entry.expected_nils_set = (f[7] == "?") ? -1 : std::atoi(f[7].c_str());
+        entry.expected_tricks = (f[8] == "?") ? -1 : std::atoi(f[8].c_str());
+        entry.expected_side_tricks = (f[9] == "?") ? -1 : std::atoi(f[9].c_str());
+        if (f.size() > 10) entry.expected_pv = f[10];
+        if (f.size() > 11 && !f[11].empty()) entry.provenance = f[11];
 
         if (!validate(entry.position, err)) {
             err = where.str() + err;

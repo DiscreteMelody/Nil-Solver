@@ -32,11 +32,12 @@ import crosscheck  # noqa: E402
 
 SEAT_CHARS = "NESW"
 FIELDS = ("name", "pbn", "leader", "seats", "broken", "trick",
-          "secondary", "nil_tricks", "side_tricks", "pv", "provenance")
+          "secondary", "nils_set", "nil_tricks", "side_tricks", "pv", "provenance")
 
 # Where the recomputed answers land in a row.  Derived from FIELDS rather than
 # written out, because this file rewrites those three columns by index and the
 # seats column moved every one of them left by one when it replaced two.
+NILS_SET_COL = FIELDS.index("nils_set")
 NIL_TRICKS_COL = FIELDS.index("nil_tricks")
 SIDE_TRICKS_COL = FIELDS.index("side_tricks")
 PV_COL = FIELDS.index("pv")
@@ -138,6 +139,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             note.append("pv only")
         print("  %-10s %s" % (record["name"], ", ".join(note)))
 
+        parts[NILS_SET_COL] = str(
+            1 if (case.nil_already_set or nil_tricks > 0) else 0
+        )
         parts[NIL_TRICKS_COL] = str(nil_tricks)
         parts[SIDE_TRICKS_COL] = str(side_tricks)
         parts[PV_COL] = pv

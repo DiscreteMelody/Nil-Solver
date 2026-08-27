@@ -8,7 +8,7 @@
 // One record per line, fields separated by '|' and trimmed.  Blank lines and
 // lines starting with '#' are ignored.
 //
-//   name | pbn | leader | seats | broken | trick | secondary |
+//   name | pbn | leader | seats | broken | trick | secondary | nils_set |
 //   nil_tricks | side_tricks | pv | provenance
 //
 //   name        identifier for the record, e.g. "c5-0042"
@@ -25,7 +25,20 @@
 //               so this is 0 on every full 13-card deal.
 //   trick       cards already on the trick, e.g. "H4 HK"; may be empty
 //   secondary   "max" or "min", the tie-break direction
-//   nil_tricks  expected trick count for the nil bidder; "?" if unknown
+//   nils_set    how many bids are down under optimal play: 0 or 1 with a
+//               single nil, 0..2 for a pair that both bid.  A bid the roles
+//               declare already broken counts toward it.  "?" if unknown
+//   nil_tricks  tricks taken by SEATS HOLDING A NIL BID -- the bidder's own
+//               count with one bidder, the pair's total with two, where it
+//               equals side_tricks because there is no cover to add.  "?" if
+//               unknown
+//
+//   PER-SEAT COUNTS ARE NOT RECORDED, and that is not an omission.  An answer
+//   column may only hold what the OBJECTIVE pins, and nothing in it constrains
+//   how the opponents split tricks between themselves, or how a pair that has
+//   already lost both bids splits its own.  Re-searching the two-nil corpus
+//   with the opposite tie-break moved no value and moved the per-seat counts on
+//   43 rows of 140.
 //   side_tricks expected trick count for the nil bidder's pair; "?" if unknown
 //   pv          expected principal variation; may be empty
 //   provenance  optional; where the expected answers came from.  "oracle" (the
@@ -57,6 +70,8 @@ struct CorpusEntry {
     Position position;
     SeatRoles roles;
     bool minimise_own_tricks = false;
+    // -1 means "not recorded", matching expected_tricks below.
+    int expected_nils_set = -1;
     int expected_tricks = -1;        // -1 when the file says "?"
     int expected_side_tricks = -1;   // -1 when the file says "?"
     std::string expected_pv;         // empty when not recorded

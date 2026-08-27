@@ -696,6 +696,7 @@ int main(int argc, char** argv) {
         nil::Position position;
         nil::SeatRoles roles;
         bool minimise_own;
+        int expected_nils_set;
         int expected;
         int expected_side;
         std::string expected_pv;
@@ -717,7 +718,8 @@ int main(int argc, char** argv) {
         for (const nil::CorpusEntry& e : entries) {
             if (cards_only && e.position.cards_per_hand() != cards_only) continue;
             items.push_back(Item{e.name, e.position, e.roles, e.minimise_own_tricks,
-                                 e.expected_tricks, e.expected_side_tricks, e.expected_pv,
+                                 e.expected_nils_set, e.expected_tricks,
+                                 e.expected_side_tricks, e.expected_pv,
                                  nil::corpus_repro(e)});
         }
         if (items.empty()) {
@@ -732,7 +734,7 @@ int main(int argc, char** argv) {
             std::ostringstream name;
             name << "r" << cards << "-" << std::setw(4) << std::setfill('0') << i;
             items.push_back(Item{name.str(), pos, roles, opts.minimise_own_tricks,
-                                 -1, -1, "", ""});
+                                 -1, -1, -1, "", ""});
         }
     }
 
@@ -797,10 +799,16 @@ int main(int argc, char** argv) {
             // Fast mode computes no trick counts, so what a corpus row pins
             // here is the boolean those counts imply.  A row with no recorded
             // answer at all pins nothing, in either mode.
-            if (solved && (item.expected >= 0 || item.roles.nil_already_set())) {
-                const bool want = item.roles.nil_already_set() || item.expected > 0;
-                if ((sol.nils_set > 0) != want) {
-                    std::cout << "FAIL " << item.name << ": expected nils_set=" << (want ? 1 : 0)
+            if (solved && (item.expected_nils_set >= 0 || item.expected >= 0 ||
+                           item.roles.nil_already_set())) {
+                // Prefer the recorded count.  Falling back to (nil_tricks > 0)
+                // keeps a row that predates the column checkable, but it is a
+                // weaker claim: it cannot tell one broken bid from two.
+                const int want = item.expected_nils_set >= 0
+                                     ? item.expected_nils_set
+                                     : ((item.roles.nil_already_set() || item.expected > 0) ? 1 : 0);
+                if (sol.nils_set != want) {
+                    std::cout << "FAIL " << item.name << ": expected nils_set=" << want
                               << ", got " << sol.nils_set << "\n  " << item.repro
                               << "\n";
                     ++failures;

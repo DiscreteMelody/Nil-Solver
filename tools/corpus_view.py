@@ -43,7 +43,7 @@ DEFAULT_CORPUS = os.path.join("tests", "corpus", "positions.txt")
 
 FIELDS = (
     "name", "pbn", "leader", "seats", "broken", "trick",
-    "secondary", "nil_tricks", "side_tricks", "pv", "provenance",
+    "secondary", "nils_set", "nil_tricks", "side_tricks", "pv", "provenance",
 )
 
 # How much a recorded answer is worth.  See tools/make_large_corpus.py.
@@ -62,14 +62,14 @@ def load(path: str) -> List[Dict[str, str]]:
             if not line or line.startswith("#"):
                 continue
             parts = [p.strip() for p in line.split("|")]
-            if len(parts) < 10:
+            if len(parts) < 11:
                 raise SystemExit(
-                    "%s:%d: expected at least 10 fields, got %d. If this corpus "
-                    "predates the seats column, regenerate it with "
+                    "%s:%d: expected at least 11 fields, got %d. If this corpus "
+                    "predates the nils_set column, regenerate it with "
                     "tools/make_corpus.py" % (path, line_no, len(parts))
                 )
             record = dict(zip(FIELDS, parts))
-            if len(parts) < 11:
+            if len(parts) < 12:
                 record["pv"] = ""
             record.setdefault("provenance", "oracle")
             if not record["provenance"]:

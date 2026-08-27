@@ -341,7 +341,7 @@ def check(exe: str, spec: Dict, timeout: float, rng: random.Random,
 
 def from_corpus(path: str, cards: Optional[str]) -> List[Dict]:
     fields = ("name", "pbn", "leader", "seats", "broken", "trick",
-              "secondary", "nil_tricks", "side_tricks", "pv", "provenance")
+              "secondary", "nils_set", "nil_tricks", "side_tricks", "pv", "provenance")
     specs = []
     with open(path) as handle:
         for line in handle:
