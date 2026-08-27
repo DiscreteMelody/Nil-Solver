@@ -287,6 +287,35 @@ if(NIL_SOLVER_BUILD_TESTS)
     set_tests_properties(corpus_tt_plies_fast PROPERTIES TIMEOUT 900)
   endif()
 
+  # TWO NILS ON ONE SIDE.  A separate corpus because it is a separate question:
+  # the primary level counts bids down rather than weighting one seat's tricks,
+  # so these rows exercise a fork of the objective, a fork of the trick
+  # accounting, the broken-nil mask in the state key and its own value tag --
+  # none of which any row in positions.txt touches.
+  set(NIL_MULTINIL_CORPUS "${CMAKE_CURRENT_SOURCE_DIR}/tests/corpus/multinil.txt")
+  if(NIL_SOLVER_BUILD_BENCH AND EXISTS "${NIL_MULTINIL_CORPUS}")
+    # All 150 oracle-verified rows plus the six 13-card deals, which carry no
+    # recorded answer and are here as a crash-and-timeout regression at a size
+    # the oracle cannot reach.
+    add_test(NAME corpus_multinil
+             COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-pv --quiet --slowest 0)
+    set_tests_properties(corpus_multinil PROPERTIES TIMEOUT 900)
+
+    # Fast subset for the inner loop: ctest -R corpus_multinil_quick
+    add_test(NAME corpus_multinil_quick
+             COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --cards-only 4
+                     --quiet --slowest 0)
+
+    # THE CONTROL ARM FOR THE KEY.  Patch 59 put the broken-nil mask into the
+    # state key, and the failure mode if it is wrong is not a crash: it is a
+    # table hit from a position that only LOOKS the same, returning a value from
+    # a line where different bids were already down.  Running the same rows with
+    # the table off is what stands between that and a confidently wrong answer.
+    add_test(NAME corpus_multinil_no_tt
+             COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --cards-only 4
+                     --no-memo --quiet --slowest 0)
+  endif()
+
   set(NIL_LARGE_CORPUS "${CMAKE_CURRENT_SOURCE_DIR}/tests/corpus/large.txt")
   if(NIL_SOLVER_LARGE_TESTS AND NIL_SOLVER_BUILD_BENCH AND EXISTS "${NIL_LARGE_CORPUS}")
     # 7 cards only: at 8 and above the rows are benchmark fodder, and several

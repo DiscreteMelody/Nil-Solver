@@ -1996,8 +1996,16 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
             err = "internal inconsistency replaying " + card_to_string(ms.card) + ": " + err;
             return false;
         }
-        const int replayed = (weights.primary + weights.tertiary) * tally.nil_tricks +
-                             weights.secondary * tally.nil_side_tricks;
+        // Packed the way the objective in force packs it -- the same fork
+        // solve() makes.  Patch 58 forked that one and missed this one, and the
+        // check went on reporting a number nothing computed until a test for
+        // the shape went looking.  A verifier not forked alongside the thing it
+        // verifies does not fail loudly; it stops verifying.
+        const int replayed = ctx.multi_nil
+                                 ? weights.primary * tally.nils_set +
+                                       weights.secondary * tally.nil_side_tricks
+                                 : (weights.primary + weights.tertiary) * tally.nil_tricks +
+                                       weights.secondary * tally.nil_side_tricks;
         if (replayed != ms.value) {
             std::ostringstream os;
             os << "internal inconsistency: " << card_to_string(ms.card) << " scores " << ms.value

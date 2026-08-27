@@ -15,6 +15,11 @@ rem varies by two orders of magnitude WITHIN a hand size, so a mean over easy
 rem positions can improve while the deals people complain about get slower.
 rem Set NIL_SKIP_WORST=1 to run the corpus leg alone.
 rem
+rem A third leg times the two-nil shape on its own 13-card deals.  It is
+rem separate because it is a separate objective on a separate tree: a change
+rem that helps one nil can easily do nothing for two, and averaging them
+rem would hide it.  Set NIL_SKIP_MULTINIL=1 to skip it.
+rem
 rem To see the history afterwards:   python tools\bench_history.py
 setlocal
 title Nil-Solver benchmark
@@ -90,3 +95,14 @@ echo *** The benchmark reported a failure (see above) ***
 echo.
 pause
 exit /b 1
+
+if defined NIL_SKIP_MULTINIL goto :multinil_done
+if not exist tests\corpus\multinil.txt goto :multinil_done
+echo.
+echo === Two nils on one side (13 cards, every bound still gated off) ===
+rem These six rows carry no recorded answer -- the oracle is exhaustive and
+rem cannot reach 13 cards -- so nothing is verified here and the node counts
+rem are the whole output.  A change means the tree MOVED, which may be a win
+rem or a bug; check corpus_multinil for whether the answers survived it.
+"%BENCH%" --corpus tests\corpus\multinil.txt --cards-only 13 --slowest 3
+:multinil_done

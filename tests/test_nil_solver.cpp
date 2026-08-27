@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cmath>
 #include <cstring>
 #include <iostream>
 #include <string>
@@ -1686,8 +1687,8 @@ int main(int argc, char** argv) {
         // FEATURE that has not landed, and the message says so, because that is
         // the distinction a caller has to be able to act on.
         nil::SeatRoles two_nils;
-        check("two nils parse", nil::parse_seat_roles("0 0 2 2", nil::SEAT_NORTH, two_nils, err),
-              true);
+        check("opposing nils parse",
+              nil::parse_seat_roles("0 0 2 2", nil::SEAT_NORTH, two_nils, err), true);
         check("but do not validate", nil::validate_seat_roles(two_nils, err), false);
         check("and are refused as unsupported rather than malformed",
               err.find("not supported yet") != std::string::npos, true);
@@ -1724,11 +1725,131 @@ int main(int argc, char** argv) {
         // solve() refuses an unsupported shape rather than answering something
         // adjacent to what was asked.
         nil::Solution refused;
-        check("solve refuses two nils", nil::solve(from_north, two_nils, plain, refused, err),
-              false);
+        check("solve refuses opposing nils",
+              nil::solve(from_north, two_nils, plain, refused, err), false);
         std::vector<nil::MoveScore> no_moves;
         check("and so does solve_moves",
               nil::solve_moves(from_north, two_nils, plain, refused, no_moves, err), false);
+    }
+
+    std::cout << "Two nils on one side\n";
+    {
+        std::string err;
+        nil::SearchOptions plain;
+        nil::SeatRoles pair_bids;
+        check("a pair that both bid parses",
+              nil::parse_seat_roles("0 3 0 3", nil::SEAT_NORTH, pair_bids, err), true);
+        check("and validates", nil::validate_seat_roles(pair_bids, err), true);
+        check("it is the partner-nils shape",
+              static_cast<int>(nil::seat_shape(pair_bids, err)),
+              static_cast<int>(nil::SHAPE_PARTNER_NILS));
+        check("with two bidders", nil::nil_count(pair_bids), 2);
+
+        // The shapes next door, each refused for its own reason.
+        struct Refusal {
+            const char* text;
+            const char* label;
+        };
+        const Refusal refusals[] = {
+            {"0 0 3 3", "nils on opposing sides"},
+            {"0 3 0 2", "a cover with nobody left to cover"},
+            {"1 3 0 3", "one bid already down beside a live one"},
+            {"0 0 0 3", "three nils"},
+        };
+        for (const Refusal& r : refusals) {
+            nil::SeatRoles bad;
+            std::string why;
+            check(std::string("parses: ") + r.label,
+                  nil::parse_seat_roles(r.text, nil::SEAT_NORTH, bad, why), true);
+            check(std::string("refuses ") + r.label, nil::validate_seat_roles(bad, why), false);
+        }
+
+        // WEIGHTS.  The primary is charged per BID that goes down, 0..2, so it
+        // has to outrank anything the secondary can reach: |secondary| * t must
+        // stay under it, or a run of tricks could overturn a nil.
+        for (int t : {2, 3, 5, 9, 13}) {
+            const nil::ObjectiveWeights w = nil::objective_weights(t, pair_bids, plain);
+            check("weights separate at " + std::to_string(t) + " tricks",
+                  std::abs(w.secondary) * t < w.primary, true);
+            check("no cover level at " + std::to_string(t) + " tricks", w.tertiary, 0);
+        }
+        {
+            nil::SearchOptions shed;
+            shed.minimise_own_tricks = true;
+            check("max wants the pair's tricks",
+                  nil::objective_weights(4, pair_bids, plain).secondary < 0, true);
+            check("min wants rid of them",
+                  nil::objective_weights(4, pair_bids, shed).secondary > 0, true);
+        }
+
+        // CONCENTRATION, and the reason the two levels are not interchangeable.
+        // Two tricks the pair cannot avoid taking.  Splitting them kills both
+        // bids; funnelling both through one seat kills one.  The trick COUNT is
+        // identical either way, so only the primary level tells them apart.
+        const Position funnel = make_position("N:.A.A. .2.2. .3.3. .4.4.", "N", true);
+        nil::Solution fsol;
+        check("the funnel deal solves", nil::solve(funnel, pair_bids, plain, fsol, err), true);
+        check("both tricks land on the pair", fsol.nil_side_tricks, 2);
+        check("but only one bid goes down", fsol.nils_set, 1);
+        check("nils_set counts BIDDERS, not tricks", fsol.nil_tricks, 2);
+
+        // The mirror: one trick, and a bidder cannot avoid winning it.
+        const Position forced = make_position("N:.5.. .3.. .4.. .2..", "W", true);
+        nil::Solution osol;
+        check("the forced deal solves", nil::solve(forced, pair_bids, plain, osol, err), true);
+        check("exactly one bid goes down", osol.nils_set, 1);
+
+        // And one where nobody on the pair can be made to win.
+        const Position safe = make_position("N:.2.. .A.. .3.. .K..", "N", true);
+        nil::Solution ssol;
+        check("the safe deal solves", nil::solve(safe, pair_bids, plain, ssol, err), true);
+        check("no bid goes down", ssol.nils_set, 0);
+        check("and the pair takes nothing", ssol.nil_side_tricks, 0);
+
+        // THE TABLE IS NOT ALLOWED TO CHANGE THE ANSWER.  Patch 59 put the
+        // broken-nil mask into the key; if it were missing, a hit from a
+        // position that only LOOKS the same would return a value from a line
+        // where different bids were already down.  That failure is silent, so
+        // this is what catches it.
+        const char* const deals[] = {
+            "N:.A.A. .2.2. .3.3. .4.4.",
+            "N:A2.K.. 43.A.. 65.Q.. 87.J..",
+            "N:K.2.Q. 3.A.4. 5.J.6. 7.T.8.",
+        };
+        for (const char* pbn : deals) {
+            const Position pos = make_position(pbn, "N", true);
+            nil::SearchOptions with_tt;
+            nil::SearchOptions without_tt;
+            without_tt.use_memo = false;
+            nil::Solution a;
+            nil::Solution b;
+            check("table on solves", nil::solve(pos, pair_bids, with_tt, a, err), true);
+            check("table off solves", nil::solve(pos, pair_bids, without_tt, b, err), true);
+            check("the table does not move the value", a.value, b.value);
+            check("nor the count of bids down", a.nils_set, b.nils_set);
+            check("nor the pair's trick total", a.nil_side_tricks, b.nil_side_tricks);
+        }
+
+        // FAST MODE REFUSES THE SHAPE.  It asks whether ONE named seat can make
+        // nil, and there is no named seat here -- nor is one bid's survival
+        // defined on its own, since it turns on how the pair trades the two off.
+        nil::SearchOptions fast_opts;
+        fast_opts.mode = nil::MODE_FAST;
+        nil::Solution unused;
+        check("fast mode refuses two bidders",
+              nil::solve(funnel, pair_bids, fast_opts, unused, err), false);
+        check("and says why", err.find("two bidders") != std::string::npos, true);
+        std::vector<nil::MoveScore> no_moves;
+        check("so does solve_moves",
+              nil::solve_moves(funnel, pair_bids, fast_opts, unused, no_moves, err), false);
+
+        // Every card scored, under the shape.
+        nil::Solution msol;
+        std::vector<nil::MoveScore> scored;
+        check("solve_moves handles two bidders",
+              nil::solve_moves(funnel, pair_bids, plain, msol, scored, err), true);
+        check("and scores every legal card", static_cast<int>(scored.size()), 2);
+        check("agreeing with solve on the count", msol.nils_set, fsol.nils_set);
     }
 
     std::cout << "C ABI\n";
@@ -1851,6 +1972,28 @@ int main(int argc, char** argv) {
         check("and the two agree on the nil count",
               static_cast<long long>(from_n.nil_tricks),
               static_cast<long long>(from_w.nil_tricks));
+
+        // TWO BIDS ACROSS THE ABI.  Accepted now, where patch 54 refused it, and
+        // fast mode refused with the code that means "this build cannot do
+        // that" rather than the one that means "something broke inside".
+        const std::int32_t pair_bids_wire[4] = {NIL_ROLE_NIL, NIL_ROLE_OPPONENT, NIL_ROLE_NIL,
+                                                NIL_ROLE_OPPONENT};
+        nil_result pair_res;
+        check("nil_solve accepts a pair that both bid",
+              static_cast<long long>(nil_solve("N:.A.A. .2.2. .3.3. .4.4.", NIL_SEAT_NORTH, "",
+                                               pair_bids_wire, NIL_FLAG_SPADES_BROKEN, &pair_res,
+                                               err, sizeof(err))),
+              0LL);
+        check("and reports one bid down", static_cast<long long>(pair_res.nils_set), 1LL);
+        check("with both tricks on the pair",
+              static_cast<long long>(pair_res.nil_side_tricks), 2LL);
+
+        check("fast mode is unsupported for two bidders, not an internal error",
+              static_cast<long long>(nil_solve("N:.A.A. .2.2. .3.3. .4.4.", NIL_SEAT_NORTH, "",
+                                               pair_bids_wire,
+                                               NIL_FLAG_SPADES_BROKEN | NIL_FLAG_FAST_MODE,
+                                               &pair_res, err, sizeof(err))),
+              static_cast<long long>(NIL_ERR_UNSUPPORTED));
 
         check("version string", std::string(nil_solver_version()), std::string("0.1.0"));
     }

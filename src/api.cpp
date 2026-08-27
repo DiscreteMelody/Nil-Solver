@@ -69,6 +69,18 @@ std::int32_t prepare(const char* pbn, std::int32_t leader, const char* current_t
         }
         roles.role[(anchor + offset) & 3] = static_cast<nil::SeatRole>(v);
     }
+    // FAST MODE IS A SINGLE-NIL QUESTION.  It asks whether ONE named seat can
+    // make nil, and with two bidders there is no named seat.  Refused here, with
+    // the code that says "this build cannot do that" rather than the one that
+    // says "something went wrong inside" -- the whole point of having both.
+    if ((flags & NIL_FLAG_FAST_MODE) && nil::nil_count(roles) > 1) {
+        copy_err(err_buf, err_len,
+                 "fast mode answers whether ONE named seat can make nil, and this "
+                 "deal has two bidders; ask in full mode, which reports how many "
+                 "are down");
+        return NIL_ERR_UNSUPPORTED;
+    }
+
     if (!nil::validate_seat_roles(roles, err)) {
         copy_err(err_buf, err_len, err);
         // Two nils is a legal deal this build cannot answer; everything else in

@@ -13,6 +13,11 @@
 # varies by two orders of magnitude WITHIN a hand size, so a mean over easy
 # positions can improve while the deals people complain about get slower.  Set
 # NIL_SKIP_WORST=1 to run the corpus leg alone.
+#
+# A third leg times the two-nil shape on its own 13-card deals.  It is separate
+# because it is a separate objective on a separate tree -- a change that helps
+# one nil can easily do nothing for two, and averaging them would hide it.
+# NIL_SKIP_MULTINIL=1 to skip it.
 set -uo pipefail
 
 cd "$(dirname "$0")/.."
@@ -70,3 +75,14 @@ echo "Wall time only compares within one machine and build configuration."
 echo
 echo "The worst-case rows are single deals, so their node counts are exact rather"
 echo "than averaged -- a change of even 1% there is real and not sampling noise."
+
+if [ -z "${NIL_SKIP_MULTINIL:-}" ] && [ -f tests/corpus/multinil.txt ]; then
+    echo
+    echo "=== Two nils on one side (13 cards, every bound still gated off) ==="
+    # These six rows carry no recorded answer -- the oracle is exhaustive and
+    # cannot reach 13 cards -- so nothing is verified here and the node counts
+    # are the whole output.  A change means the tree MOVED, which may be a win
+    # or a bug; check corpus_multinil for whether the answers survived it.
+    "$BENCH" --corpus tests/corpus/multinil.txt --cards-only 13 --slowest 3 \
+        || echo "(multi-nil leg failed)"
+fi
