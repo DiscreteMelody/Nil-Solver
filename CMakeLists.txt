@@ -356,6 +356,23 @@ if(NIL_SOLVER_BUILD_TESTS)
   if(Python3_FOUND AND NIL_SOLVER_BUILD_CLI)
     # Differential test against nil_oracle.py.  Skipped (not failed) by the
     # script itself if the oracle is not present.
+    # MID-HAND RE-SOLVE.  Play a two-bid deal along its own principal variation
+    # until one bid breaks, hand the REMAINING position back with that seat
+    # marked already-down, and require the same verdict on the surviving bid and
+    # the same trick total over what is left.
+    #
+    # This is the property a table actually depends on: the answer you get at
+    # trick four must not contradict the answer you got at trick one.  It holds
+    # because the primary weight is charged on a bidder's FIRST trick and never
+    # again, so from the moment a bid is down the rest of the subtree is scored
+    # on the surviving bid and the pair's total -- which is exactly what
+    # ROLE_NIL_SET asks for.  Nothing enforces that but this test.
+    add_test(NAME subgame_consistency
+      COMMAND ${Python3_EXECUTABLE}
+              "${CMAKE_CURRENT_SOURCE_DIR}/tools/subgame_consistency.py"
+              --cards 5 --count 40 --seed 3)
+    set_tests_properties(subgame_consistency PROPERTIES TIMEOUT 600)
+
     add_test(NAME crosscheck
       COMMAND ${Python3_EXECUTABLE}
               "${CMAKE_CURRENT_SOURCE_DIR}/tools/crosscheck.py"
