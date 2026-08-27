@@ -38,6 +38,7 @@ expensive node. Read items 11 and 31 in that light.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ✅ | ~~Two nils on one side, in the oracle~~ | patch 55 | **the ground truth goes first, and the measurement is half the deliverable.** `nil_oracle.py` answers `--seats 0 3 0 3`: one pair bid two nils, the other pair is trying to set both. Objective is lexicographic as specified -- **primary** how many of the two nils are set (opponents maximize, the pair minimizes), **secondary** the pair's own trick count under `--secondary`. **This could not reuse the existing search, and the reason is structural.** The single-nil objective is ADDITIVE: every completed trick contributes a fixed amount, so `_search` accumulates as it unwinds and needs no memory. *How many nils got set* is a step function -- a nil bidder's FIRST trick costs the whole primary level and every later one costs nothing -- so the value of a subtree depends on which nils were already broken on the way in. `_search_multi` carries that as a two-bit mask in its state and in its memo key, the same way `spades_broken` already travels. **The two levels are coupled in a way the single-nil pair is not**: every trick the pair takes is taken BY a bidder, so having lost one bid the pair funnels everything through the seat already broken and keeps the other alive -- which is what a spades player does, and what a naive *minimize our own tricks* objective gets wrong. Pinned by selftest. **Coalitions here come from the roles, not from parity** -- new code, no ground truth to preserve, so it does the correct thing; the two agree whenever the nils sit N/S. `replay_pv` is now a reading of a new role-agnostic `replay_pv_by_seat`, so the two verifiers cannot disagree; the 560-row corpus and `crosscheck.py` confirm nothing moved. **New corpus** `tests/corpus/multinil.txt`: 150 oracle-computed rows at 4-6 cards plus 6 constructed 13-card deals with `?` answers for local timing, all 150 re-verified independently by PV replay. **Not wired into ctest** -- the C++ solver still refuses the shape, by design. **Three measurements, and the first one is a negative result**: see below |
 | ✅ | ~~A role per seat, replacing the nil seat and the already-set flag~~ | patch 54 | **a representation change, and deliberately nothing else.** The objective was described by two scalars -- which seat bid nil, and whether that nil was already broken -- and two scalars can only ever describe ONE nil. Real spades puts two on the table often enough that it matters, and the optimal line changes when it happens, because a seat that is both defending its own nil and attacking another's has an objective neither scalar can express. Replaced by `SeatRoles`: one role per seat, `0` a nil bidder with no trick yet, `1` a nil already broken, `2` the partner covering it, `3` a seat on a side with no nil bid. **The search is untouched.** `configure()` derives `ctx.nil_seat` from the array and everything below it is byte-identical, which is the point: every measurement this file banks stays valid. **Absolute inside, anchored on the wire.** `SeatRoles::role` is indexed by absolute seat, the same as `hands[]` and `leader`, so nothing in the solver thinks about rotation; the TEXT form runs clockwise from the seat the PBN names, exactly as that string's hands do, and the anchor is an argument to `parse_seat_roles` rather than an assumption. `W:...` with `--seats 0 3 2 3` puts the nil on West. **What is refused, and how.** `validate_seat_roles` accepts exactly the arrangements the two scalars could describe and separates the two ways of failing: a malformed array is `NIL_ERR_ILLEGAL_POSITION`, a well-formed one holding two nils is `NIL_ERR_UNSUPPORTED` and says *multiple nils are not supported yet*, so a caller can tell a typo from a feature that has not landed. **Changed everywhere at once**: `solve`, `solve_moves`, `replay_pv`, `objective_weights`, `SearchOptions::nil_already_set` (gone), `Solution::nil_seat` (now `roles` with an accessor), the C ABI's `nil_seat` argument (now `const int32_t* seats`), `NIL_FLAG_NIL_ALREADY_SET` (deleted, bit `0x20u` **burned not recycled**, as `0x2u` was in patch 45), the corpus's `nil` and `nilset` columns (one `seats` column), both CLIs, the C# bindings, `nil_oracle.py`'s argument surface and all seven Python tools. **Verified answer-neutral three ways**: 39,701 fast / 278,059 full / 49,084 on `large.txt` all unmoved with 560 oracle values matching, 22/22 tests, and a differential harness running **144 random deals** at 2-7 cards across both modes, both tie-break directions, live and already-set nils and all four seats through the OLD binary on the old command line and the new one on the new -- **byte-identical output on every deal**. The corpus was rewritten mechanically rather than re-solved, because the two old columns determine the roles exactly. **Two bugs found on the way**, both recorded below |
 | ✅ | ~~Both corpus generators have been crashing since patch 45~~ | patch 53 | **neither corpus could be regenerated, and nobody noticed because neither needed to be.** Patch 45 dropped the `forced` column and removed its ARGUMENT from both row writers while leaving the format strings at their old width. Every argument after `broken` shifted left by one, `trick_text` landed on the `%d` that used to take `forced`, and both tools died with `TypeError: %d format: a real number is required, not str`. `make_corpus.py` had 13 placeholders for 12 arguments; `make_large_corpus.py` had 13 for 12. Fixed to 11 and 12 columns respectively, matching the headers each already writes, with `nil_tricks` and `side_tricks` as `%s` in the large writer because a timed-only row records `?` for both. **The stale header in `tests/corpus/positions.txt` was the same bug's shadow**: it still named a `forced` column its rows have not carried since patch 45, precisely because the tool that would have rewritten it could not run. **Item 45's generator half is fixed here too, because the crash was hiding it.** With the writers working, `make_large_corpus.py` immediately emitted a 10-card row holding all thirteen spades with `broken=1`, which `validate()` refuses — the same coin-flip bug patch 47 fixed in `nil_bench`. Both `make_large_corpus.py` and `crosscheck.py` now draw the coin and mask it, which leaves the deal stream in place and only ever clears a flag that could not have been set; the partial trick may still set it afterwards, correctly, since a spade played to the current trick has left a hand. Verified end to end: both tools regenerate, and the output replays through `nil_bench` under `--check-pv` and `--check-moves` — `--verify` (oracle), `--pin` (solver), `--timed` and `--hardest` paths all exercised. 22/22, and the committed corpora are untouched (39,701 / 278,059 / 163,393,676) |
 | ✅ | ~~Every trace of the card gate, and the trick-spade over-rejection~~ | patch 52 | **the solver now declines a position for one reason only: it is illegal.** Patch 51 removed the gate but kept its ABI vestiges; nothing links against this yet, so they go too. **Deleted**: `NIL_FLAG_FORCE_LARGE` (bit `0x8u` is now free), `NIL_CARD_LIMIT`, `NIL_ERR_TOO_MANY_CARDS`, `--force` from `nil_cli`, and the `--force` argument from `corpus_view.py`, `invariants.py` and `make_large_corpus.py`. **The error codes are renumbered**: `-4` was `NIL_ERR_TOO_MANY_CARDS`, so `NIL_ERR_BUFFER_TOO_SMALL` is now `-4`, `NIL_ERR_INTERNAL` `-5` and `NIL_ERR_UNSUPPORTED` `-6`. **There was never a fast-mode gate below the API layer**, and `nil_already_set` has no size restriction either — both already worked at thirteen and were verified so. **Also fixed: `validate()` counted spades on the CURRENT TRICK toward the thirteen-still-in-play test**, which rejected a reachable position — lead a diamond, have it ruffed, and twelve spades sit in hands with the thirteenth face up, spades broken by that ruff and the count still reading thirteen. A spade on the trick has left a hand, so it no longer counts. Found by generating 3,000 twelve-card layouts with a partial trick: **9 hit it, and all 9 are accepted now.** The change is purely permissive — it only ever lowers the count — so no previously-legal position became illegal, and no banked count moved (39,701 fast, 278,059 full, 163,393,676 on `large.txt`, 22/22, 560 values under `--check-pv` and `--check-moves`). `nil_oracle.py` keeps its own seven-card `--force`: that really is an exhaustive search with no pruning, and its guard is not dead code |
@@ -3348,10 +3349,113 @@ Now derived from `FIELDS` by name. **Any tool that writes a corpus column by
 number is one format change away from corrupting the corpus**; the remaining
 readers all `zip(FIELDS, parts)`, which fails loudly instead.
 
+### 58. ~~Two nils on one side: the oracle~~ — ⭐⭐⭐⭐⭐ — **done, patch 55**
+
+Landed. What the measurements say, in the order they matter.
+
+**The raw tree does not move at all, and that is a real finding rather than a
+disappointing one.** Asked the same deal two ways, the oracle visits *exactly*
+the same nodes:
+
+```
+   cards  deals       one nil       two nils   ratio
+       3     12        11,941         11,941    1.00x
+       4     12       774,631        774,631    1.00x
+```
+
+Not approximately — identically, on every deal. This oracle is exhaustive with
+no pruning, so its node count is a function of the POSITION, of how many legal
+play sequences exist, and not of the objective laid over it. **Whatever the
+two-nil shape costs the C++ solver therefore comes entirely out of pruning, and
+cannot be measured here.** Any estimate of the 13-card explosion has to wait for
+the C++ implementation; the corpus exists so that measurement can be taken
+against something.
+
+**What does transfer is transposition pressure**, and it is mild:
+
+```
+   cards  deals   one nil    two nils   ratio
+       3     12     5,697       6,197    1.09x
+       4     12    94,701     106,467    1.12x
+```
+
+The broken-nil mask multiplies the key space by at most four, but the observed
+cost is 9-12%, because the great majority of positions are only ever reached
+under one mask value. That is the number to carry into the C++ port: the table
+gets slightly less effective, not four times less. **It is a lower bound, not a
+prediction** — the oracle's memo has no replacement policy and a real fixed-size
+table under more distinct keys loses more than the key count alone suggests.
+
+**The question is not reducible, which is why it needs its own search:**
+
+```
+   cards  deals   irreducible
+       3    250   14  (5.6%)
+       4    250   14  (5.6%)
+```
+
+That is deals where each bid is holdable ON ITS OWN but the pair cannot hold
+both. If it were zero, two nils would be two independent single-nil questions
+and could be answered by running the existing solver twice. **At one deal in
+eighteen it is not**, and that gap is the whole content of the shape.
+
+The one-directional half of that is a selftest: **if the two-nil game ends with
+nothing set, each bid is provably holdable alone**, because the pair had a
+strategy guaranteeing it and that same strategy is available in the single-nil
+game where the partner is under no constraint at all. The converse is exactly
+what fails 5.6% of the time.
+
+### 59. Two nils on one side: the C++ solver — ⭐⭐⭐⭐⭐ — **next**
+
+The oracle is the specification now; `tests/corpus/multinil.txt` is the target.
+
+**What has to change, in the order the dependencies run.** `validate_seat_roles`
+widens to the partner-nils shape, mirroring `role_shape` in the oracle. `Ctx`
+gains the broken-nil mask and the state key gains it too — that is the piece
+with a measured cost attached, 9-12% more distinct entries, and it should be
+A/B'd on its own before anything else lands on top of it. `objective_weights`
+forks: the multi-nil primary is `K*K` charged on a bidder's first trick, not a
+weight on a trick count. `replay_pv` already counts per seat on the oracle side
+and the C++ one should follow, because `Tally::nil_tricks` is a question with two
+answers here.
+
+**`bounds.hpp` is the hard part and should be assumed unsound until re-derived.**
+Every bound in it reasons about "the nil bidder" and "the cover partner" as two
+named hands with opposite jobs. With two bidders there is no cover, the nil
+side's own tricks are the thing it is trying not to take, and the static
+nil-safe/nil-set bounds do not carry over. **Do not wire any existing bound to
+the new shape without an exhaustive property test first** — the corpus is 150
+rows and a corpus pass is evidence about the corpus, not a correctness proof.
+
+**Measure the 13-card explosion before optimising it.** The six `m13-` rows are
+there for exactly that, and the honest first number is a node count with every
+bound disabled, so the cost of the shape is separated from the cost of the
+bounds not applying to it.
+
+### 60. Nils on OPPOSING sides — ⭐⭐⭐
+
+`0 3 0 3` was chosen first because it is the easy one: the two bidders are
+partners, so the coalitions stay two-sided and ordinary minimax applies. Both
+pairs bidding — `0 2 0 2`, or a bidder and a cover against a bidder and a cover
+— does not have that property. Each side is simultaneously defending its own
+bid and attacking the other's, and the objective stops being a single scalar one
+side minimises and the other maximises.
+
+**The Sturtevant and Korf paper in this repo is about precisely this.** Its
+result is that `maxⁿ` admits only shallow pruning, and that a game whose sides
+have genuinely independent objectives loses most of what alpha-beta buys. Before
+building anything here, read it against this specific case and work out whether
+the two-team structure survives — a deal where both pairs bid may still be
+two-sided if the scoring makes the objectives strictly opposed, and if it does
+not, the paper's asymptotic results say what to expect.
+
+Not scheduled. Item 59 first, and its 13-card measurement will say a lot about
+whether this one is affordable at all.
+
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 36 ✅ → 41 ✅ → 42 ⊘ → 47 ✅ → 43 ⊘→✅ → 43b ⊘ → 44 ⏸ → 54 ✅ → 45 → 29b (single-suit) → 9 ⊘ → 10 ⊘ → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 36 ✅ → 41 ✅ → 42 ⊘ → 47 ✅ → 43 ⊘→✅ → 43b ⊘ → 44 ⏸ → 54 ✅ → 58 ✅ → 59 → 45 → 29b (single-suit) → 9 ⊘ → 10 ⊘ → measure → 11..14
 ```
 
 **Patch 47 comes before all of it, and it is not an optimisation.** The random

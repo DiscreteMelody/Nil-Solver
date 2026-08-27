@@ -122,12 +122,17 @@ def nil_already_set_of(roles: Sequence[int]) -> bool:
     return ROLE_NIL_SET in tuple(roles)
 
 
-def validate_roles(roles: Sequence[int]) -> None:
-    """Raise unless this is a shape the solver accepts today.
+# The arrangements this file can answer, and the name each goes by.
+SHAPE_SINGLE_NIL = "single-nil"      # one nil, its partner covering, two opponents
+SHAPE_PARTNER_NILS = "partner-nils"  # both members of one pair bid, two opponents
 
-    Exactly one nil, exactly one cover, and the cover across from the nil.  Two
-    nils is a legal spades deal and an unimplemented feature rather than a
-    malformed argument, and the message says which.
+
+def role_shape(roles: Sequence[int]) -> str:
+    """Name the arrangement, or raise saying why it is not one we answer.
+
+    Raising is the whole point of this function: an arrangement nobody has
+    implemented must come back as a refusal rather than as an answer to some
+    adjacent question.  The two shapes below are what exists today.
     """
     if len(roles) != 4:
         raise ValueError(f"expected four seat roles, got {len(roles)}")
@@ -139,29 +144,55 @@ def validate_roles(roles: Sequence[int]) -> None:
             )
     nils = [s for s, r in enumerate(roles) if r in (ROLE_NIL, ROLE_NIL_SET)]
     covers = [s for s, r in enumerate(roles) if r == ROLE_COVER]
+    opponents = [s for s, r in enumerate(roles) if r == ROLE_OPPONENT]
     described = describe_roles(roles)
+
     if not nils:
         raise ValueError(f"no seat bid nil ({described}); one seat must have role 0 or 1")
-    if len(nils) > 1:
-        raise ValueError(
-            f"more than one nil bid ({described}); solving with multiple nils is "
-            "not supported yet"
-        )
-    if not covers:
-        raise ValueError(
-            f"no cover partner for {SEAT_CHARS[nils[0]]}'s nil ({described}); "
-            "one seat must have role 2"
-        )
-    if len(covers) > 1:
-        raise ValueError(
-            f"more than one cover partner ({described}); exactly one seat may have role 2"
-        )
-    if covers[0] != (nils[0] + 2) % 4:
-        raise ValueError(
-            "the cover partner must sit across from the nil bidder: "
-            f"{SEAT_CHARS[nils[0]]} bid nil, so the cover is "
-            f"{SEAT_CHARS[(nils[0] + 2) % 4]} and not {SEAT_CHARS[covers[0]]} ({described})"
-        )
+
+    if len(nils) == 1:
+        if not covers:
+            raise ValueError(
+                f"no cover partner for {SEAT_CHARS[nils[0]]}'s nil ({described}); "
+                "one seat must have role 2"
+            )
+        if len(covers) > 1:
+            raise ValueError(
+                f"more than one cover partner ({described}); exactly one seat may have role 2"
+            )
+        if covers[0] != (nils[0] + 2) % 4:
+            raise ValueError(
+                "the cover partner must sit across from the nil bidder: "
+                f"{SEAT_CHARS[nils[0]]} bid nil, so the cover is "
+                f"{SEAT_CHARS[(nils[0] + 2) % 4]} and not {SEAT_CHARS[covers[0]]} ({described})"
+            )
+        return SHAPE_SINGLE_NIL
+
+    if len(nils) == 2:
+        if (nils[0] + 2) % 4 != nils[1]:
+            raise ValueError(
+                f"the two nil bidders are not partners ({described}); nils on "
+                "OPPOSING sides are not supported yet"
+            )
+        if covers:
+            raise ValueError(
+                f"a pair that both bid nil has nobody left to cover ({described}); "
+                "the other two seats must both have role 3"
+            )
+        if len(opponents) != 2:
+            raise ValueError(
+                f"expected two opponents against a pair of nils ({described})"
+            )
+        return SHAPE_PARTNER_NILS
+
+    raise ValueError(
+        f"{len(nils)} nils ({described}); more than two is not supported yet"
+    )
+
+
+def validate_roles(roles: Sequence[int]) -> None:
+    """Raise unless this is a shape this file can answer.  See role_shape."""
+    role_shape(roles)
 
 
 def parse_roles(text: str, anchor: int) -> List[int]:
@@ -628,6 +659,271 @@ def _search(
     return result
 
 
+# ---------------------------------------------------------------------------
+# Two nils on the same side
+#
+# WHY THIS IS A SEPARATE SEARCH
+# -----------------------------
+# The single-nil objective is ADDITIVE: every completed trick contributes a
+# fixed amount to the value, so _search can accumulate as it unwinds and needs
+# no memory of what came before.  "How many nils got set" is not additive.  It
+# is a step function -- the FIRST trick a nil bidder takes costs its side the
+# whole primary level and every later one costs nothing more -- so the value of
+# a subtree depends on which nils have already been broken on the way in.
+#
+# That path state therefore has to travel with the search and go into the memo
+# key, exactly as `spades_broken` does.  It is two bits wide and it only ever
+# fills up, so it collapses quickly: once both nils are gone the remaining
+# search is pure secondary.
+#
+# THE OBJECTIVE
+#
+#     value = primary * (number of nils set) + secondary * (nil side's tricks)
+#
+# with primary = K*K and secondary = -/+K for K = tricks_remaining + 1, so the
+# two levels compare lexicographically and neither can overturn the other.  The
+# NIL SIDE MINIMIZES and the opponents maximize:
+#
+#   opponents:  two nils set  >  one nil set  >  their own tricks per `secondary`
+#   nil pair:   two nils made >  one made     >  their own tricks per `secondary`
+#
+# The two levels are coupled in a way the single-nil objective is not.  Every
+# trick the nil pair takes is taken BY a nil bidder, so a nil side that wants
+# tricks can only get them by breaking one of its own bids.  With secondary
+# "max" that makes the ordering do real work: having lost the first nil, the
+# pair funnels everything through the seat already broken and keeps the other
+# alive, which is what a spades player does and what a naive "minimize our own
+# tricks" objective would get wrong.
+#
+# COALITIONS COME FROM THE ROLES HERE, NOT FROM PARITY.  The single-nil search
+# above fixes N/S as the minimizing side whatever the roles say -- see item 55
+# in ROADMAP.md -- and this is new code with no ground truth to preserve, so it
+# does the correct thing instead: the pair holding the nils minimizes.  Both
+# agree whenever the nils sit North and South.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _MultiCtx:
+    nil_seats: Tuple[int, ...]   # the two partners that bid
+    minimizing_parity: int       # seats with this parity minimize the value
+    primary_weight: int          # K*K, charged once per nil the first time it takes
+    secondary_weight: int        # -/+K on the nil side's own tricks
+    memo: Optional[Dict] = None
+    nodes: int = 0
+
+
+def multi_objective_weights(
+    tricks_remaining: int,
+    secondary: str = "max",
+) -> Tuple[int, int]:
+    """Return (primary, secondary) weights for the two-nil objective.
+
+    primary is K*K and secondary is -/+K with K = tricks_remaining + 1.  The
+    secondary level can contribute at most K*tricks_remaining in absolute value,
+    which is strictly less than K*K, so a difference in the number of nils set
+    can never be outweighed by any difference in trick counts.
+    """
+    if secondary not in ("max", "min"):
+        raise ValueError("secondary must be 'max' or 'min'")
+    k = tricks_remaining + 1
+    return k * k, (-k if secondary == "max" else k)
+
+
+def _search_multi(
+    hands: Tuple[Tuple[Card, ...], ...],
+    leader: int,
+    trick: Tuple[Card, ...],
+    spades_broken: bool,
+    broken_nils: int,
+    ctx: _MultiCtx,
+) -> Tuple[int, Tuple[Play, ...]]:
+    """Return (objective value from here on, PV from here).
+
+    `broken_nils` is a bitmask over seats of which nil bidders have ALREADY
+    taken a trick on the way to this node.  It is part of the state because the
+    primary level is charged on a nil bidder's first trick and on no other.
+    """
+    ctx.nodes += 1
+
+    if not any(hands):
+        return 0, ()
+
+    key = None
+    if ctx.memo is not None:
+        key = (hands, leader, trick, spades_broken, broken_nils)
+        cached = ctx.memo.get(key)
+        if cached is not None:
+            return cached
+
+    seat = (leader + len(trick)) % 4
+    maximizing = (seat % 2) != ctx.minimizing_parity
+
+    best_value: Optional[int] = None
+    best_pv: Tuple[Play, ...] = ()
+
+    for card in legal_moves(hands[seat], trick, spades_broken):
+        next_hands = tuple(
+            tuple(c for c in hand if c != card) if s == seat else hand
+            for s, hand in enumerate(hands)
+        )
+        next_broken = spades_broken_after(spades_broken, trick, card)
+        played = trick + (card,)
+
+        if len(played) == 4:
+            winner = trick_winner(leader, played)
+            gained = 0
+            next_nils = broken_nils
+            if winner in ctx.nil_seats and not (broken_nils & (1 << winner)):
+                # The trick that kills this bid.  Charged once, here.
+                gained += ctx.primary_weight
+                next_nils = broken_nils | (1 << winner)
+            if winner % 2 == ctx.minimizing_parity:
+                gained += ctx.secondary_weight
+            sub_value, sub_pv = _search_multi(
+                next_hands, winner, (), next_broken, next_nils, ctx
+            )
+            value = gained + sub_value
+        else:
+            value, sub_pv = _search_multi(
+                next_hands, leader, played, next_broken, broken_nils, ctx
+            )
+
+        # Strict improvement only, so ties keep the canonically lowest card.
+        better = (
+            best_value is None
+            or (value > best_value if maximizing else value < best_value)
+        )
+        if better:
+            best_value = value
+            best_pv = ((seat, card),) + sub_pv
+
+    assert best_value is not None, "a non-terminal position must have a legal move"
+    result = (best_value, best_pv)
+    if ctx.memo is not None:
+        ctx.memo[key] = result
+    return result
+
+
+@dataclass
+class MultiNilSolution:
+    """The answer to a deal where one pair bid two nils."""
+
+    roles: List[int]
+    seat_tricks: List[int]        # tricks each seat took, indexed by seat
+    nils_set: int                 # 0, 1 or 2
+    nil_seats: List[int]
+    nil_side_tricks: int
+    opponent_tricks: int
+    value: int                    # the raw lexicographic scalar the nil side minimized
+    pv: List[Play]
+    nodes: int
+    position: Position
+    secondary: str = "max"
+
+    def nil_fails(self, seat: int) -> bool:
+        return self.seat_tricks[seat] > 0
+
+
+def solve_partner_nils(
+    position: Position,
+    roles: Sequence[int],
+    use_memo: bool = False,
+    secondary: str = "max",
+) -> MultiNilSolution:
+    """Exhaustive minimax for a pair that both bid nil.
+
+    Primary: how many of the two nils get set.  The opponents maximize it, the
+    pair minimizes it.  Secondary, breaking ties only: the pair's own trick
+    count, wanted under secondary="max" and shed under "min".
+
+    See the block comment above for why this cannot reuse _search, and
+    use_memo carries the same caveat it does there -- it caches a pure function
+    of the full state (now including which nils are already broken), so it
+    changes neither the value nor the PV.
+    """
+    position.validate()
+    shape = role_shape(roles)
+    if shape != SHAPE_PARTNER_NILS:
+        raise ValueError(f"solve_partner_nils needs two partners bidding, got {shape}")
+    if ROLE_NIL_SET in tuple(roles):
+        raise ValueError(
+            "an already-broken nil alongside a live one is not supported yet; "
+            "the primary level counts bids that are still alive"
+        )
+
+    nil_seats = tuple(s for s, r in enumerate(roles) if r in (ROLE_NIL, ROLE_NIL_SET))
+    primary_weight, secondary_weight = multi_objective_weights(
+        position.tricks_remaining, secondary
+    )
+    ctx = _MultiCtx(
+        nil_seats=nil_seats,
+        minimizing_parity=nil_seats[0] % 2,
+        primary_weight=primary_weight,
+        secondary_weight=secondary_weight,
+        memo={} if use_memo else None,
+    )
+    value, pv = _search_multi(
+        position.hands,
+        position.leader,
+        position.current_trick,
+        position.spades_broken,
+        0,
+        ctx,
+    )
+
+    # Self-check: an oracle that lies is worse than no oracle.  Replaying the PV
+    # recovers the per-seat counts independently, and re-encoding them must land
+    # back on the value the search reported.
+    seat_tricks = replay_pv_by_seat(position, list(pv))
+    nils_set = sum(1 for seat in nil_seats if seat_tricks[seat] > 0)
+    nil_side = sum(seat_tricks[seat] for seat in nil_seats)
+    replayed = primary_weight * nils_set + secondary_weight * nil_side
+    if replayed != value:
+        raise AssertionError(
+            f"internal inconsistency: search says {value}, replaying the PV gives "
+            f"{replayed} (nils_set={nils_set}, nil_side={nil_side})"
+        )
+
+    return MultiNilSolution(
+        roles=list(roles),
+        seat_tricks=seat_tricks,
+        nils_set=nils_set,
+        nil_seats=list(nil_seats),
+        nil_side_tricks=nil_side,
+        opponent_tricks=sum(seat_tricks) - nil_side,
+        value=value,
+        pv=list(pv),
+        nodes=ctx.nodes,
+        position=position,
+        secondary=secondary,
+    )
+
+
+def solve_seats(
+    position: Position,
+    roles: Sequence[int],
+    use_memo: bool = False,
+    secondary: str = "max",
+):
+    """Solve whatever arrangement `roles` describes, or raise saying it cannot.
+
+    Returns a Solution for a single nil and a MultiNilSolution for a pair that
+    both bid.  The two are different objectives rather than one generalised
+    one -- see multi_objective_weights -- so they are different result types.
+    """
+    shape = role_shape(roles)
+    if shape == SHAPE_SINGLE_NIL:
+        return solve(
+            position,
+            nil_seat_of(roles),
+            use_memo=use_memo,
+            secondary=secondary,
+            nil_already_set=nil_already_set_of(roles),
+        )
+    return solve_partner_nils(position, roles, use_memo=use_memo, secondary=secondary)
+
+
 class Tally(NamedTuple):
     """Who took how many tricks along a line."""
 
@@ -743,14 +1039,32 @@ def replay_pv(
     play, or if the PV does not exhaust every hand.  This is the verifier for
     the search, and it is also useful for checking a PV produced by the solver
     under test.
+
+    A thin reading of replay_pv_by_seat, which does the actual work.  Every
+    count here is derived from the per-seat one, so the two verifiers cannot
+    disagree.
+    """
+    seat_tricks = replay_pv_by_seat(position, pv)
+    return Tally(
+        seat_tricks[designated],
+        seat_tricks[designated] + seat_tricks[(designated + 2) % 4],
+        seat_tricks[(designated + 1) % 4] + seat_tricks[(designated + 3) % 4],
+    )
+
+
+def replay_pv_by_seat(position: Position, pv: Sequence[Play]) -> List[int]:
+    """Replay a PV and return the tricks each SEAT took, indexed by seat.
+
+    The role-agnostic verifier.  Who is nil and who is covering does not enter
+    into it -- a trick is won by a seat, and every objective this file supports
+    is a reading of these four numbers.  Raises on any illegal or out-of-turn
+    play, or if the PV does not exhaust every hand.
     """
     hands = [list(h) for h in position.hands]
     leader = position.leader
     broken = position.spades_broken
     trick = list(position.current_trick)
-    designated_tricks = 0
-    side_tricks = 0
-    opponent_tricks = 0
+    seat_tricks = [0, 0, 0, 0]
 
     for ply, (seat, card) in enumerate(pv):
         expected = (leader + len(trick)) % 4
@@ -774,12 +1088,7 @@ def replay_pv(
         trick.append(card)
         if len(trick) == 4:
             winner = trick_winner(leader, trick)
-            if winner == designated:
-                designated_tricks += 1
-            if winner % 2 == designated % 2:
-                side_tricks += 1
-            else:
-                opponent_tricks += 1
+            seat_tricks[winner] += 1
             leader = winner
             trick = []
 
@@ -787,7 +1096,7 @@ def replay_pv(
         raise ValueError("PV ends mid-trick")
     if any(hands):
         raise ValueError("PV does not play out every card")
-    return Tally(designated_tricks, side_tricks, opponent_tricks)
+    return seat_tricks
 
 
 # ---------------------------------------------------------------------------
@@ -891,6 +1200,63 @@ def format_pv(solution: Solution) -> str:
 def format_pv_compact(solution: Solution) -> str:
     """Bare play sequence, e.g. 'W:H4 N:HK E:H2 S:H9 N:S3 ...'."""
     return " ".join(f"{SEAT_CHARS[s]}:{c}" for s, c in solution.pv)
+
+
+def format_multi_solution(solution: MultiNilSolution, compact: bool = False) -> str:
+    pos = solution.position
+    per_seat = " ".join(
+        f"{SEAT_CHARS[i]}={n}" for i, n in enumerate(solution.seat_tricks)
+    )
+    if compact:
+        return (
+            f"shape={SHAPE_PARTNER_NILS}\n"
+            f"nils_set={solution.nils_set}\n"
+            f"seat_tricks={' '.join(str(n) for n in solution.seat_tricks)}\n"
+            f"nil_side_tricks={solution.nil_side_tricks}\n"
+            f"opponent_tricks={solution.opponent_tricks}\n"
+            f"pv={' '.join(f'{SEAT_CHARS[a]}:{c}' for a, c in solution.pv)}\n"
+        )
+    direction = (
+        "then the pair takes as many as it can"
+        if solution.secondary == "max"
+        else "then the pair takes as few as it can"
+    )
+    nil_names = "/".join(SEAT_CHARS[x] for x in solution.nil_seats)
+    out = [
+        f"PBN            {pos.to_pbn()}",
+        format_hands(pos),
+        f"Leader         {SEAT_CHARS[pos.leader]}",
+        f"Seats          {describe_roles(solution.roles)}",
+        f"               ({nil_names} minimize nils set, "
+        f"the other pair maximizes it)",
+        f"Objective      how many of the two nils are set, {direction}",
+        f"Spades broken  {'yes' if pos.spades_broken else 'no'}",
+    ]
+    if pos.current_trick:
+        out.append(
+            f"On the trick   {cards_str(pos.current_trick)}"
+            "   (already played, in order from the leader)"
+        )
+    out += [
+        f"Nils set       {solution.nils_set} of 2",
+    ]
+    for seat in solution.nil_seats:
+        verdict = "FAILS" if solution.nil_fails(seat) else "MAKES"
+        out.append(
+            f"  {SEAT_CHARS[seat]}            {verdict}  "
+            f"({solution.seat_tricks[seat]} trick(s))"
+        )
+    out += [
+        f"Tricks by seat {per_seat}",
+        f"Side tricks    nil pair={solution.nil_side_tricks}  "
+        f"opponents={solution.opponent_tricks}",
+        f"Nodes          {solution.nodes}",
+        f"Value          {solution.value}",
+        "",
+        "Principal variation",
+        " ".join(f"{SEAT_CHARS[a]}:{c}" for a, c in solution.pv),
+    ]
+    return "\n".join(out)
 
 
 def format_hands(position: Position) -> str:
@@ -1228,6 +1594,132 @@ def selftest(verbose: bool = True) -> int:
         check(f"seed {100+seed}: memo agrees on PV", memoized.pv, sol.pv)
 
     print()
+    # ---------------------------------------------------------------- two nils
+    if verbose:
+        print("Two nils on the same side")
+
+    # Shape recognition, and the refusals that guard it.
+    check("single nil is recognised", role_shape([0, 3, 2, 3]), SHAPE_SINGLE_NIL)
+    check("partner nils are recognised", role_shape([0, 3, 0, 3]), SHAPE_PARTNER_NILS)
+    for bad, why in (
+        ([0, 0, 3, 3], "nils on opposing sides"),
+        ([0, 3, 0, 2], "a cover with nobody to cover"),
+        ([0, 0, 0, 3], "three nils"),
+    ):
+        try:
+            role_shape(bad)
+            check(f"refuses {why}", "accepted", "raised")
+        except ValueError:
+            check(f"refuses {why}", "raised", "raised")
+
+    # The weights must separate the levels: no run of tricks can outweigh one
+    # more nil going down.
+    for t in (2, 3, 5, 9, 13):
+        pw, sw = multi_objective_weights(t, "max")
+        check(f"weights separate at {t} tricks", abs(sw) * t < pw, True)
+    check("max wants the pair's tricks", multi_objective_weights(4, "max")[1] < 0, True)
+    check("min wants rid of them", multi_objective_weights(4, "min")[1] > 0, True)
+
+    # A hand-checkable ending.  One trick left, N and S both bid, and the only
+    # question is who takes it.  W is on lead holding a card that cannot win.
+    tiny = Position(
+        hands=(
+            (Card(1, 2),),
+            (Card(1, 3),),
+            (Card(1, 4),),
+            (Card(1, 5),),
+        ),
+        leader=3,
+        spades_broken=True,
+    )
+    tiny_sol = solve_partner_nils(tiny, [0, 3, 0, 3])
+    check("W's five wins, so no nil is set", tiny_sol.nils_set, 0)
+    check("and the pair takes nothing", tiny_sol.nil_side_tricks, 0)
+
+    # The same ending with the high card in a nil hand: it must take the trick,
+    # so exactly one bid dies and nothing can prevent it.
+    forced = Position(
+        hands=(
+            (Card(1, 5),),
+            (Card(1, 3),),
+            (Card(1, 4),),
+            (Card(1, 2),),
+        ),
+        leader=3,
+        spades_broken=True,
+    )
+    forced_sol = solve_partner_nils(forced, [0, 3, 0, 3])
+    check("N is forced to win", forced_sol.nils_set, 1)
+    check("and it is N that dies", forced_sol.seat_tricks[0], 1)
+    check("S survives", forced_sol.seat_tricks[2], 0)
+
+    # CONCENTRATION.  Two tricks the pair cannot avoid taking.  Splitting them
+    # kills both bids; funnelling both through one seat kills one.  The pair
+    # must prefer the funnel even though the trick counts are identical.
+    funnel = Position(
+        hands=(
+            (Card(1, 14), Card(2, 14)),
+            (Card(1, 2), Card(2, 2)),
+            (Card(1, 3), Card(2, 3)),
+            (Card(1, 4), Card(2, 4)),
+        ),
+        leader=0,
+        spades_broken=True,
+    )
+    funnel_sol = solve_partner_nils(funnel, [0, 3, 0, 3])
+    check("both tricks land on the pair", funnel_sol.nil_side_tricks, 2)
+    check("but only one bid dies", funnel_sol.nils_set, 1)
+    check("because N took both", funnel_sol.seat_tricks[0], 2)
+
+    # Memoization is memoization: same value, same line.
+    for seed in (11, 29, 47):
+        fx = random_fixture(seed=seed, cards_per_hand=4, leader=0, designated=0)
+        plain = solve_partner_nils(fx.position, [0, 3, 0, 3])
+        memoed = solve_partner_nils(fx.position, [0, 3, 0, 3], use_memo=True)
+        check(f"seed {seed}: memo agrees on value", memoed.value, plain.value)
+        check(f"seed {seed}: memo agrees on PV", memoed.pv, plain.pv)
+
+    # A nil the pair can hold TOGETHER can be held ALONE.  If the two-nil game
+    # ends with nothing set, the pair had a strategy guaranteeing it, and that
+    # same strategy is available in the single-nil game -- where the partner is
+    # under no constraint at all, so it can only do better.  The converse does
+    # not hold, and that gap is the whole content of the multi-nil question.
+    for seed in (3, 8, 21, 34, 55):
+        fx = random_fixture(seed=seed, cards_per_hand=4, leader=0, designated=0)
+        both = solve_partner_nils(fx.position, [0, 3, 0, 3], use_memo=True)
+        if both.nils_set == 0:
+            for seat in (0, 2):
+                alone = solve(fx.position, seat, use_memo=True)
+                check(
+                    f"seed {seed}: {SEAT_CHARS[seat]} safe together implies safe alone",
+                    alone.tricks,
+                    0,
+                )
+
+    # Permuting the three non-spade suits is a relabelling, not a different
+    # deal, so neither level of the objective may move.
+    for seed in (7, 19):
+        fx = random_fixture(seed=seed, cards_per_hand=4, leader=0, designated=0)
+        base = solve_partner_nils(fx.position, [0, 3, 0, 3], use_memo=True)
+        swapped = Position(
+            hands=tuple(
+                tuple(
+                    Card({1: 2, 2: 1}.get(c.suit, c.suit), c.rank)
+                    for c in hand
+                )
+                for hand in fx.position.hands
+            ),
+            leader=fx.position.leader,
+            spades_broken=fx.position.spades_broken,
+        )
+        other = solve_partner_nils(swapped, [0, 3, 0, 3], use_memo=True)
+        check(f"seed {seed}: suit swap holds nils set", other.nils_set, base.nils_set)
+        check(
+            f"seed {seed}: suit swap holds the pair's tricks",
+            other.nil_side_tricks,
+            base.nil_side_tricks,
+        )
+
     print("FAILURES:" if failures else "All checks passed.", failures or "")
     return failures
 
@@ -1343,13 +1835,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         return 2
 
-    solution = solve(
+    solution = solve_seats(
         position,
-        designated,
+        roles,
         use_memo=args.memo,
         secondary=args.secondary,
-        nil_already_set=nil_already_set_of(roles),
     )
+    if isinstance(solution, MultiNilSolution):
+        print(format_multi_solution(solution, compact=args.compact))
+        return 0
     print(format_solution(solution, compact=args.compact))
     return 0
 
