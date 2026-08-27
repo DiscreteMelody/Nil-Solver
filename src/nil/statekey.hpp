@@ -183,8 +183,25 @@ CardId from_relative(RelMove move, const SuitProfile& profile);
 //
 // `trick` holds the cards already played to the current trick in play order
 // from `leader`; those cards must already be absent from `hands`.
+// `nils_broken` is the set of nil bidders that have already taken a trick, and
+// `carry_nils_broken` says whether it belongs in the key at all.
+//
+// IT IS OPTIONAL BECAUSE THE SINGLE-NIL KEY MUST NOT MOVE.  Under one bid the
+// objective is additive and a position's value does not depend on how it was
+// reached, so the mask is not part of the position and packing it would waste
+// four bits of a 128-bit budget -- and, worse, shift every field after it and
+// change which positions fit, which would move node counts that a dozen
+// measurements are banked against.  Under two bids the value DOES depend on
+// which bids are already down, so two layouts identical in cards are different
+// positions and the key has to say so.
+//
+// The four bits are spent only when carried, so the budget check below is
+// unchanged for one bid and tightened by four bits for two.  At thirteen cards
+// that costs the opening position, which was already unkeyable and has nothing
+// to transpose with anyway.
 bool encode_state_key(const Hand hands[4], int leader, bool broken, const CardId trick[3],
-                      int trick_len, StateKey& key, SuitProfile& profile);
+                      int trick_len, StateKey& key, SuitProfile& profile,
+                      unsigned nils_broken = 0, bool carry_nils_broken = false);
 
 // Avalanche both words into one hash.  Table index and verification are
 // separate: the index comes from this, equality is checked against the full

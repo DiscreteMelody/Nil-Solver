@@ -977,7 +977,7 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
     bool have_cut_bound = false;
     if (ctx.tt && (st.trick_len == 0 || !ctx.tt_boundaries_only)) {
         keyed = encode_state_key(st.hands, st.leader, st.broken, st.trick, st.trick_len, key,
-                                 profile);
+                                 profile, st.nils_broken, ctx.multi_nil);
         if (keyed) {
             hash = mix_key(key);
             // A bound recorded under a wider window is still a fact about the
@@ -1298,9 +1298,11 @@ int value_after(Ctx& ctx, const State& st, CardId card, int alpha, int beta, Sta
 //                     and p, so vertex evaluation says nothing about the
 //                     interior.  later_tricks, quick_tricks and spade_matrix
 //                     all ride on it.
-//   the table         two positions identical in cards but reached under
-//                     different broken-nil masks are different positions, and
-//                     the key does not carry the mask yet.  Item 61.
+// The transposition table is NOT in this list any more: since patch 59 the key
+// carries the broken-nil mask and the shape has its own value tag, so entries
+// from the two objectives cannot be confused for each other.  `tt_narrow` still
+// is, because a partial match spends its bound through the same triangle
+// arithmetic that target_bounds does.
 //
 // Everything here is a correctness gate, not a tuning choice, and it is also
 // the all-off baseline every re-derivation gets A/B'd against.
@@ -1312,7 +1314,6 @@ void disable_single_nil_machinery(Ctx& ctx) {
     ctx.quick_tricks = false;
     ctx.spade_matrix = false;
     ctx.tt_narrow = false;
-    ctx.tt = nullptr;
 }
 
 void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
@@ -1390,7 +1391,10 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
     // every narrowing it performs is immediately followed by the cutoff that
     // makes it moot.
     ctx.narrow_window = opts.narrow_window;
-    ctx.tt_tag = opts.mode == MODE_FAST ? TAG_FAST : TAG_FULL;
+    // Which QUESTION this solve's values answer.  The key says which position an
+    // entry is about; without this a two-nil value would be readable by a
+    // one-nil search at the same cards, and the two are on different scales.
+    ctx.tt_tag = ctx.multi_nil ? TAG_MULTI_NIL : (opts.mode == MODE_FAST ? TAG_FAST : TAG_FULL);
 
     // The measurement arm.  Nothing below reads the histogram when it is off,
     // and the `essential` pointer threaded through search() is null in that

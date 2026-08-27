@@ -132,6 +132,12 @@ enum ValueTag : std::uint8_t {
     TAG_NONE = 0,
     TAG_FULL = 1,  // the packed lexicographic value
     TAG_FAST = 2,  // the nil bidder's trick count
+    // A pair that both bid: the primary level counts BIDS DOWN rather than
+    // weighting one seat's tricks, so a value on this scale means something
+    // different from a TAG_FULL value at the same cards.  It gets its own tag
+    // for the same reason TAG_FAST does -- the key says which POSITION an entry
+    // is about, and the tag says which QUESTION.
+    TAG_MULTI_NIL = 3,
 };
 
 // 24 bytes, no padding on any sane ABI.

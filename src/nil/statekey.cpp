@@ -55,7 +55,8 @@ CardId from_relative(RelMove move, const SuitProfile& profile) {
 }
 
 bool encode_state_key(const Hand hands[4], int leader, bool broken, const CardId trick[3],
-                      int trick_len, StateKey& key, SuitProfile& profile) {
+                      int trick_len, StateKey& key, SuitProfile& profile,
+                      unsigned nils_broken, bool carry_nils_broken) {
     const Hand all = hands[0] | hands[1] | hands[2] | hands[3];
 
     // Seat indices are two bits; rather than testing four masks per card, split
@@ -70,7 +71,7 @@ bool encode_state_key(const Hand hands[4], int leader, bool broken, const CardId
         profile.total += profile.length[s];
     }
 
-    const int header = 21 + (trick_len > 0 ? 9 : 0);
+    const int header = 21 + (trick_len > 0 ? 9 : 0) + (carry_nils_broken ? 4 : 0);
     if (header + 2 * profile.total > 128) {
         key = StateKey();
         return false;
@@ -81,6 +82,10 @@ bool encode_state_key(const Hand hands[4], int leader, bool broken, const CardId
     pk.put(broken ? 1u : 0u, 1);
     for (int s = 0; s < 4; ++s) pk.put(static_cast<std::uint64_t>(profile.length[s]), 4);
     pk.put(static_cast<std::uint64_t>(trick_len) & 3u, 2);
+    // Packed as a raw four-bit SEAT mask rather than as two bits indexed by
+    // bidder, so that it needs no agreement with the caller about which seats
+    // those are.  Nothing else in the key would distinguish these positions.
+    if (carry_nils_broken) pk.put(static_cast<std::uint64_t>(nils_broken) & 15u, 4);
 
     if (trick_len > 0) {
         const int led = card_suit(trick[0]);
