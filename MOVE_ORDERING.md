@@ -37,7 +37,9 @@ scores 3.
 | Opponents | **6b**: lowest card of the suit where the nil is closest to running out of covers | *nothing* | *nothing* |
 
 The cover partner has **no heuristic at all**. That was item 6c, rejected for
-spending the cover card unconditionally.
+spending the cover card unconditionally. C1 to C3 are the proposal to give it
+one; `duck_depth` (item C0, patch 71) is the measure all three read, and it is
+built and tested but unread.
 
 Nothing anywhere targets the secondary objective. Every rule above aims at
 resolving the nil question fast.
@@ -63,18 +65,72 @@ Still nothing, and still open. Leading was built and measured with the rest of
 
 ---
 
-### C0. The shared primitive: duck depth under the cover hand
+### ~~C0. The shared primitive: duck depth under the cover hand~~
+
+✅ **Built and property-tested, patch 71.** `duck_depth(nil, cover, suit)` in
+`bounds.hpp`. Nothing reads it yet, which is the point: it ships alone so that
+C1, C2 and C3 each measure one heuristic rather than a heuristic plus a
+primitive.
 
 Three of the four cover rules need the same number: **in a given suit, how many
-tricks can the nil duck underneath the cover hand?** Build and test this once,
-before any rule that uses it.
+tricks can the nil duck underneath the cover hand?**
 
 Example: cover holds `JT87`, nil holds `954`. The nil can get under the cover
 three times. Cover holds `KQ4`, nil holds `J96`: twice.
 
+**The definition, stated exactly**, because four documented examples do not pin
+one: it is the size of the largest set of pairs in which each of the nil
+bidder's cards is matched to a **distinct** strictly higher card of the cover
+partner's. *Distinct* is the whole content — one high cover card shelters one
+nil card, not every card beneath it. `A` opposite `987` is one duck, not three.
+
 This is related to `cover_deficit_depth` but is not the same question — that one
 measures a holding against the *outstanding* cards, this one measures two
-specific holdings against each other.
+specific holdings against each other. They are the same combinatorics read two
+ways, and Hall's theorem is the bridge: the deficiency form says the largest
+matching is `m - max_j(j - above_j)`, so a holding this call matches in full is
+exactly one the other reports as covered. The property test asserts that
+agreement so the two cannot drift.
+
+**What it does not claim.** Not that these tricks will happen — the suit may
+never be led that often, an opponent may win over both hands, and the cover
+partner may have better uses for the card. It measures *supply*, in the same
+spirit as `cover_deficit_depth`, and ruffs are outside it because the question is
+asked per suit.
+
+**How it was verified**, since it has no consumer and so no corpus row and no
+node count that would notice a mistake:
+
+- **Exhaustive, not sampled.** All 3^13 = 1,594,323 ways to deal one suit
+  between the two hands, in each of the four suits — **6,377,292 holdings**,
+  which is every question the function can be asked about one suit.
+- **Three independent computations agree on all of them**: the shipped greedy
+  descent, an unconstrained maximum bipartite matching that assumes nothing
+  about the problem's structure, and Hall's deficiency formula.
+- **Invariants on every holding**: bounded by both suit lengths; monotone in each
+  hand separately; zero exactly when no cover card outranks the nil's lowest; and
+  **invariant under an order-preserving relabelling of the ranks**, which matters
+  because the transposition table stores relative ranks.
+- **The test was mutation-checked.** Seven deliberate breakages of `duck_depth`;
+  six were caught. The survivor is the void early-out, which is documented as an
+  optimisation rather than a case — the walk returns 0 without it — so surviving
+  is the correct result and it confirms the comment.
+- **Free when unused, provably.** `nil_bench` and `nil_cli` build **byte-identical
+  to HEAD** with the primitive added. Not "node counts unmoved"; the same bytes.
+
+`tools/duck_depth_property.cpp`, wired as ctest `duck_depth_property`, ~7 s.
+
+**One thing deliberately left out, and it is a scoping question for C1.** C1 and
+C3 tier 3 both want a second, smaller query — *the cheapest cover card the nil
+can duck beneath* (nil `96`, cover `T732`: the `7`). That is not duck depth and
+building it here would have made C0 two primitives measured as one. It is two
+lines wherever it lands; the question is whether it belongs in `bounds.hpp`
+beside this one or inside C1.
+
+**The walk is the plain thirteen-rank one**, not a version bounded by the two
+holdings. Deliberate: nothing calls it, so a tighter loop could not be measured,
+and this page is emphatic that ordering work here lives or dies on throughput.
+Tighten it in C1, against a consumer.
 
 ### C1. Cover partner, following suit
 
@@ -134,8 +190,8 @@ about which sounds most promising.
 1. ~~**N1**~~ ⊘ *done, patch 70 — rejected.* It was first because it extended
    existing code and had a recorded objection to overturn. It overturned the
    objection and lost anyway; see the rejected list.
-2. **C0** — a prerequisite, not a heuristic. Build and property-test it alone.
-   Nothing downstream is trustworthy if this is wrong.
+2. ~~**C0**~~ ✅ *done, patch 71.* A prerequisite, not a heuristic; built and
+   property-tested alone, with no consumer and no A/B.
 3. **C1** — the largest unserved node population in the table above.
 4. **C2** — same machinery as C1, different case.
 5. **C3** — most complex, smallest population, and four tiers means four things

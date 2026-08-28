@@ -311,6 +311,50 @@ int main(int argc, char** argv) {
         check("PV plays every card", static_cast<long long>(a.pv.size()), 12LL);
     }
 
+    std::cout << "Duck depth under the cover hand (item C0)\n";
+    {
+        // The examples MOVE_ORDERING.md specifies the cover rules against.  The
+        // exhaustive check lives in tools/duck_depth_property.cpp; these are
+        // here so that a definition drifting away from what C1-C3 were written
+        // against fails in the fast test binary rather than only in the slow one.
+        auto ducks = [](std::initializer_list<const char*> nil_cards,
+                        std::initializer_list<const char*> cover_cards) {
+            return nil::duck_depth(H(nil_cards), H(cover_cards), nil::SUIT_HEARTS);
+        };
+        check("cover JT87 over nil 954 shelters three",
+              ducks({"H9", "H5", "H4"}, {"HJ", "HT", "H8", "H7"}), 3);
+        check("cover KQ4 over nil J96 shelters two",
+              ducks({"HJ", "H9", "H6"}, {"HK", "HQ", "H4"}), 2);
+        check("cover KQ over nil A2 shelters one",
+              ducks({"HA", "H2"}, {"HK", "HQ"}), 1);
+        check("cover 54 over nil Q32 shelters two",
+              ducks({"HQ", "H3", "H2"}, {"H5", "H4"}), 2);
+
+        // A high card shelters ONE card, not every card under it.  This is the
+        // whole reason the measure is a matching rather than a count.
+        check("one high cover shelters one card", ducks({"H9", "H8", "H7"}, {"HA"}), 1);
+        check("three high covers shelter three", ducks({"H9", "H8", "H7"}, {"HA", "HK", "HQ"}),
+              3);
+
+        // The two ways to be worth nothing, and they are different.
+        check("a void nil ducks nothing", ducks({}, {"HA", "HK"}), 0);
+        check("a void cover shelters nothing", ducks({"H2", "H3"}, {}), 0);
+        check("a cover entirely below the nil shelters nothing",
+              ducks({"HA", "HK"}, {"H3", "H2"}), 0);
+
+        // Bounded by the shorter holding, whatever the ranks say.
+        check("one cover card caps the count at one", ducks({"H2", "H3", "H4"}, {"HA"}), 1);
+
+        // Suits are independent: the same shape in clubs reads the same, and a
+        // holding in another suit is not visible to the walk.
+        check("the same shape in clubs",
+              nil::duck_depth(H({"C9", "C5", "C4"}), H({"CJ", "CT", "C8", "C7"}),
+                              nil::SUIT_CLUBS),
+              3);
+        check("another suit's cards are not counted",
+              nil::duck_depth(H({"C9", "SA", "SK"}), H({"CJ", "S2"}), nil::SUIT_CLUBS), 1);
+    }
+
     std::cout << "Equivalent-card reduction\n";
     {
         // With the queen gone, holding SK and SJ is holding one card twice: the

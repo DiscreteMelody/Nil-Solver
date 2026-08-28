@@ -175,6 +175,82 @@ inline int cover_deficit_depth(Hand mine, Hand theirs, int suit) {
 }
 
 // ---------------------------------------------------------------------------
+// HOW MANY TRICKS CAN THE NIL DUCK UNDER ITS OWN PARTNER
+// ---------------------------------------------------------------------------
+// MOVE_ORDERING.md item C0, and a prerequisite rather than a heuristic: three
+// of the four cover-partner rules want this one number, so it is built and
+// tested once, on its own, before anything reads it.
+//
+// In one suit: how many times can the nil bidder play a card underneath a card
+// of its PARTNER'S?  `nil_cards` and `cover_cards` are one suit's worth each,
+// and the answer is the size of the largest set of pairs that can be formed
+// with each of the nil bidder's cards matched to a DISTINCT strictly higher
+// card of the cover partner's.  Distinct is the whole difficulty: one high
+// cover card shelters one nil card, not all of them.
+//
+//     cover JT87, nil 954  ->  3   (9 under T, 5 under 8, 4 under 7)
+//     cover KQ4,  nil J96  ->  2   (J under K, 9 under Q; nothing left for 6)
+//
+// NOT THE SAME QUESTION AS cover_deficit_depth, though it is the same
+// combinatorics read the other way up.  That one asks where a holding first
+// runs SHORT of covers, measured against every card outstanding, and answers
+// with how many leads it takes to reach the trouble.  This one asks how much
+// cover a NAMED HAND can actually supply, and answers with a count of tricks.
+// Hall`s theorem connects them: the deficiency version says the largest
+// matching is m - max_j(j - above_j), so a holding this call matches in full is
+// exactly one the other call reports as covered.  Two readings, one definition
+// of "can this be covered", which is the same reason cover_deficit_depth is a
+// function rather than a loop inside nil_must_take_a_trick.
+//
+// THE WALK IS A GREEDY ONE AND IT IS EXACT.  Descend the ranks carrying
+// `spare`, the cover cards seen so far that are not yet spent; each of the nil
+// bidder`s cards takes one if there is one.  Every cover card above a given nil
+// card is interchangeable as far as that card is concerned -- any of them
+// beats it -- and a card taken high is never needed lower down, because
+// anything a lower nil card could use is also above it.  So there is no choice
+// to get wrong and no need to search.  `tools/duck_depth_property.cpp` checks
+// this against an unconstrained maximum-matching search over ALL 3^13 ways to
+// deal one suit between the two hands, in each of the four suits.
+//
+// WHAT IT DOES NOT CLAIM.  Not that these tricks will happen: the suit may
+// never be led that often, an opponent may win the trick over both of them, and
+// the cover partner may have better uses for the card.  It is a measure of
+// SUPPLY, in the same spirit as cover_deficit_depth, and like that one it is
+// exact arithmetic feeding a heuristic rather than a proof about the play.
+// Ruffs are outside it entirely, because the question is asked per suit.
+//
+// PRECONDITION: the two masks are disjoint, which they are whenever they come
+// from two different hands.  Cards of other suits are harmless -- the walk
+// never looks outside `suit` -- so callers may mask or not, as cover_deficit_depth's
+// callers do.
+//
+// The walk is the plain thirteen-rank one rather than a tightened version
+// bounded by the two holdings, deliberately: nothing calls this yet, so a
+// faster loop could not be measured, and MOVE_ORDERING.md is emphatic that
+// ordering work on this solver lives or dies on throughput.  Tighten it in C1,
+// where there is a consumer to measure it against.
+inline int duck_depth(Hand nil_cards, Hand cover_cards, int suit) {
+    // Not a case, just an early-out: a void hand on either side supplies or
+    // demands nothing, and the walk below would return 0 anyway.
+    if (!nil_cards || !cover_cards) return 0;
+    const Hand top = card_bit(make_card(suit, 14));
+    const Hand bottom = card_bit(make_card(suit, 2));
+    int spare = 0;  // cover cards seen and not yet spent
+    int ducks = 0;
+    for (Hand bit = top; bit >= bottom; bit >>= 1) {
+        if (cover_cards & bit) {
+            ++spare;
+        } else if (nil_cards & bit) {
+            if (spare > 0) {
+                --spare;
+                ++ducks;
+            }
+        }
+    }
+    return ducks;
+}
+
+// ---------------------------------------------------------------------------
 // NIL PROVABLY SET
 // ---------------------------------------------------------------------------
 // True when the nil bidder is guaranteed at least one more trick, whatever all

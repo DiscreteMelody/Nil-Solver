@@ -85,6 +85,18 @@ if(NIL_SOLVER_BUILD_BENCH)
 endif()
 
 # ---------------------------------------------------------------------------
+# Property tests.  These check a PRIMITIVE against an independent computation
+# over its whole input space, rather than checking the solver against recorded
+# answers.  The distinction earned itself in patch 31b: restricting coarse table
+# entries passed all 560 corpus rows and 900 random deals and was still unsound.
+# A corpus pass is evidence about the corpus.
+# ---------------------------------------------------------------------------
+if(NIL_SOLVER_BUILD_TESTS)
+  add_executable(duck_depth_property tools/duck_depth_property.cpp)
+  target_link_libraries(duck_depth_property PRIVATE nil_solver_core)
+endif()
+
+# ---------------------------------------------------------------------------
 # Tests.  Linked against the core statically (with NIL_SOLVER_STATIC so the C
 # ABI declarations do not become dllimport) plus api.cpp, so `ctest` needs no
 # DLL on the path.
@@ -95,6 +107,18 @@ if(NIL_SOLVER_BUILD_TESTS)
   target_link_libraries(nil_tests PRIVATE nil_solver_core)
   target_compile_definitions(nil_tests PRIVATE NIL_SOLVER_STATIC)
   add_test(NAME nil_tests COMMAND nil_tests --quiet)
+
+  # MOVE_ORDERING.md item C0.  duck_depth has no consumer yet -- the cover
+  # partner rules that will read it are not written -- so there is no corpus row
+  # and no node count that would notice if it were wrong.  This is the whole of
+  # its verification, and it is exhaustive rather than sampled: every one of the
+  # 3^13 ways to deal one suit between the nil bidder and its partner, in each
+  # of the four suits, checked against an unconstrained maximum-matching search
+  # and against Hall's deficiency formula, plus the bound, monotonicity in each
+  # hand, and invariance under an order-preserving relabelling of the ranks.
+  # About seven seconds.
+  add_test(NAME duck_depth_property COMMAND duck_depth_property)
+  set_tests_properties(duck_depth_property PROPERTIES TIMEOUT 300)
 
   # The corpus is the accuracy regression test: answers came from
   # nil_oracle.py once, and replaying them needs neither Python nor the oracle.
