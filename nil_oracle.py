@@ -125,6 +125,7 @@ def nil_already_set_of(roles: Sequence[int]) -> bool:
 # The arrangements this file can answer, and the name each goes by.
 SHAPE_SINGLE_NIL = "single-nil"      # one nil, its partner covering, two opponents
 SHAPE_PARTNER_NILS = "partner-nils"  # both members of one pair bid, two opponents
+SHAPE_OPPOSING_NILS = "opposing-nils"  # one bid per pair, each with a partner
 
 
 def role_shape(roles: Sequence[int]) -> str:
@@ -168,12 +169,31 @@ def role_shape(roles: Sequence[int]) -> str:
             )
         return SHAPE_SINGLE_NIL
 
+    if len(nils) == 2 and (nils[0] + 2) % 4 != nils[1]:
+        # ONE BID PER PAIR.  The other two seats are each a bidder's partner, and
+        # the ROLE ON THAT PARTNER is not a statement about teams -- both teams
+        # obviously have a nil -- but about what that side does when it cannot
+        # have both halves of what it wants.  ROLE_COVER saves its own bid at the
+        # cost of letting the opponent's live; ROLE_OPPONENT sets the opponent's
+        # at the cost of its own.  See side_rank.
+        for seat in nils:
+            if roles[seat] == ROLE_NIL_SET:
+                raise ValueError(
+                    f"an already-broken nil on opposing sides is not supported "
+                    f"yet ({described})"
+                )
+        for seat in range(4):
+            if seat in nils:
+                continue
+            if roles[seat] not in (ROLE_COVER, ROLE_OPPONENT):
+                raise ValueError(
+                    f"seat {SEAT_CHARS[seat]} partners a nil bidder, so its role "
+                    f"must be 2 (save our own first) or 3 (set theirs first), "
+                    f"not {roles[seat]} ({described})"
+                )
+        return SHAPE_OPPOSING_NILS
+
     if len(nils) == 2:
-        if (nils[0] + 2) % 4 != nils[1]:
-            raise ValueError(
-                f"the two nil bidders are not partners ({described}); nils on "
-                "OPPOSING sides are not supported yet"
-            )
         if covers:
             raise ValueError(
                 f"a pair that both bid nil has nobody left to cover ({described}); "
@@ -660,6 +680,251 @@ def _search(
 
 
 # ---------------------------------------------------------------------------
+# One nil on each side
+#
+# WHY THIS IS NOT ONE SCALAR
+# --------------------------
+# Every objective before this one had two sides that wanted opposite things, so
+# a single number served: one side pushed it up and the other pushed it down.
+# With a bid on each side that stops being true in general.
+#
+# Rank the four outcomes for a side, best first.  Both sides agree on the top
+# and the bottom -- my bid making while theirs fails is best, the reverse is
+# worst.  What they need not agree on is the MIDDLE, and the role on a bidder's
+# partner is what says which way that side leans:
+#
+#   ROLE_COVER    save our own bid first:  both make  >  both fail
+#   ROLE_OPPONENT set theirs first:        both fail  >  both make
+#
+# Score those 3, 2, 1, 0 and add the ranks of the two sides:
+#
+#   0 3 2 0  mixed        3 3 3 3   CONSTANT -- strictly opposed, so the game is
+#                                   zero-sum and ordinary minimax applies
+#   0 2 2 0  protective   4 3 3 2   not constant: both sides would rather have
+#   0 3 3 0  aggressive   2 3 3 4   both bids live (or both dead) than trade
+#
+# So one of the three shapes is an ordinary two-team game and the other two are
+# not.  In the two that are not, the sides share an interest, and there is no
+# scalar for one to minimise -- which is the situation Sturtevant and Korf's
+# paper in this repo is about.  This file sidesteps the question by being
+# exhaustive: it carries a utility PER SIDE and each side maximises its own
+# component, which is backward induction and needs no pruning to be correct.
+# What the C++ solver can then prune is a separate question, and the answer
+# differs between the shapes.
+# ---------------------------------------------------------------------------
+
+
+def side_rank(mine_makes: bool, theirs_makes: bool, partner_role: int) -> int:
+    """How good this outcome is for a side, 3 best to 0 worst."""
+    if mine_makes and not theirs_makes:
+        return 3
+    if theirs_makes and not mine_makes:
+        return 0
+    both_make = mine_makes and theirs_makes
+    if partner_role == ROLE_COVER:
+        return 2 if both_make else 1
+    return 1 if both_make else 2
+
+
+def opposing_weights(tricks_remaining: int, secondary: str = "max") -> Tuple[int, int]:
+    """(rank weight, own-trick weight) for one side's utility.
+
+    Each side MAXIMISES its own utility, so the trick weight is positive when
+    tricks are wanted and negative when they are shed.  The rank weight is K*K
+    with K = tricks remaining + 1; one step of rank is worth K*K and the trick
+    term can never exceed K*tricks_remaining, which is smaller.
+    """
+    if secondary not in ("max", "min"):
+        raise ValueError("secondary must be 'max' or 'min'")
+    k = tricks_remaining + 1
+    return k * k, (k if secondary == "max" else -k)
+
+
+@dataclass
+class _OppCtx:
+    nil_of_side: Tuple[int, int]      # bidder seat for side 0 and side 1
+    partner_role: Tuple[int, int]     # that bidder's partner's role
+    rank_weight: int
+    trick_weight: int
+    memo: Optional[Dict] = None
+    nodes: int = 0
+
+
+def _terminal_utility(broken_nils: int, ctx: _OppCtx) -> Tuple[int, int]:
+    """Both sides' rank contribution, once every card is played."""
+    makes = [not (broken_nils & (1 << seat)) for seat in ctx.nil_of_side]
+    return (
+        ctx.rank_weight * side_rank(makes[0], makes[1], ctx.partner_role[0]),
+        ctx.rank_weight * side_rank(makes[1], makes[0], ctx.partner_role[1]),
+    )
+
+
+def _search_opposing(
+    hands: Tuple[Tuple[Card, ...], ...],
+    leader: int,
+    trick: Tuple[Card, ...],
+    spades_broken: bool,
+    broken_nils: int,
+    ctx: _OppCtx,
+) -> Tuple[Tuple[int, int], Tuple[Play, ...]]:
+    """Backward induction on a utility PAIR.  Returns ((u_side0, u_side1), PV).
+
+    The seat to play belongs to one side, and it chooses the move that maximises
+    THAT side's component.  With strictly opposed shapes this coincides with
+    minimax; with the other two it is what minimax cannot express.
+    """
+    ctx.nodes += 1
+    if not any(hands):
+        return _terminal_utility(broken_nils, ctx), ()
+
+    key = None
+    if ctx.memo is not None:
+        key = (hands, leader, trick, spades_broken, broken_nils)
+        cached = ctx.memo.get(key)
+        if cached is not None:
+            return cached
+
+    seat = (leader + len(trick)) % 4
+    side = seat % 2
+
+    best: Optional[Tuple[int, int]] = None
+    best_pv: Tuple[Play, ...] = ()
+
+    for card in legal_moves(hands[seat], trick, spades_broken):
+        next_hands = tuple(
+            tuple(c for c in hand if c != card) if s == seat else hand
+            for s, hand in enumerate(hands)
+        )
+        next_broken = spades_broken_after(spades_broken, trick, card)
+        played = trick + (card,)
+
+        if len(played) == 4:
+            winner = trick_winner(leader, played)
+            next_nils = broken_nils
+            for s in ctx.nil_of_side:
+                if winner == s:
+                    next_nils |= 1 << s
+            sub_value, sub_pv = _search_opposing(
+                next_hands, winner, (), next_broken, next_nils, ctx
+            )
+            gained = [0, 0]
+            gained[winner % 2] = ctx.trick_weight
+            value = (sub_value[0] + gained[0], sub_value[1] + gained[1])
+        else:
+            value, sub_pv = _search_opposing(
+                next_hands, leader, played, next_broken, broken_nils, ctx
+            )
+
+        # Strict improvement only, so ties keep the canonically lowest card.
+        if best is None or value[side] > best[side]:
+            best = value
+            best_pv = ((seat, card),) + sub_pv
+
+    assert best is not None, "a non-terminal position must have a legal move"
+    result = (best, best_pv)
+    if ctx.memo is not None:
+        ctx.memo[key] = result
+    return result
+
+
+@dataclass
+class OpposingNilSolution:
+    """The answer to a deal with one nil on each side."""
+
+    roles: List[int]
+    seat_tricks: List[int]
+    nil_of_side: List[int]        # bidder seat for side 0 (N/S) and side 1 (E/W)
+    nil_makes: List[bool]         # did each side's bid survive
+    side_tricks: List[int]        # tricks taken by side 0 and side 1
+    utility: List[int]            # each side's own scalar, which it maximised
+    ranks: List[int]              # each side's outcome rank, 3 best to 0 worst
+    strictly_opposed: bool        # do the ranks sum to a constant on this shape
+    pv: List[Play]
+    nodes: int
+    position: Position
+    secondary: str = "max"
+
+
+def solve_opposing_nils(
+    position: Position,
+    roles: Sequence[int],
+    use_memo: bool = False,
+    secondary: str = "max",
+) -> OpposingNilSolution:
+    """Exhaustive backward induction for one nil on each side."""
+    position.validate()
+    shape = role_shape(roles)
+    if shape != SHAPE_OPPOSING_NILS:
+        raise ValueError(f"solve_opposing_nils needs a bid on each side, got {shape}")
+
+    nil_of_side = []
+    partner_role = []
+    for side in (0, 1):
+        seat = next(x for x in (side, side + 2) if roles[x] in (ROLE_NIL, ROLE_NIL_SET))
+        nil_of_side.append(seat)
+        partner_role.append(roles[(seat + 2) % 4])
+
+    rank_weight, trick_weight = opposing_weights(position.tricks_remaining, secondary)
+    ctx = _OppCtx(
+        nil_of_side=tuple(nil_of_side),
+        partner_role=tuple(partner_role),
+        rank_weight=rank_weight,
+        trick_weight=trick_weight,
+        memo={} if use_memo else None,
+    )
+    utility, pv = _search_opposing(
+        position.hands,
+        position.leader,
+        position.current_trick,
+        position.spades_broken,
+        0,
+        ctx,
+    )
+
+    # Self-check: replay independently and re-encode.  A solver that lies is
+    # worse than no solver, and here there are two numbers to get wrong.
+    seat_tricks = replay_pv_by_seat(position, list(pv))
+    makes = [seat_tricks[seat] == 0 for seat in nil_of_side]
+    side_tricks = [seat_tricks[0] + seat_tricks[2], seat_tricks[1] + seat_tricks[3]]
+    ranks = [
+        side_rank(makes[0], makes[1], partner_role[0]),
+        side_rank(makes[1], makes[0], partner_role[1]),
+    ]
+    replayed = tuple(
+        rank_weight * ranks[i] + trick_weight * side_tricks[i] for i in (0, 1)
+    )
+    if replayed != tuple(utility):
+        raise AssertionError(
+            f"internal inconsistency: search says {utility}, replaying the PV "
+            f"gives {replayed} (ranks={ranks}, side tricks={side_tricks})"
+        )
+
+    # Do the two rankings sum to a constant?  If they do the deal is an ordinary
+    # two-team game; if not, the sides share an interest and no single scalar
+    # describes it.  A property of the ROLES, not of the cards.
+    sums = {
+        side_rank(a, b, partner_role[0]) + side_rank(b, a, partner_role[1])
+        for a in (True, False)
+        for b in (True, False)
+    }
+
+    return OpposingNilSolution(
+        roles=list(roles),
+        seat_tricks=seat_tricks,
+        nil_of_side=nil_of_side,
+        nil_makes=makes,
+        side_tricks=side_tricks,
+        utility=list(utility),
+        ranks=ranks,
+        strictly_opposed=len(sums) == 1,
+        pv=list(pv),
+        nodes=ctx.nodes,
+        position=position,
+        secondary=secondary,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Two nils on the same side
 #
 # WHY THIS IS A SEPARATE SEARCH
@@ -932,6 +1197,8 @@ def solve_seats(
     one -- see multi_objective_weights -- so they are different result types.
     """
     shape = role_shape(roles)
+    if shape == SHAPE_OPPOSING_NILS:
+        return solve_opposing_nils(position, roles, use_memo=use_memo, secondary=secondary)
     if shape == SHAPE_SINGLE_NIL:
         return solve(
             position,
@@ -1230,6 +1497,59 @@ def format_pv(solution: Solution) -> str:
 def format_pv_compact(solution: Solution) -> str:
     """Bare play sequence, e.g. 'W:H4 N:HK E:H2 S:H9 N:S3 ...'."""
     return " ".join(f"{SEAT_CHARS[s]}:{c}" for s, c in solution.pv)
+
+
+def format_opposing_solution(solution: OpposingNilSolution, compact: bool = False) -> str:
+    pos = solution.position
+    names = [SEAT_CHARS[x] for x in solution.nil_of_side]
+    if compact:
+        return (
+            f"shape={SHAPE_OPPOSING_NILS}\n"
+            f"strictly_opposed={1 if solution.strictly_opposed else 0}\n"
+            f"nil_makes={' '.join('1' if m else '0' for m in solution.nil_makes)}\n"
+            f"ranks={' '.join(str(r) for r in solution.ranks)}\n"
+            f"side_tricks={' '.join(str(t) for t in solution.side_tricks)}\n"
+            f"seat_tricks={' '.join(str(n) for n in solution.seat_tricks)}\n"
+            f"pv={' '.join(f'{SEAT_CHARS[a]}:{c}' for a, c in solution.pv)}\n"
+        )
+    takes = "takes" if solution.secondary == "max" else "sheds"
+    out = [
+        f"PBN            {pos.to_pbn()}",
+        format_hands(pos),
+        f"Leader         {SEAT_CHARS[pos.leader]}",
+        f"Seats          {describe_roles(solution.roles)}",
+        f"Objective      each side ranks the four outcomes its own way, then {takes}",
+        f"               tricks.  The role on a bidder's PARTNER decides only the",
+        f"               middle: 2 saves our own bid first, 3 sets theirs first",
+        f"Game           "
+        + (
+            "strictly opposed -- the two rankings sum to a constant, so this is "
+            "an ordinary two-team game"
+            if solution.strictly_opposed
+            else "NOT strictly opposed -- both sides rank the middle two outcomes "
+            "the same way, so no single scalar describes it"
+        ),
+        f"Spades broken  {'yes' if pos.spades_broken else 'no'}",
+    ]
+    if pos.current_trick:
+        out.append(f"On the trick   {cards_str(pos.current_trick)}")
+    for i in (0, 1):
+        verdict = "MAKES" if solution.nil_makes[i] else "FAILS"
+        out.append(
+            f"  {names[i]}'s nil      {verdict}   (rank {solution.ranks[i]} of 3, "
+            f"side took {solution.side_tricks[i]})"
+        )
+    out += [
+        "Tricks by seat " + " ".join(
+            f"{SEAT_CHARS[i]}={n}" for i, n in enumerate(solution.seat_tricks)
+        ),
+        f"Nodes          {solution.nodes}",
+        f"Utilities      N/S={solution.utility[0]}  E/W={solution.utility[1]}",
+        "",
+        "Principal variation",
+        " ".join(f"{SEAT_CHARS[a]}:{c}" for a, c in solution.pv),
+    ]
+    return "\n".join(out)
 
 
 def format_multi_solution(solution: MultiNilSolution, compact: bool = False) -> str:
@@ -1639,7 +1959,7 @@ def selftest(verbose: bool = True) -> int:
     check("single nil is recognised", role_shape([0, 3, 2, 3]), SHAPE_SINGLE_NIL)
     check("partner nils are recognised", role_shape([0, 3, 0, 3]), SHAPE_PARTNER_NILS)
     for bad, why in (
-        ([0, 0, 3, 3], "nils on opposing sides"),
+        ([0, 0, 1, 3], "an already-broken nil opposite a live one"),
         ([0, 3, 0, 2], "a cover with nobody to cover"),
         ([0, 0, 0, 3], "three nils"),
     ):
@@ -1756,6 +2076,97 @@ def selftest(verbose: bool = True) -> int:
             other.nil_side_tricks,
             base.nil_side_tricks,
         )
+
+    # ------------------------------------------------------ one nil per side
+    if verbose:
+        print("One nil on each side")
+
+    check("mixed roles are recognised", role_shape([0, 3, 2, 0]), SHAPE_OPPOSING_NILS)
+    check("two protective partners too", role_shape([0, 2, 2, 0]), SHAPE_OPPOSING_NILS)
+    check("two aggressive partners too", role_shape([0, 3, 3, 0]), SHAPE_OPPOSING_NILS)
+    for bad, why in (
+        ([0, 0, 0, 3], "a third bid"),
+        ([0, 1, 2, 0], "a partner that is itself a bid"),
+    ):
+        try:
+            role_shape(bad)
+            check(f"refuses {why}", "accepted", "raised")
+        except ValueError:
+            check(f"refuses {why}", "raised", "raised")
+
+    # THE RANKING, straight from the specification.  Both sides agree on the
+    # best and worst outcome; the partner's role decides only the middle.
+    check("mine makes, theirs fails is best", side_rank(True, False, ROLE_COVER), 3)
+    check("and best however I lean", side_rank(True, False, ROLE_OPPONENT), 3)
+    check("mine fails, theirs makes is worst", side_rank(False, True, ROLE_COVER), 0)
+    check("and worst however I lean", side_rank(False, True, ROLE_OPPONENT), 0)
+    check("protective prefers both making", side_rank(True, True, ROLE_COVER) >
+          side_rank(False, False, ROLE_COVER), True)
+    check("aggressive prefers both failing", side_rank(False, False, ROLE_OPPONENT) >
+          side_rank(True, True, ROLE_OPPONENT), True)
+
+    # WHICH SHAPES ARE ORDINARY TWO-TEAM GAMES.  The ranks summing to a constant
+    # is exactly the condition, and it is a property of the roles alone.  Only
+    # the mixed shape has it; that is why it can be solved by minimax and the
+    # other two cannot.
+    def rank_sums(roles):
+        return {
+            side_rank(a, b, roles[2]) + side_rank(b, a, roles[1])
+            for a in (True, False)
+            for b in (True, False)
+        }
+
+    check("mixed is strictly opposed", len(rank_sums([0, 3, 2, 0])), 1)
+    check("mirrored mixed is too", len(rank_sums([0, 2, 3, 0])), 1)
+    check("both protective is NOT", len(rank_sums([0, 2, 2, 0])) > 1, True)
+    check("both aggressive is NOT", len(rank_sums([0, 3, 3, 0])) > 1, True)
+
+    # Weights separate the levels: no run of tricks outweighs one step of rank.
+    for t in (2, 3, 5, 9, 13):
+        rw, tw = opposing_weights(t, "max")
+        check(f"rank outranks tricks at {t}", abs(tw) * t < rw, True)
+
+    # A hand-checkable ending: one trick, W on lead with the only high card, so
+    # neither bidder can be made to win it and both bids survive.
+    # East leads the only high card, and East partners a bidder rather than
+    # being one, so the trick lands on a seat with no bid to lose.
+    both_live = Position(
+        hands=((Card(1, 2),), (Card(1, 5),), (Card(1, 3),), (Card(1, 4),)),
+        leader=1,
+        spades_broken=True,
+    )
+    for seats in ([0, 3, 2, 0], [0, 2, 2, 0], [0, 3, 3, 0]):
+        sol = solve_opposing_nils(both_live, seats)
+        check(f"{seats}: both bids survive", sol.nil_makes, [True, True])
+
+    # Memoization is memoization, on every shape.
+    for seats in ([0, 3, 2, 0], [0, 2, 2, 0], [0, 3, 3, 0]):
+        for seed in (13, 41):
+            fx = random_fixture(seed=seed, cards_per_hand=4, leader=0, designated=0)
+            plain = solve_opposing_nils(fx.position, seats)
+            memoed = solve_opposing_nils(fx.position, seats, use_memo=True)
+            check(f"{seats} seed {seed}: memo agrees on utility", memoed.utility,
+                  plain.utility)
+            check(f"{seats} seed {seed}: memo agrees on PV", memoed.pv, plain.pv)
+
+    # THE SPECIFICATION'S OWN CLAIM, tested where it bites.  Take deals whose
+    # mixed-shape answer already trades one bid for the other, and check that
+    # flipping a partner's role moves that side's outcome the way the role says.
+    swung = 0
+    for seed in range(60):
+        fx = random_fixture(seed=1000 + seed, cards_per_hand=4, leader=0, designated=0)
+        protective = solve_opposing_nils(fx.position, [0, 3, 2, 0], use_memo=True)
+        aggressive = solve_opposing_nils(fx.position, [0, 3, 3, 0], use_memo=True)
+        # Side 0's partner went from "save ours" to "set theirs".  It can never
+        # end up in a state its own ranking calls worse than what the other
+        # setting reached, judged by ITS OWN ranking.
+        own = lambda sol, role: side_rank(sol.nil_makes[0], sol.nil_makes[1], role)
+        check_silent = own(aggressive, ROLE_OPPONENT) >= own(protective, ROLE_OPPONENT)
+        if not check_silent:
+            check(f"seed {seed}: flipping the role cannot hurt that side", False, True)
+        if protective.nil_makes != aggressive.nil_makes:
+            swung += 1
+    check("the role actually changes some outcomes", swung > 0, True)
 
     print("FAILURES:" if failures else "All checks passed.", failures or "")
     return failures
@@ -1878,6 +2289,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         use_memo=args.memo,
         secondary=args.secondary,
     )
+    if isinstance(solution, OpposingNilSolution):
+        print(format_opposing_solution(solution, compact=args.compact))
+        return 0
     if isinstance(solution, MultiNilSolution):
         print(format_multi_solution(solution, compact=args.compact))
         return 0
