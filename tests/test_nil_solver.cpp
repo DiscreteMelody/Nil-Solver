@@ -1915,6 +1915,76 @@ int main(int argc, char** argv) {
         check("agreeing with solve on the count", msol.nils_set, fsol.nils_set);
     }
 
+    std::cout << "One nil on each side\n";
+    {
+        std::string err;
+        nil::SearchOptions plain;
+
+        // THE RANKING, from the specification.  Both sides agree on the ends;
+        // the partner's role decides only the middle.
+        check("mine surviving alone is best", nil::side_rank(true, false, nil::ROLE_COVER), 3);
+        check("and best either way", nil::side_rank(true, false, nil::ROLE_OPPONENT), 3);
+        check("theirs surviving alone is worst", nil::side_rank(false, true, nil::ROLE_COVER), 0);
+        check("save-ours prefers both surviving",
+              nil::side_rank(true, true, nil::ROLE_COVER) >
+                  nil::side_rank(false, false, nil::ROLE_COVER), true);
+        check("set-theirs prefers both dying",
+              nil::side_rank(false, false, nil::ROLE_OPPONENT) >
+                  nil::side_rank(true, true, nil::ROLE_OPPONENT), true);
+
+        // WHICH ARRANGEMENTS ARE ORDINARY TWO-TEAM GAMES.  Partners leaning
+        // opposite ways gives rankings that are exact reverses; leaning the same
+        // way gives both sides a shared interest and no scalar to fight over.
+        nil::SeatRoles opposed;
+        nil::SeatRoles mirrored;
+        nil::SeatRoles protective;
+        nil::SeatRoles aggressive;
+        check("mixed parses",
+              nil::parse_seat_roles("0 0 3 2", nil::SEAT_NORTH, opposed, err), true);
+        check("mirrored mixed parses",
+              nil::parse_seat_roles("0 0 2 3", nil::SEAT_NORTH, mirrored, err), true);
+        check("both protective parses",
+              nil::parse_seat_roles("0 0 2 2", nil::SEAT_NORTH, protective, err), true);
+        check("both aggressive parses",
+              nil::parse_seat_roles("0 0 3 3", nil::SEAT_NORTH, aggressive, err), true);
+        check("mixed is strictly opposed", nil::strictly_opposed(opposed), true);
+        check("so is its mirror", nil::strictly_opposed(mirrored), true);
+        check("both protective is not", nil::strictly_opposed(protective), false);
+        check("both aggressive is not", nil::strictly_opposed(aggressive), false);
+
+        check("the opposed shape validates", nil::validate_seat_roles(opposed, err), true);
+        check("it is the opposing shape", static_cast<int>(nil::seat_shape(opposed, err)),
+              static_cast<int>(nil::SHAPE_OPPOSING_NILS));
+        check("the unopposed pair is refused",
+              nil::validate_seat_roles(protective, err), false);
+        check("and says the sides share an interest",
+              err.find("share an interest") != std::string::npos, true);
+
+        // East leads the only high card and East holds a bid, so exactly one
+        // bid dies and it is East's.
+        const Position one_trick = make_position("N:.2.. .A.. .3.. .4..", "E", true);
+        nil::Solution sol;
+        check("the opposed shape solves", nil::solve(one_trick, opposed, plain, sol, err),
+              true);
+        check("one bid goes down", sol.nils_set, 1);
+        check("and the far side took the trick", sol.opponent_tricks, 1);
+
+        // The table must not move the answer: the key carries the broken-bid
+        // mask and the shape has its own value tag.
+        nil::SearchOptions no_tt;
+        no_tt.use_memo = false;
+        nil::Solution untabled;
+        check("table off solves", nil::solve(one_trick, opposed, no_tt, untabled, err), true);
+        check("and agrees on the value", untabled.value, sol.value);
+
+        // Fast mode asks about ONE named seat and there are two bidders.
+        nil::SearchOptions fast_opts;
+        fast_opts.mode = nil::MODE_FAST;
+        nil::Solution unused;
+        check("fast mode refuses two bidders",
+              nil::solve(one_trick, opposed, fast_opts, unused, err), false);
+    }
+
     std::cout << "C ABI\n";
     {
         nil_result r;

@@ -138,6 +138,9 @@ enum ValueTag : std::uint8_t {
     // for the same reason TAG_FAST does -- the key says which POSITION an entry
     // is about, and the tag says which QUESTION.
     TAG_MULTI_NIL = 3,
+    // One bid on each side: the value is an outcome RANK plus one side's
+    // tricks, which is a third scale again.
+    TAG_OPPOSING_NILS = 4,
 };
 
 // 24 bytes, no padding on any sane ABI.

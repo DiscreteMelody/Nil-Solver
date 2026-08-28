@@ -53,6 +53,36 @@ int nil_count(const SeatRoles& roles) {
     return n;
 }
 
+int side_rank(bool mine_survives, bool theirs_survives, int partner_role) {
+    if (mine_survives && !theirs_survives) return 3;
+    if (theirs_survives && !mine_survives) return 0;
+    const bool both_survive = mine_survives && theirs_survives;
+    if (partner_role == ROLE_COVER) return both_survive ? 2 : 1;   // save ours first
+    return both_survive ? 1 : 2;                                    // set theirs first
+}
+
+bool strictly_opposed(const SeatRoles& roles) {
+    int partner_of[2] = {ROLE_OPPONENT, ROLE_OPPONENT};
+    for (int side = 0; side < 2; ++side) {
+        for (int seat = side; seat < 4; seat += 2) {
+            if (roles.is_nil(seat)) partner_of[side] = roles.role[(seat + 2) & 3];
+        }
+    }
+    int first = -1;
+    for (int a = 0; a < 2; ++a) {
+        for (int b = 0; b < 2; ++b) {
+            const int sum = side_rank(a != 0, b != 0, partner_of[0]) +
+                            side_rank(b != 0, a != 0, partner_of[1]);
+            if (first < 0) {
+                first = sum;
+            } else if (sum != first) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 int nil_set_count(const SeatRoles& roles) {
     int n = 0;
     for (int s = 0; s < 4; ++s) {
@@ -130,12 +160,45 @@ SeatShape seat_shape(const SeatRoles& roles, std::string& err) {
         return SHAPE_SINGLE_NIL;
     }
 
-    if (nils == 2) {
-        if (second_nil_at != ((nil_at + 2) & 3)) {
-            err = "the two nil bidders are not partners (" + describe_seat_roles(roles) +
-                  "); nils on OPPOSING sides are not supported yet";
+    if (nils == 2 && second_nil_at != ((nil_at + 2) & 3)) {
+        // ONE BID PER SIDE.  The two remaining seats each partner a bidder, and
+        // their roles say how each side breaks the tie it cannot win outright.
+        for (int s = 0; s < 4; ++s) {
+            if (roles.is_nil(s)) {
+                if (roles.role[s] == ROLE_NIL_SET) {
+                    err = "an already-broken nil on opposing sides is not supported yet (" +
+                          describe_seat_roles(roles) + ")";
+                    return SHAPE_UNSUPPORTED;
+                }
+                continue;
+            }
+            if (roles.role[s] != ROLE_COVER && roles.role[s] != ROLE_OPPONENT) {
+                std::ostringstream os;
+                os << "seat " << SEAT_CHARS[s]
+                   << " partners a nil bidder, so its role must be 2 (save our own"
+                      " first) or 3 (set theirs first), not "
+                   << static_cast<int>(roles.role[s]) << " (" << describe_seat_roles(roles)
+                   << ")";
+                err = os.str();
+                return SHAPE_UNSUPPORTED;
+            }
+        }
+        // Both partners leaning the same way is a legal deal and a HARDER game:
+        // the two sides then share an interest -- both would rather have both
+        // bids live, or both dead, than trade -- so their rankings are not
+        // reverses of each other and no single scalar describes the position.
+        // Refused by name rather than answered with a scalar that does not fit.
+        if (!strictly_opposed(roles)) {
+            err = "both nil bidders' partners lean the same way (" +
+                  describe_seat_roles(roles) +
+                  "), so the two sides share an interest and the deal is not a "
+                  "strictly opposed two-team game; that is not supported yet";
             return SHAPE_UNSUPPORTED;
         }
+        return SHAPE_OPPOSING_NILS;
+    }
+
+    if (nils == 2) {
         if (covers > 0) {
             err = "a pair that both bid nil has nobody left to cover (" +
                   describe_seat_roles(roles) + "); the other two seats must both have role 3";

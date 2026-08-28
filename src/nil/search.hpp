@@ -613,6 +613,9 @@ struct Tally {
     // search charges its primary weight against, so it is what a re-packing
     // self-check has to compare with.
     int live_nils_broken = 0;
+    // Which bidder seats took a trick, as a seat bitmask.  The outcome rank of
+    // an opposing-nils deal is a function of exactly this.
+    unsigned broken_mask = 0;
     // How many bids are down in total: the above plus any the caller declared
     // already broken.  This is what gets reported, because the question is how
     // many are down and not how many the search knocked down.

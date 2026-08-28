@@ -367,6 +367,16 @@ if(NIL_SOLVER_BUILD_TESTS)
     # again, so from the moment a bid is down the rest of the subtree is scored
     # on the surviving bid and the pair's total -- which is exactly what
     # ROLE_NIL_SET asks for.  Nothing enforces that but this test.
+    # ONE BID PER SIDE.  Compares the UTILITY PAIR rather than the cards: two
+    # optimal lines can name different equally-good cards, but the game value is
+    # the game value, so the solver's own line replayed under the oracle's rules
+    # must reach it.  Covers all eight strictly opposed role sets.
+    add_test(NAME opposing_crosscheck
+      COMMAND ${Python3_EXECUTABLE}
+              "${CMAKE_CURRENT_SOURCE_DIR}/tools/opposing_crosscheck.py"
+              --cases 48 --cards 4 --seed 17)
+    set_tests_properties(opposing_crosscheck PROPERTIES TIMEOUT 600)
+
     add_test(NAME subgame_consistency
       COMMAND ${Python3_EXECUTABLE}
               "${CMAKE_CURRENT_SOURCE_DIR}/tools/subgame_consistency.py"

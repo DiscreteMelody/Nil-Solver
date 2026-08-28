@@ -100,7 +100,32 @@ enum SeatShape : int {
     SHAPE_SINGLE_NIL = 1,
     // Both members of one pair bid; the other two oppose and there is no cover.
     SHAPE_PARTNER_NILS = 2,
+    // One bid per pair, each with a partner.  The role on that partner is not a
+    // statement about teams -- both teams have a bid -- but about what the side
+    // does when it cannot both save its own and set the other's.  See
+    // side_rank().
+    SHAPE_OPPOSING_NILS = 3,
 };
+
+// HOW GOOD AN OUTCOME IS FOR ONE SIDE, 3 best to 0 worst.
+//
+// Both sides agree on the ends: my bid surviving while theirs dies is best, and
+// the reverse is worst.  They need not agree on the MIDDLE, and the role on a
+// bidder's partner is what says which way that side leans -- ROLE_COVER saves
+// our own bid first, ROLE_OPPONENT sets theirs first.
+//
+// Summing the two sides' ranks is the test for whether the deal is an ordinary
+// two-team game.  When the partners lean OPPOSITE ways the sum is a constant 3,
+// the rankings are exact reverses, and a single scalar describes the whole
+// thing.  When they lean the SAME way the sum is not constant: both sides would
+// rather have both bids live (two ROLE_COVERs) or both dead (two
+// ROLE_OPPONENTs) than trade, which is a shared interest no scalar can express.
+// Only the opposed case is accepted today; see seat_shape().
+int side_rank(bool mine_survives, bool theirs_survives, int partner_role);
+
+// Do the two sides' rankings sum to a constant?  A property of the roles alone,
+// and the condition under which minimax applies.
+bool strictly_opposed(const SeatRoles& roles);
 
 // Name the arrangement, or SHAPE_UNSUPPORTED with `err` saying why.  An
 // arrangement nobody has implemented is refused rather than answered as some

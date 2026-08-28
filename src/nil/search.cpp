@@ -77,6 +77,15 @@ struct Ctx {
     // Bit `s` for each seat holding a bid.  Equal to (1 << nil_seat) unless
     // multi_nil.
     unsigned char nil_mask = 0;
+    // One bid on EACH side, with the two partners leaning opposite ways.  The
+    // value is then how well the side opposite `nil_seat` is doing: its outcome
+    // rank, which the other side's rank mirrors exactly because the two sum to
+    // a constant, plus its own trick count.
+    bool opposing = false;
+    // That side's bidder, and the role of its partner, which is what decides
+    // its ranking of the two middle outcomes.
+    int far_nil_seat = 0;
+    int far_partner_role = ROLE_OPPONENT;
     int primary_weight = 0;    // K*K, or 0 when the nil is already set
     int secondary_weight = -1; // -K the nil side wants tricks, +K it wants rid of them
     int tertiary_weight = 0;   // 1 when the cover partner's share is what counts
@@ -426,6 +435,14 @@ inline Hand ranks_read_by_set_proof(const Hand hands[4], int nil_seat) {
 //
 // Split out of search()'s loop so that solve_moves() below runs the identical
 // transition rather than a second copy of it.  Two copies of this arithmetic is
+// The rank, for the side the value is written from -- the one opposite
+// ctx.nil_seat.  A function of the mask alone.
+inline int far_side_rank(unsigned mask, const Ctx& ctx) {
+    const bool far_survives = (mask & (1u << ctx.far_nil_seat)) == 0;
+    const bool near_survives = (mask & (1u << ctx.nil_seat)) == 0;
+    return side_rank(far_survives, near_survives, ctx.far_partner_role);
+}
+
 // What a completed trick is worth, and what it does to the broken-nil mask.
 //
 // TWO OBJECTIVES, ONE FUNCTION.  Under a single nil the primary level weights
@@ -442,6 +459,28 @@ inline Hand ranks_read_by_set_proof(const Hand hands[4], int nil_seat) {
 inline int score_trick(const Ctx& ctx, const State& st, int winner, State& next) {
     next.nils_broken = st.nils_broken;
     int gained = 0;
+    if (ctx.opposing) {
+        // THE RANK IS A STEP FUNCTION OF THE MASK, so it cannot be weighted per
+        // trick the way a single nil's count is.  It is charged as a DELTA
+        // instead: when a bid dies the rank moves, and the move is worth
+        // rank(after) - rank(before).  Summed along any line those deltas
+        // telescope to rank(final) - rank(nothing broken), so the accumulated
+        // value differs from the true rank by a constant -- which is invisible
+        // to a search that only ever compares values within one position.
+        const unsigned bit = 1u << winner;
+        if ((ctx.nil_mask & bit) && !(st.nils_broken & bit)) {
+            const unsigned after = st.nils_broken | bit;
+            gained += ctx.primary_weight * (far_side_rank(after, ctx) -
+                                            far_side_rank(st.nils_broken, ctx));
+            next.nils_broken = static_cast<unsigned char>(after);
+        }
+        // The secondary is the FAR side's own tricks, so it is charged when the
+        // far side wins.  Tricks are zero-sum between the two sides, so writing
+        // it from one side is not a choice of favourite -- it is the same
+        // objective either way, up to sign.
+        if (((winner ^ ctx.nil_seat) & 1) != 0) gained += ctx.secondary_weight;
+        return gained;
+    }
     if (ctx.multi_nil) {
         const unsigned bit = 1u << winner;
         if ((ctx.nil_mask & bit) && !(st.nils_broken & bit)) {
@@ -1032,7 +1071,8 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
     bool have_cut_bound = false;
     if (ctx.tt && (st.trick_len == 0 || !ctx.tt_boundaries_only)) {
         keyed = encode_state_key(st.hands, st.leader, st.broken, st.trick, st.trick_len, key,
-                                 profile, st.nils_broken, ctx.multi_nil);
+                                 profile, st.nils_broken,
+                                     ctx.multi_nil || ctx.opposing);
         if (keyed) {
             hash = mix_key(key);
             // A bound recorded under a wider window is still a fact about the
@@ -1378,11 +1418,28 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
     // The roles array is the caller's description; this is where phase two will
     // stop collapsing it to a scalar.
     ctx.nil_seat = roles.nil_seat();
-    ctx.multi_nil = nil_count(roles) > 1;
+    {
+        std::string ignored;
+        SeatRoles copy = roles;
+        ctx.opposing = seat_shape(copy, ignored) == SHAPE_OPPOSING_NILS;
+    }
+    ctx.multi_nil = !ctx.opposing && nil_count(roles) > 1;
+    if (ctx.opposing) {
+        // The value is written from the side that does NOT hold ctx.nil_seat, so
+        // that seat's parity keeps driving the existing maximising test: the
+        // near side minimises, exactly as the nil side always has.
+        for (int seat = 0; seat < 4; ++seat) {
+            if (roles.is_nil(seat) && ((seat ^ ctx.nil_seat) & 1) != 0) {
+                ctx.far_nil_seat = seat;
+                ctx.far_partner_role = roles.role[(seat + 2) & 3];
+            }
+        }
+    }
     // LIVE bids only.  An already-broken one carries no primary weight, and
     // leaving its bit in would charge the pair a second time for a bid it has
     // already lost.
     ctx.nil_mask = static_cast<unsigned char>(live_nil_mask(roles));
+    if (ctx.opposing) disable_single_nil_machinery(ctx);
     ctx.primary_weight = weights.primary;
     ctx.secondary_weight = weights.secondary;
     ctx.tertiary_weight = weights.tertiary;
@@ -1390,8 +1447,16 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
     // Read off the weights rather than off the mode, because it is a fact about
     // the weights: with any of them negative a later trick could pull the value
     // back down, and what is banked so far would bound nothing.
-    ctx.gains_nonnegative =
-        weights.primary >= 0 && weights.secondary >= 0 && weights.tertiary >= 0;
+    // NOT A FACT ABOUT THE WEIGHTS ANY MORE, once a bid sits on each side.
+    // Everywhere else the primary weight multiplies a COUNT that only goes up,
+    // so a non-negative weight means a non-negative gain.  With one bid per side
+    // it multiplies a change in outcome RANK, and that falls when the side the
+    // value is written from loses its own bid.  A negative gain from a
+    // non-negative weight breaks the static cutoff this flag guards, which is
+    // exactly the kind of assumption that survives a rename and dies on a new
+    // objective.
+    ctx.gains_nonnegative = !ctx.opposing && weights.primary >= 0 &&
+                            weights.secondary >= 0 && weights.tertiary >= 0;
     // Likewise a fact about the weights.  In MODE_FULL the primary is K*K and
     // the secondary is +/-K, so this is false for every K -- including K = 1,
     // where the primary is 1 but the secondary is not zero.  MODE_FULL
@@ -1452,7 +1517,10 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
     // Which QUESTION this solve's values answer.  The key says which position an
     // entry is about; without this a two-nil value would be readable by a
     // one-nil search at the same cards, and the two are on different scales.
-    ctx.tt_tag = ctx.multi_nil ? TAG_MULTI_NIL : (opts.mode == MODE_FAST ? TAG_FAST : TAG_FULL);
+    ctx.tt_tag = ctx.opposing
+                     ? TAG_OPPOSING_NILS
+                     : (ctx.multi_nil ? TAG_MULTI_NIL
+                                      : (opts.mode == MODE_FAST ? TAG_FAST : TAG_FULL));
 
     // The measurement arm.  Nothing below reads the histogram when it is off,
     // and the `essential` pointer threaded through search() is null in that
@@ -1471,8 +1539,15 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
         ctx.tt = &table;
     }
 
-    // Last, so that nothing set above can turn a gate back on.
+    // Last, so that nothing set above can turn a gate back on.  The opposing
+    // shape loses target_bounds too: the trapezoid re-derived in patch 66 is a
+    // claim about ONE side's bids and its own trick total, and here the value
+    // mixes an outcome rank with the far side's tricks.  Correct first.
     if (ctx.multi_nil) disable_single_nil_machinery(ctx);
+    if (ctx.opposing) {
+        disable_single_nil_machinery(ctx);
+        ctx.target_bounds = false;
+    }
 }
 
 // Walk the chosen moves down from `st`, starting with `first`, recovering the
@@ -1574,6 +1649,24 @@ ObjectiveWeights objective_weights(int tricks_remaining, const SeatRoles& roles,
     // -- a pair that both bid has no cover partner whose share could break a
     // tie -- and no MODE_FAST fork, because solve() refuses that combination
     // before this is reached.
+    // One bid on each side.  The primary is one step of outcome RANK, which
+    // ranges 0..3, so K*K separates it from the secondary exactly as it does for
+    // a pair that both bid: the trick term reaches K*tricks_remaining at most,
+    // and that is under K*K.  No tertiary -- each side's own tricks are one
+    // number, and there is no cover partner whose share could break a tie.
+    {
+        std::string ignored;
+        SeatRoles copy = roles;
+        if (seat_shape(copy, ignored) == SHAPE_OPPOSING_NILS) {
+            const int k = tricks_remaining + 1;
+            ObjectiveWeights w;
+            w.primary = k * k;
+            w.secondary = opts.minimise_own_tricks ? -k : k;
+            w.tertiary = 0;
+            return w;
+        }
+    }
+
     if (nil_count(roles) > 1) {
         const int k = tricks_remaining + 1;
         ObjectiveWeights w;
@@ -1813,7 +1906,11 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
     // trick a bidder took -- so this is a different sum, not a special case of
     // the same one, and getting it wrong here would silently stop the check
     // from checking anything.
-    const int replayed = ctx.multi_nil
+    const int replayed = ctx.opposing
+                             ? weights.primary * (far_side_rank(tally.broken_mask, ctx) -
+                                                  far_side_rank(0, ctx)) +
+                                   weights.secondary * tally.opponent_tricks
+                         : ctx.multi_nil
                              ? weights.primary * tally.live_nils_broken +
                                    weights.secondary * tally.nil_side_tricks
                              : (weights.primary + weights.tertiary) * tally.nil_tricks +
@@ -2067,7 +2164,11 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
         // check went on reporting a number nothing computed until a test for
         // the shape went looking.  A verifier not forked alongside the thing it
         // verifies does not fail loudly; it stops verifying.
-        const int replayed = ctx.multi_nil
+        const int replayed = ctx.opposing
+                                 ? weights.primary * (far_side_rank(tally.broken_mask, ctx) -
+                                                      far_side_rank(0, ctx)) +
+                                       weights.secondary * tally.opponent_tricks
+                             : ctx.multi_nil
                                  ? weights.primary * tally.live_nils_broken +
                                        weights.secondary * tally.nil_side_tricks
                                  : (weights.primary + weights.tertiary) * tally.nil_tricks +
@@ -2170,7 +2271,13 @@ bool replay_pv(const Position& pos, const std::vector<Play>& pv, const SeatRoles
                 // bids, because one already down cannot go down again.
                 if (roles.role[winner] == ROLE_NIL) broken_seats |= 1u << winner;
             }
-            if (roles.on_nil_side(winner)) {
+            // BY PARITY, not by role.  `on_nil_side` asks whether a seat has a
+            // bid or covers one, which identifies a side only while ONE side
+            // has a bid: with a bid on each, it lumps three seats together and
+            // leaves one alone.  Parity relative to the reference bidder splits
+            // the table the same way for every shape that has one side, and
+            // correctly for the shape that has two.
+            if (((winner ^ roles.nil_seat()) & 1) == 0) {
                 ++tally_out.nil_side_tricks;
             } else {
                 ++tally_out.opponent_tricks;
@@ -2184,6 +2291,7 @@ bool replay_pv(const Position& pos, const std::vector<Play>& pv, const SeatRoles
         err = "PV ends mid-trick";
         return false;
     }
+    tally_out.broken_mask = broken_seats;
     tally_out.live_nils_broken = 0;
     for (int seat = 0; seat < 4; ++seat) {
         if (broken_seats & (1u << seat)) ++tally_out.live_nils_broken;
