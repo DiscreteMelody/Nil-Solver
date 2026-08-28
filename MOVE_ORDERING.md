@@ -49,27 +49,12 @@ resolving the nil question fast.
 Written as precisely as I can from the design discussion. Each needs a
 population measurement before it is built — see the protocol at the end.
 
-### N1. Nil bidder, following: include forced covers
+### ~~N1. Nil bidder, following: include forced covers~~
 
-**Today** 6a promotes the highest card that loses *as the trick stands*. A card
-above the current best is never considered.
-
-**Proposed** promote the highest card that either ducks the current trick **or**
-that every remaining player is *forced* to cover.
-
-**Why the recorded objection does not apply.** 6a's comment rejects the
-speculative shed because "a later OPPONENT will decline to cover, letting the nil
-bidder win." That is about a *voluntary* cover. A player who must follow suit and
-holds only cards above the nil's card has no choice. Forced is not declined.
-
-**The exact condition** for a card `c` above the current best to be safe: every
-seat yet to play must hold at least one card in the led suit, and *all* of their
-led-suit cards must beat `c`. A void later seat breaks it — it may discard
-off-suit, which does not beat `c`, and the nil wins.
-
-**Cost** this is not a bit scan against one card any more; it reads the remaining
-seats' holdings in the led suit. Cheap in absolute terms, but 6a runs on a large
-fraction of nodes, so throughput is the risk, not soundness.
+⊘ **Built, property-tested, measured and rejected, patch 70.** The forced-cover
+condition is exactly true and the promotion is worth nothing: **+1.62% nodes**
+across the three 13-card seeds. Full measurements in the rejected list at the
+bottom of this file and in ROADMAP.md.
 
 ### N2. Nil bidder, leading
 
@@ -146,8 +131,9 @@ More opponent rules to come; this is the one that is clearly specified.
 The order is about *what can be measured cheaply and attributed cleanly*, not
 about which sounds most promising.
 
-1. **N1** — extends existing code, smallest diff, and has a specific recorded
-   objection to overturn. A clean first result either way.
+1. ~~**N1**~~ ⊘ *done, patch 70 — rejected.* It was first because it extended
+   existing code and had a recorded objection to overturn. It overturned the
+   objection and lost anyway; see the rejected list.
 2. **C0** — a prerequisite, not a heuristic. Build and property-test it alone.
    Nothing downstream is trustworthy if this is wrong.
 3. **C1** — the largest unserved node population in the table above.
@@ -157,6 +143,15 @@ about which sounds most promising.
 6. **O1** — opponents following is a large population too, but the rule is the
    least specified of the set; worth doing after the cover rules have shown
    whether this style of heuristic pays here at all.
+
+**Read N1's result before starting C1.** It is the first item on this list to
+fail on NODES rather than on throughput, and the reason generalises: ROADMAP's
+node-population sweep found that **87–91% of cutoffs already land on the first
+move tried**, so what is left for any ordering heuristic lives in the 9–13% of
+cutoffs that do not — a move or two apiece. N1 promoted a strictly better card
+on the nodes it touched and still came out behind. The cover rules have a larger
+population than N1 did, which is the case for trying them; they do not have a
+larger ceiling.
 
 **Do these on the SINGLE-NIL solver first.** That is where the heuristics are
 phrased, where a mature 13-card baseline exists, and where a 560-row corpus and a
@@ -201,10 +196,28 @@ can be closed without writing it.
 values are re-verified against the oracle: 39,701 fast / 278,059 full on
 `tests/corpus/positions.txt`, 49,084 on `large.txt`.
 
+**But note what that means for an ordering item specifically, because it is not
+what it means elsewhere on this project.** Every heuristic on this page fires on
+the corpus, so *any* of them that ships moves the fast number by construction —
+N1 would have made it 39,669 and `large.txt` 49,054. **And it moves the FULL
+number too**, which is the part that surprises: full mode does not reorder, but
+`278,059` includes the nodes of the `MODE_FAST` presolve that bounds its root
+window, and the presolve does. N1 would have made it 277,914, with
+`--no-presolve` confirming the movement is entirely there.
+
+So for these six items the fixed points are **answer** anchors, not node
+anchors: all 560 oracle values and all 19 `large.txt` rows must still match, and
+the node counts are the thing being changed. The node anchor that does survive
+an ordering patch is the arm switched OFF — `--no-X` must reproduce 39,701 /
+278,059 / 49,084 exactly, which is what says the arm is inert when off rather
+than merely small.
+
 ---
 
 ## Rejected, and why — do not re-investigate without new information
 
+- **N1, forced covers for the nil bidder's shed** — *the objection was wrong and
+  the heuristic still loses.* Full entry below.
 - **6c, cover partner ordering (original form)** — spent the cover card
   unconditionally.
 - **Rotating the whole tail in suit mixing** — 77.4M nodes against 77.9M over
@@ -213,3 +226,126 @@ values are re-verified against the oracle: 39,701 fast / 278,059 full on
 - **Nil bidder on lead (part of 6d)** — measured, did nothing.
 - **Demoting certain winners** — already free: they are the high cards of the
   suit and the canonical order is ascending, so they are at the back already.
+
+---
+
+## N1 in full — the measurements, patch 70
+
+Kept here rather than only in ROADMAP.md because the next five items on this
+page are the same shape and will be judged the same way.
+
+### The population, measured before implementing
+
+Instrumentation only: the counters ran on the shipped tree without changing what
+was promoted, and every node count came back equal to its banked baseline, which
+is what says the measured tree is the real one.
+
+| workload | nodes | nodes where 6a runs | N1 promotes a different card | of 6a nodes | of all nodes |
+|---|---:|---:|---:|---:|---:|
+| **13c, 8 deals, seed 3** | 1,996,445 | 355,244 (17.8%) | 5,296 | 1.49% | **0.265%** |
+| **13c, 8 deals, seed 11** | 23,858,179 | 4,097,819 (17.2%) | 79,550 | 1.94% | **0.333%** |
+| **13c, 8 deals, seed 42** | 10,433,275 | 1,873,054 (18.0%) | 33,056 | 1.77% | **0.317%** |
+| 12c, seed 3 | 2,360,615 | 388,783 (16.5%) | 20,483 | 5.27% | 0.868% |
+| 12c, seed 42 | 12,158,582 | 1,526,997 (12.6%) | 35,763 | 2.34% | 0.294% |
+| 11c, seed 3 | 14,104,592 | 2,226,611 (15.8%) | 63,804 | 2.87% | 0.452% |
+| 11c, seed 42 | 6,537,526 | 1,027,748 (15.7%) | 23,948 | 2.33% | 0.366% |
+| corpus, 560, fast | 39,701 | 6,031 (15.2%) | 256 | 4.25% | 0.645% |
+
+**Where the population goes**, at 13 cards seed 11, of the 4,097,819 nodes where
+6a runs:
+
+| | nodes | share |
+|---|---:|---:|
+| a ruff is already on the trick — 6a already promotes everything | 327,837 | 8.0% |
+| **the nil bidder plays fourth — no seat behind it to be forced** | 1,971,826 | **48.1%** |
+| some later seat is void in the led suit — it may discard instead | 735,653 | 18.0% |
+| every later seat follows suit — the gate opens | 1,062,503 | 25.9% |
+
+Half of 6a's nodes are fourth hand, where "every remaining seat is forced to
+cover" is vacuously true and completely wrong. And **even where the gate opens,
+only 7.5% of those nodes change card**: the threshold must clear the card
+currently winning the trick, and the nil bidder must actually hold something
+between the two.
+
+One thing the breakdown got right that the write-up did not predict: in the
+majority of the differing population **6a had declined outright** — every legal
+card wins the trick as it stands — so N1 is mostly supplying an ordering where
+there was none rather than overriding one. 77,013 of 79,550 at seed 11, 4,156 of
+5,296 at seed 3, 16,722 of 33,056 at seed 42.
+
+### The condition is exactly true
+
+Brute force over 400,000 random positions: every card N1 promotes strictly above
+the card winning the trick, checked against **every** legal continuation by the
+seats still to play. **8,082 promotions above the current best, zero cases where
+the nil bidder could win the trick.** Forced is not declined, as the item said.
+
+A refinement was measured and dropped with it: a void later seat holding nothing
+but trumps is *also* forced, since it must ruff. It adds 1–2% to the differing
+population (79,550 → 80,474 at seed 11) and nothing to the argument.
+
+### Nodes — one binary, `--no-forced-covers` the only difference
+
+**13 cards first.**
+
+| seed | off | on | change |
+|---|---:|---:|---:|
+| 3 | 1,996,445 | 1,981,863 | −0.73% |
+| 11 | 23,858,179 | 24,706,139 | **+3.55%** |
+| 42 | 10,433,275 | 10,189,299 | −2.34% |
+| **total** | **36,287,899** | **36,877,301** | **+1.62%** |
+
+| workload | off | on | change |
+|---|---:|---:|---:|
+| 12c, seed 3 | 2,360,615 | 2,373,662 | +0.55% |
+| 12c, seed 42 | 12,158,582 | 12,154,240 | −0.04% |
+| 11c, seed 3 | 14,104,592 | 14,842,715 | **+5.23%** |
+| 11c, seed 42 | 6,537,526 | 6,544,323 | +0.10% |
+| corpus, fast | 39,701 | 39,669 | −0.08% |
+| `large.txt` | 49,084 | 49,054 | −0.06% |
+
+**Every workload's entire movement is one deal.** Seven of the eight deals at
+seed 11 move by less than 0.001%; `r13-0004` goes 6,535,990 → 7,383,874, +13.0%,
+and that one deal is the whole +3.55%. Same shape everywhere: `r11-0004` is all
+of 11c seed 3 (+5.4%), `r13-0002` all of 13c seed 42 (−9.7%), `r13-0004` all of
+13c seed 3 (−1.3%). Two deals up, two down, on a population of 0.3% of nodes.
+**There is no signal here to tune** — the aggregate is decided by whichever
+single deal happens to be biggest.
+
+### Wall clock — four interleaved paired reps, one binary, arm toggled at runtime
+
+| workload | nodes | reps won | best ratio | throughput |
+|---|---:|---:|---:|---:|
+| **13c, seed 3** | −0.73% | 3/4 | 0.987 | +0.5% |
+| **13c, seed 42** | −2.34% | 3/4 | 0.962 | +1.5% |
+| **13c, seed 11** | +3.55% | 2/4 | **1.030** | +0.5% |
+| 11c, seed 3 | +5.23% | **0/4** | **1.071** | −1.7% |
+| 11c, seed 42 | +0.10% | 1/4 | 1.002 | −0.1% |
+| corpus, fast | −0.08% | 3/4 | 0.982 | +1.8% |
+
+Three of six workloads fail *every rep a win*, including the largest 13-card
+seed. 11 cards seed 3 is not noise: 4 reps of 4 lost, ratios 1.086 / 1.072 /
+1.071 / 1.070, and a −1.7% throughput cost on top of the node loss.
+
+### Why this one is worth reading even though it failed
+
+**It is the first ordering item on this project to fail on nodes.** Throughput is
+flat — between +1.8% and −1.7% — because the rule is gated on there *being* a
+card above the trick's best card, which is one mask against a set already in
+hand, so the lookahead is never charged to the nodes it cannot help. Every
+previously rejected ordering item won on nodes and gave it back on throughput.
+This one paid almost nothing per node and still lost, which means the failure is
+in the heuristic rather than in its cost, and a cheaper implementation of the
+same rule would not rescue it.
+
+**And it is what the banked ceiling predicts.** ROADMAP's node-population sweep
+found 87–91% of cutoffs already landing on the first move tried. A rule that
+changes the first move on 0.3% of nodes is drawing from what is left of the
+other 9–13%, and at that size the tail behaviour of individual deals is larger
+than the effect. 6a's own history says the same thing from the other direction:
+it moved seed 11 by +201% on one deal while winning 24.6% overall.
+
+*What would revive it.* Nothing about the condition, which is exact. A workload
+where the nil bidder is materially more often *not* fourth to the trick would
+raise the ceiling, and nothing in the corpus or the random generator produces
+one.

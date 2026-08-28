@@ -38,6 +38,7 @@ expensive node. Read items 11 and 31 in that light.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ⊘ | ~~Move ordering N1: the nil bidder's forced covers~~ | patch 70 | **the recorded objection was wrong, the condition is exactly true, and the heuristic still loses -- on NODES, which is new for this list.** 6a promotes the highest card that loses *as the trick stands* and leaves cards above the trick's best card alone, because a cover is voluntary and a double-dummy opponent declines to make one. N1's answer: a seat that must follow suit and holds nothing in the led suit low enough to duck has no choice, and **forced is not declined**. **The condition is exact** -- brute force over 400,000 random positions, every legal continuation by the seats still to play enumerated: **8,082 cards promoted above the trick's best card, zero able to win the trick.** **The population, measured before implementing**: the rule changes the promoted card on **0.27-0.33% of nodes at 13 cards** (1.5-1.9% of the nodes where 6a runs). It is small for a structural reason worth keeping -- **48% of 6a's nodes are the nil bidder playing FOURTH**, where *every remaining seat is forced* is vacuously true and completely wrong, 18% have a void seat still to play that may discard instead, and even where the gate opens only 7.5% of nodes change card. **Nodes, one binary, `--no-forced-covers` the only difference: 36,287,899 -> 36,877,301 across the three 13-card seeds, +1.62%** -- seed 11 +3.55%, seed 42 -2.34%, seed 3 -0.73%; 11 cards seed 3 is +5.23%. **Every workload's whole movement is ONE deal**: seven of eight deals at seed 11 move by under 0.001% and `r13-0004` alone (+13.0%) is the entire result. Two deals up, two down, on 0.3% of nodes -- a coin flip, with nothing to tune. **Wall time, four interleaved paired reps per workload**: three of six fail *every rep a win*, including the largest 13-card seed (best ratio 1.030), and 11c seed 3 loses 4 reps of 4 at 1.070-1.086. **The part worth reading**: throughput is FLAT, +1.8% to -1.7%, because the rule is gated on there being a card above the trick's best card at all -- one mask against a set already in hand. Every previously rejected ordering item won on nodes and gave it back on throughput; this one paid nothing per node and lost anyway, so a cheaper implementation of the same rule cannot rescue it. **And it is exactly what this file's own banked ceiling predicts**: 87-91% of cutoffs already land on the first move tried, so any ordering rule is drawing from what is left of the other 9-13%. Nothing shipped; fixed points unmoved at 39,701 / 278,059 / 49,084 |
 | 📋 | Where the opposed solver actually stands at 13 cards | patch 69 | **41 seconds worst case, and the first sample said half a second.** Six deals built by pushing every honour onto the two PARTNER seats came back at 0.14-0.53s -- and all six had `nils_set=0`, because both bids were trivially safe and the search never had to work. Loosening the generator so the bids are CONTESTED gives 0.39 / 1.36 / 3.51 / 3.72 / 5.07 / 8.95 / 9.40 / **41.49s**, median around 5s. The cost is not in the card count, it is in whether the outcome is in doubt, and a generator that decides the bids for you measures nothing. **Sequencing**: optimise before adding the unopposed pair. The opposed shape is past the few-seconds bar on ordinary contested deals, and the unopposed pair will be SLOWER than this rather than faster -- it admits shallow pruning only where this one has full alpha-beta, so building it on an unoptimised foundation produces something unusable and makes it impossible to attribute the cost. **What will NOT fix it**: the patch-66 reach bound was worth 1.22x on twin nil and the whole single-nil bound family is 1.31x on top of a table. 1.3x against 41 seconds is 32 seconds. Find where the time goes before porting the bound that worked last time |
 | ✅ | ~~One nil on each side: the C++ solver, opposed shapes~~ | patch 68 | **functional, deliberately unoptimised, and it caught an assumption that had been true for sixty-seven patches.** Only the STRICTLY OPPOSED arrangements are accepted -- partners leaning opposite ways, `0 0 3 2` and its seven rotations -- because those are the ones whose rankings are exact reverses and so admit a single scalar. Both partners leaning the same way is refused by name: *the two sides share an interest and the deal is not a strictly opposed two-team game*. **The value is written from the side opposite `ctx.nil_seat`**: its outcome rank, which the near side's mirrors exactly because the two sum to a constant, plus its own tricks. **The rank is charged as a DELTA** -- when a bid dies the rank moves, and the move is worth `rank(after) - rank(before)`; summed along a line those telescope to `rank(final) - rank(none broken)`, so the accumulated value is off by a constant that no comparison within a position can see. **THE BUG THIS FOUND**: `gains_nonnegative` is derived from the weights, and had been a sound derivation everywhere because the primary always multiplied a COUNT that only goes up. Here it multiplies a change in RANK, which FALLS when the side the value is written from loses its own bid -- a negative gain from a non-negative weight, which broke the static cutoff the flag guards. The cross-check caught it as four wrong game values out of forty-eight. A second, quieter one: `replay_pv` split the table with `on_nil_side`, which identifies a side only while ONE side has a bid; with a bid on each it lumped three seats together. Now split by parity, which is identical on every older shape and correct on this one. **Verified**: 144 deals at 3, 4 and 5 cards across all eight opposed role sets, comparing the UTILITY PAIR rather than the cards -- the solver's own line, replayed under the oracle's rules, reaches the oracle's game value every time. `tools/opposing_crosscheck.py` is ctest #27. Everything is gated off for the shape including the patch-66 trapezoid, which is a claim about one side's bids and its own tricks. 27/27, single-nil unmoved |
 | ✅ | ~~One nil on each side: the oracle~~ | patch 67 | **the specification turns out to describe two different games, and only one of them is an ordinary one.** Roles: a bid on each side, and the role on a bidder's PARTNER says what that side does when it cannot both save its own and set the other's -- `2` saves ours first, `3` sets theirs first. Ranking the four outcomes 3..0 per side and adding the two ranks is the test for strict opposition, and it is a property of the ROLES alone: **`0 3 2 0` sums to a constant 3, so it is strictly opposed and ordinary minimax applies. `0 2 2 0` sums 4/3/3/2 and `0 3 3 0` sums 2/3/3/4, so they are NOT** -- both sides would rather have both bids live (or both dead) than trade, which is a shared interest no single scalar can express. That is precisely the situation the Sturtevant and Korf paper in this repo is about, and it means one third of this feature is a two-team search and two thirds is not. The oracle sidesteps it by being exhaustive: `_search_opposing` carries a utility PAIR and each side maximises its own component, which is backward induction and needs no pruning to be correct. Broken-nil mask in the state and the memo key, as with twin nil. Selftests pin the ranking, the strict-opposition property per shape, weight separation, memo agreement on all three shapes, and that flipping a partner's role never moves that side to an outcome its own ranking calls worse. **What this means for the C++**: `0 3 2 0` can reuse everything -- one scalar, alpha-beta, the table, the re-derived reach bound. `0 2 2 0` and `0 3 3 0` cannot, and by Korf's condition (maxsum 4 < 2*maxp 6) admit SHALLOW pruning only. Do the opposed shape first; it is the cheap two thirds of the value |
@@ -522,6 +523,122 @@ Full mode is unchanged by this patch, and that is checked rather than asserted:
 ---
 
 ## Evaluated and rejected
+
+**Forced covers for the nil bidder's shed (move ordering item N1).** Built,
+property-tested, measured on nodes and on the clock, rejected. The first
+ordering item on this list to fail on NODES rather than on throughput, which is
+why it is written up at length.
+
+*What it claimed.* 6a promotes "the highest card that loses as the trick
+stands", and deliberately never considers a card ABOVE the card currently
+winning, on the grounds recorded in its own comment: such a card loses only if a
+later seat covers it, and a later OPPONENT declines to cover, because letting the
+nil bidder win is the whole of what the opponent wants. N1's answer is that the
+objection is about a VOLUNTARY cover. A seat that must follow suit and holds
+nothing in the led suit low enough to duck under has no choice in the matter.
+
+*The condition, stated exactly.* A card `c` above the current best is safe iff
+every seat yet to play holds at least one card of the led suit and all of that
+seat's led-suit cards beat `c`. Equivalently: `c` is below the lowest led-suit
+card any remaining seat holds. Two ways to decline, and both matter more than
+they look. A VOID later seat may discard, and a discard beats nothing — it may
+also hold a trump, but holding one is not playing one, and an opponent given the
+choice takes the discard. And a nil bidder playing FOURTH has no seat behind it
+at all, where "every remaining seat covers" is vacuously true and a card above
+the best simply wins the trick.
+
+*The condition is exactly true, and that was tested before it was measured.*
+Brute force over 400,000 random positions, enumerating every legal continuation
+by the seats still to play: **8,082 cards promoted above the trick's best card,
+zero able to win the trick under any line.** The objection is overturned. What
+follows is not about soundness.
+
+*The population, measured before implementing, on the shipped tree.* Counters
+only — every node count came back equal to its banked baseline, which is what
+says the tree measured is the real one.
+
+| workload | nodes | 6a nodes | N1 promotes differently | of 6a nodes | of all nodes |
+|---|---:|---:|---:|---:|---:|
+| 13c, 8 deals, seed 3 | 1,996,445 | 355,244 | 5,296 | 1.49% | **0.265%** |
+| 13c, 8 deals, seed 11 | 23,858,179 | 4,097,819 | 79,550 | 1.94% | **0.333%** |
+| 13c, 8 deals, seed 42 | 10,433,275 | 1,873,054 | 33,056 | 1.77% | **0.317%** |
+| 11c, seed 3 | 14,104,592 | 2,226,611 | 63,804 | 2.87% | 0.452% |
+| corpus, 560, fast | 39,701 | 6,031 | 256 | 4.25% | 0.645% |
+
+**Why it is small is the reusable part.** Of the 4,097,819 nodes where 6a runs at
+seed 11: **48.1% are the nil bidder playing fourth**, 18.0% have a void seat
+still to play, 8.0% already have a ruff on the trick where 6a promotes
+everything anyway, and 25.9% open the gate. **Of the ones that open the gate,
+only 7.5% change card** — the threshold must clear the card currently winning,
+and the nil bidder must hold something between the two. Anyone pricing a
+following-suit heuristic for any seat should start from that split: half of
+these nodes are fourth hand.
+
+*Nodes, one binary, `--no-forced-covers` the only difference.* 13 cards first:
+
+| seed | off | on | change |
+|---|---:|---:|---:|
+| 3 | 1,996,445 | 1,981,863 | −0.73% |
+| 11 | 23,858,179 | 24,706,139 | **+3.55%** |
+| 42 | 10,433,275 | 10,189,299 | −2.34% |
+| **total** | **36,287,899** | **36,877,301** | **+1.62%** |
+
+11 cards seed 3 is +5.23%, seed 42 +0.10%; 12 cards +0.55% and −0.04%; the
+corpus −0.08% and `large.txt` −0.06%.
+
+**Every workload's entire movement is one deal**, and that is the finding rather
+than a caveat. Seven of the eight deals at seed 11 move by less than 0.001%;
+`r13-0004` goes 6,535,990 → 7,383,874 and is the whole +3.55%. `r11-0004` is all
+of 11c seed 3, `r13-0002` all of 13c seed 42 (−9.7%), `r13-0004` all of 13c seed
+3. Two deals up, two down. **On a population of 0.3% of nodes there is no signal
+to tune**, only which deal happened to be biggest.
+
+*Wall clock, four interleaved paired reps per workload, arm toggled at runtime.*
+
+| workload | nodes | reps won | best ratio | throughput |
+|---|---:|---:|---:|---:|
+| 13c, seed 3 | −0.73% | 3/4 | 0.987 | +0.5% |
+| 13c, seed 42 | −2.34% | 3/4 | 0.962 | +1.5% |
+| 13c, seed 11 | +3.55% | 2/4 | **1.030** | +0.5% |
+| 11c, seed 3 | +5.23% | **0/4** | **1.071** | −1.7% |
+| 11c, seed 42 | +0.10% | 1/4 | 1.002 | −0.1% |
+| corpus, fast | −0.08% | 3/4 | 0.982 | +1.8% |
+
+11 cards seed 3 is not noise: four reps of four lost, ratios 1.086 / 1.072 /
+1.071 / 1.070.
+
+*Why it failed, mechanically.* **Throughput is flat**, which is the diagnostic.
+The rule is gated on there being a card above the trick's best card at all —
+one mask against a set already in hand — so the up-to-three-seat lookahead never
+reaches a node it cannot help. Every previously rejected ordering item on this
+list won on nodes and gave it back on throughput; this one paid almost nothing
+per node and lost anyway. **The failure is in the heuristic, not in its cost**,
+and a cheaper implementation of the same rule cannot rescue it.
+
+**It is also what this file's own ceiling already predicted.** The node-population
+sweep under item 29b found **87–91% of cutoffs already landing on the first move
+tried**. A rule that changes the first move on 0.3% of nodes is drawing on what
+is left of the other 9–13%, and at that size the tail behaviour of one deal is
+larger than the effect being measured. That sweep struck items 9 and 10 from the
+suggested sequence; N1 is the first measurement taken *after* it that confirms
+the reading on a heuristic someone actually built.
+
+*One refinement, measured and dropped with it.* A void later seat holding nothing
+but trumps is also forced, since it must ruff. It adds 1–2% to the differing
+population (79,550 → 80,474 at seed 11) and nothing else.
+
+*A thing worth knowing for the next ordering item: the fixed points move, and
+one of them moves for a non-obvious reason.* Had N1 shipped, the corpus fast
+count would be 39,669 and `large.txt` 49,054 — expected, since ordering fires on
+the corpus. **The full-mode count would move too, 278,059 → 277,914**, even
+though full mode does not reorder: that total includes the `MODE_FAST` presolve
+that bounds its root window, and the presolve orders. `--no-presolve` confirms
+the movement is entirely there. For an ordering patch the durable node anchor is
+the arm switched OFF, which must reproduce 39,701 / 278,059 / 49,084 exactly.
+
+*What would revive it.* Nothing about the condition. A workload where the nil
+bidder is materially less often fourth to the trick would raise the ceiling, and
+neither the corpus nor the random generator produces one.
 
 **Spending the FAILING branch of the presolve boolean (item 23b).** Item 23 runs
 a `MODE_FAST` presolve and spends the answer only when the nil is SAFE, where it
@@ -3544,8 +3661,16 @@ whether this one is affordable at all.
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 36 ✅ → 41 ✅ → 42 ⊘ → 47 ✅ → 43 ⊘→✅ → 43b ⊘ → 44 ⏸ → 54 ✅ → 58 ✅ → 56 ✅ → 57 ✅ → 59 ✅ → 61 ✅ → 62 → 45 → 29b (single-suit) → 9 ⊘ → 10 ⊘ → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 36 ✅ → 41 ✅ → 42 ⊘ → 47 ✅ → 43 ⊘→✅ → 43b ⊘ → 44 ⏸ → 54 ✅ → 58 ✅ → 56 ✅ → 57 ✅ → 59 ✅ → 61 ✅ → 62 ✅ → N1 ⊘ → C0 → C1 → C2 → C3 → O1 → 45 → 29b (single-suit) → 9 ⊘ → 10 ⊘ → measure → 11..14
 ```
+
+**The move-ordering block (N1, C0-C3, O1) is specified in `MOVE_ORDERING.md`,
+and N1 is the first result off it.** It was placed first for being the smallest
+diff with a recorded objection to overturn; it overturned the objection, proved
+its condition exactly, and lost 1.62% of nodes at 13 cards. Read its entry under
+*Evaluated and rejected* before starting C0 -- particularly the population split,
+which says half of the nil bidder's following-suit nodes are FOURTH HAND, and
+the note on which fixed points an ordering patch is allowed to move.
 
 **Patch 47 comes before all of it, and it is not an optimisation.** The random
 benchmark generator has been emitting an impossible spades-broken flag since
