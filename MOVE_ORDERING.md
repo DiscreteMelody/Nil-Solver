@@ -132,7 +132,11 @@ holdings. Deliberate: nothing calls it, so a tighter loop could not be measured,
 and this page is emphatic that ordering work here lives or dies on throughput.
 Tighten it in C1, against a consumer.
 
-### C1. Cover partner, following suit
+### ~~C1. Cover partner, following suit~~
+
+⊘ **Built, measured and rejected, patch 72.** Nodes roughly flat at 13 cards
+(**−1.09%** aggregate, but **+7.78%** on seed 3) and throughput down **1.0–1.8%**.
+Zero of six workloads a clean win. Full write-up at the bottom of this file.
 
 - **Nil is safe for this trick** — either already under another card, or an
   upcoming player is forced to play something the nil can duck: play the
@@ -143,7 +147,13 @@ Tighten it in C1, against a consumer.
 Following is roughly three nodes in four for this seat, so this is the largest
 cover population by some way.
 
-### C2. Cover partner, discarding
+### ~~C2. Cover partner, discarding~~
+
+⊘ **Built, measured and rejected, patch 73, and it found something.** As
+specified it costs **+12.01% of nodes** across the three 13-card seeds. Held to
+its own stated scope it does **nothing at all** — +0.08%. Full write-up at the
+bottom of this file; the short version is that the rule spends its whole effect
+displacing a ruff nobody knew was being tried first.
 
 Discard from the **worst suit**: the suit where the nil can duck the fewest
 tricks under the cover hand.
@@ -154,22 +164,52 @@ cover once in clubs, twice in hearts.
 
 Uses C0.
 
-### C3. Cover partner, leading
+### ~~C3. Cover partner on lead: cash a winner into the nil's void~~
 
-A four-tier rule, in order:
+⊘ **Built, measured and rejected, patch 74.** **+2.25% of nodes** across the
+three 13-card seeds; one of six workloads a clean win. Full write-up at the
+bottom of this file.
 
-1. Cash a winner in a suit the **nil is void in**.
-2. Otherwise cash a winner in the **nil's shortest suit**.
-3. Otherwise lead the **cheapest card in the nil's shortest suit that the nil can
-   duck**. (Nil's shortest is `96` hearts, cover holds `T732`: lead the `7`.)
-4. Otherwise lead the **top of the safest suit** — the suit where the nil can duck
-   the most tricks under the cover hand.
+On lead, holding a card nobody can beat in a suit the nil is **void** in: lead
+it. The trick is won by this side and the nil must discard, which is a free
+throw of its most dangerous card elsewhere.
 
-Example for tier 4: choosing between `KQ4` clubs and `JT87` diamonds with the nil
-holding `J96` clubs and `954` diamonds, lead the `J` of diamonds — three ducks
-available there against two in clubs.
+### C4. Cover partner on lead: cash a winner in the nil's shortest suit
 
-Uses C0. The most complex of the four, and lead nodes are the smallest slice.
+Same idea one step weaker — no void yet, but the nil is close to one, and
+cashing there both wins the trick and shortens the suit toward a void.
+
+### ~~C5. Cover partner on lead: the cheapest duckable card in the nil's shortest suit~~
+
+⏸ **Built, measured and PARKED, patch 75.** Shipped behind an opt-in
+`--cover-duck-short` with the arm **off**, which is unusual here and deliberate:
+it is the only item in this block with two-sided signal. It won three of six
+workloads on **every rep**, by 4.1%, 4.3% and 12.0% of nodes, and lost two of six
+on every rep. Nothing came out neutral. Full write-up at the bottom of this file.
+
+Lead the **cheapest card in the nil's shortest suit that the nil can duck**.
+Nil's shortest is `96` hearts, cover holds `T732`: lead the `7`. Uses
+`cheapest_cover_above` from C0.
+
+### C6. Cover partner on lead: the top of the safest suit
+
+Lead the top of the suit where the nil can duck the **most** tricks under the
+cover hand. Uses `duck_depth` from C0.
+
+Example: choosing between `KQ4` clubs and `JT87` diamonds with the nil holding
+`J96` clubs and `954` diamonds, lead the `J` of diamonds — three ducks available
+there against two in clubs.
+
+**Read C2's entry before building this one.** C6 is the exact comparison C2 made
+— rank the suits by `duck_depth` — and C2 measured it at +0.08% of nodes, which
+is nothing. Lead nodes are 2.3–2.8% of all nodes, a smaller slice than the
+discard nodes C2 had. Something would have to argue that lead choice is
+different in kind before this is worth the build.
+
+**These four were one item.** They are split because they are four separate
+bets sharing a fallback chain, and measuring them as one number would have
+recorded four arms as a single result. If any of them wins alone, the chained
+combination is a fifth independent variable and needs its own measurement.
 
 ---
 
@@ -192,10 +232,15 @@ about which sounds most promising.
    objection and lost anyway; see the rejected list.
 2. ~~**C0**~~ ✅ *done, patch 71.* A prerequisite, not a heuristic; built and
    property-tested alone, with no consumer and no A/B.
-3. **C1** — the largest unserved node population in the table above.
-4. **C2** — same machinery as C1, different case.
-5. **C3** — most complex, smallest population, and four tiers means four things
-   that could each be the reason it does or does not work.
+3. ~~**C1**~~ ⊘ *done, patch 72 — rejected.* It had the largest unserved node
+   population in the table and the largest measured population of any item on
+   this page. It still lost.
+4. ~~**C2**~~ ⊘ *done, patch 73 — rejected.* Same machinery as C1, different
+   case, and the first item on this page whose measurement was worth more than
+   its heuristic.
+5. ~~**C3**~~ ⊘ *done, patch 74 — rejected.* Split from the old four-tier item
+   into C3–C6, because four tiers meant four things that could each be the
+   reason it did or did not work. C3 is tier one; C4–C6 are unbuilt.
 6. **O1** — opponents following is a large population too, but the rule is the
    least specified of the set; worth doing after the cover rules have shown
    whether this style of heuristic pays here at all.
@@ -274,6 +319,17 @@ than merely small.
 
 - **N1, forced covers for the nil bidder's shed** — *the objection was wrong and
   the heuristic still loses.* Full entry below.
+- **C1, cover partner following suit** — *won on nodes, lost on throughput*, the
+  failure mode this page was written to catch. Full entry below.
+- **C2, cover partner discarding** — *the heuristic does nothing and the rule as
+  written displaces a ruff worth 12% of nodes.* Full entry below.
+- **C3, cover partner cashing into the nil's void** — *the mechanism is real and
+  the ordering still costs nodes.* Full entry below.
+
+Not rejected, parked:
+
+- **C5, cover partner ducking the nil short** — *the only two-sided result in the
+  block.* Full entry below.
 - **6c, cover partner ordering (original form)** — spent the cover card
   unconditionally.
 - **Rotating the whole tail in suit mixing** — 77.4M nodes against 77.9M over
@@ -405,3 +461,313 @@ it moved seed 11 by +201% on one deal while winning 24.6% overall.
 where the nil bidder is materially more often *not* fourth to the trick would
 raise the ceiling, and nothing in the corpus or the random generator produces
 one.
+
+---
+
+## C1 in full — the measurements, patch 72
+
+### The population, measured before implementing
+
+Counters on the shipped tree, promotion unchanged; every node count came back
+equal to its banked baseline.
+
+The question for C1 is sharper than it was for N1. The cover partner has no rule
+at all, so it searches canonical ascending — lowest first. C1's first bullet
+*also* says play the lowest. So the rule can only differ where the nil bidder is
+winning **and** the partner's lowest card does not already cover it.
+
+| workload | nodes | cover following | nil exposed | C1 differs | of cover nodes | of all nodes |
+|---|---:|---:|---:|---:|---:|---:|
+| **13c, seed 3** | 1,996,445 | 270,193 (13.5%) | 46,304 | 14,307 | 5.3% | **0.717%** |
+| **13c, seed 11** | 23,858,179 | 2,380,910 (10.0%) | 492,350 | 286,032 | 12.0% | **1.199%** |
+| **13c, seed 42** | 10,433,275 | 1,541,693 (14.8%) | 415,387 | 298,698 | 19.4% | **2.863%** |
+| 12c, seed 3 | 2,360,615 | 288,548 (12.2%) | 70,785 | 12,401 | 4.3% | 0.525% |
+| 11c, seed 3 | 14,104,592 | 1,662,185 (11.8%) | 138,786 | 33,460 | 2.0% | 0.237% |
+| 11c, seed 42 | 6,537,526 | 660,579 (10.1%) | 72,204 | 24,054 | 3.6% | 0.368% |
+| corpus, 560 | 39,701 | 3,175 (8.0%) | — | 52 | 1.6% | 0.131% |
+
+**This is the largest population any item on this page has had** — 2.5 to 9
+times N1's, and the reason C1 was worth building where N1's number alone would
+have closed it. The nil bidder is safe on about five of six cover-following
+nodes, which is why the rule is free there: it promotes nothing and the
+canonical order is already correct.
+
+### Nodes — one binary, `--no-cover-follow` the only difference
+
+| seed | off | on | change |
+|---|---:|---:|---:|
+| 13c, 3 | 1,996,445 | 2,151,854 | **+7.78%** |
+| 13c, 11 | 23,858,179 | 23,491,097 | −1.54% |
+| 13c, 42 | 10,433,275 | 10,248,850 | −1.77% |
+| **13-card total** | **36,287,899** | **35,891,801** | **−1.09%** |
+| 12c, 3 | 2,360,615 | 2,514,674 | +6.53% |
+| 12c, 42 | 12,158,582 | 14,620,969 | **+20.25%** |
+| 11c, 3 | 14,104,592 | 13,982,207 | −0.87% |
+| 11c, 42 | 6,537,526 | 6,565,291 | +0.42% |
+| corpus | 39,701 | 39,631 | −0.18% |
+| `large.txt` | 49,084 | 48,739 | −0.70% |
+
+As with N1, the aggregate is one or two deals. `r13-0003` alone is all of seed
+3's +7.78%; `r12-0002` goes 4,256,094 → 6,835,111, +60.6%, and is all of 12c
+seed 42. Seed 42 at 13 cards is the exception and moves four deals, all small.
+
+### Wall clock — four interleaved paired reps, arm toggled at runtime
+
+| workload | nodes | reps won | throughput |
+|---|---:|---:|---:|
+| **13c, seed 3** | +7.78% | 2/4 | +1.5% |
+| **13c, seed 11** | −1.54% | 1/4 | **−1.8%** |
+| **13c, seed 42** | −1.77% | 3/4 | **−1.5%** |
+| 11c, seed 3 | −0.87% | 1/4 | −1.0% |
+| 11c, seed 42 | +0.42% | 0/4 | −1.4% |
+| corpus | −0.18% | 2/4 | −0.6% |
+
+**Zero of six clean.** Seed 11 is the case that decides it: the rule takes 1.54%
+of the nodes off and gives 1.8% of the throughput back, so the two cancel and
+the reps split 1/4.
+
+### Why it failed, and it is not the same reason N1 failed
+
+**C1 is the canonical failure this page was written to catch.** N1 lost on nodes
+with flat throughput. C1 wins on nodes at 13 cards and loses on throughput —
+exactly the shape of every ordering item rejected before this block existed.
+
+The per-node cost was attacked once before the verdict was recorded. The first
+implementation scanned the trick to find the nil bidder's card; the second
+computes its index as `(nil_seat - leader) & 3`, which is a subtraction and a
+mask. **Node counts came back bit-identical**, confirming same tree and same
+heuristic, and the throughput did not recover — seed 11 went −1.8% to −1.8%. So
+the cost is not the scan. It is the branch, `trick_best_card`, and the led-suit
+mask, charged to the **8–15% of all nodes** where this seat follows suit, in
+order to change the move on 0.2–2.9% of them. That ratio is the whole story, and
+no cheaper spelling of the same rule closes it.
+
+*What would revive it.* A version that costs nothing on the five-in-six nodes
+where the nil bidder is already safe. The current gate cannot know that without
+computing `trick_best_card` and locating the nil bidder's card, which is most of
+the work. If some caller upstream already has both facts to hand, C1 becomes
+nearly free and is worth re-measuring; nothing in `order_moves` has them today.
+
+*Kept from this patch.* `cheapest_cover_above` in `bounds.hpp`, the second half
+of C0 — the query C1 used and C3 tier 3 still wants. Property-tested alongside
+`duck_depth` over the same exhaustive sweep. Nothing reads it; the binaries are
+byte-identical to HEAD.
+
+---
+
+## C2 in full — the measurements, patch 73
+
+### The population, and the thing it turned up
+
+Counters on the shipped tree; every node count came back equal to its baseline.
+
+| workload | nodes | cover discarding | real choice of suit | C2 picks a different suit | of choice nodes | of all nodes |
+|---|---:|---:|---:|---:|---:|---:|
+| **13c, seed 3** | 1,996,445 | 47,733 (2.4%) | 45,300 | 13,296 | 29.4% | 0.666% |
+| **13c, seed 11** | 23,858,179 | 1,164,467 (4.9%) | 1,093,114 | 841,268 | **77.0%** | 3.526% |
+| **13c, seed 42** | 10,433,275 | 432,469 (4.2%) | 366,180 | 112,677 | 30.8% | 1.080% |
+
+A 77% disagreement rate should have been the first warning. The incumbent order
+at these nodes is not a heuristic — it is `take_next_suit` starting from
+`suit_cursor = 3`, which reaches suit 0 first, and **suit 0 is spades**. So
+whenever the cover partner is void in the led suit and holds a trump, today's
+first move is a **ruff**, and C2 displaces it.
+
+| workload | a ruff is available | no ruff, a real discard choice | C2 differs there |
+|---|---:|---:|---:|
+| 13c, seed 3 | 36,040 (80%) | 9,260 | 3,328 — **0.167% of nodes** |
+| 13c, seed 11 | 1,042,982 (95%) | 50,132 | 35,262 — **0.148% of nodes** |
+| 13c, seed 42 | 333,067 (91%) | 33,113 | 9,098 — **0.087% of nodes** |
+
+So the rule as specified is two changes wearing one name: a suit choice among
+discards, on 0.09–0.17% of nodes, and a decision to stop ruffing first, on
+almost all the rest.
+
+### Nodes, and the control that separates them
+
+Both arms on one binary, `--no-cover-discard` the only difference.
+
+| seed | off | C2 as specified | C2 with the ruff left first |
+|---|---:|---:|---:|
+| 3 | 1,996,445 | 2,199,219 (**+10.16%**) | 1,998,353 (+0.10%) |
+| 11 | 23,858,179 | 25,714,523 (**+7.78%**) | 23,878,111 (+0.08%) |
+| 42 | 10,433,275 | 12,731,659 (**+22.03%**) | 10,439,807 (+0.06%) |
+| **total** | **36,287,899** | **40,645,401 (+12.01%)** | **36,316,271 (+0.08%)** |
+
+**The duck heuristic contributes nothing.** Held to the nodes where there is no
+ruff to displace — its own stated scope, a discard choice between discards — it
+moves the node count by less than a tenth of a percent on every seed. No wall
+clock was run on it, because a rule that changes 0.09–0.17% of nodes and moves
+none of them has nothing for the clock to measure.
+
+The other column is the finding. C2 is rejected on both.
+
+### What this says about C0
+
+`duck_depth` is correct — property-tested over its whole input space — and this
+is the first evidence about whether it is *useful*, which is a different
+question. On the one consumer built so far, ranking suits by it is
+indistinguishable from ranking them by suit number. C3 tier 4 proposes the same
+comparison for lead choice and should be expected to behave the same way unless
+something argues otherwise.
+
+### The accident, now pinned
+
+The ruff-first ordering at void nodes is worth roughly 12% of nodes at 13 cards
+and **nothing decided it**: it falls out of spades being suit 0 in `cards.hpp`
+meeting `int suit_cursor = 3` in `order_moves`. Renumber the suits, or start the
+cursor elsewhere, and it goes away silently — the answers stay correct and the
+benchmark gets slower.
+
+This patch leaves the behaviour alone and pins the mechanism: a comment at the
+cursor initialiser recording the measured cost, and unit tests asserting that
+the rotation reaches spades first and leaves the cursor there. A future
+`take_next_suit` that breaks it now fails a test instead of a benchmark.
+
+**It is also the largest single effect this whole block has measured** — larger
+than N1, C1 and C2 put together, and it was already in the code.
+
+---
+
+## C3 in full — the measurements, patch 74
+
+Tier one of the old four-tier lead rule, now its own item.
+
+### The population
+
+| workload | nodes | cover on lead | rule fires | ruff-proof | promotes differently | of lead nodes | of all nodes |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| **13c, seed 3** | 1,996,445 | 55,651 (2.8%) | 18,270 | 17,256 | 1,394 | 2.5% | **0.070%** |
+| **13c, seed 11** | 23,858,179 | 544,698 (2.3%) | 220,685 | 162,343 | 176,794 | 32.5% | **0.741%** |
+| **13c, seed 42** | 10,433,275 | 252,503 (2.4%) | 80,562 | 60,372 | 50,662 | 20.1% | **0.486%** |
+
+Roughly three quarters of the firings are ruff-proof — no opponent void in the
+suit with a trump left — so the winner mostly is one.
+
+The spread is the thing to notice: 0.07% on seed 3 against 0.74% on seed 11. On
+seed 3 the rule fires 18,270 times and changes the move only 1,394 of them,
+because the incumbent's lowest-card-of-the-lowest-suit already lands on the same
+card when the cover holds a singleton there.
+
+### Nodes — one binary, `--no-cover-cash-void` the only difference
+
+| seed | off | on | change |
+|---|---:|---:|---:|
+| 13c, 3 | 1,996,445 | 2,017,422 | +1.05% |
+| 13c, 11 | 23,858,179 | 24,684,143 | **+3.46%** |
+| 13c, 42 | 10,433,275 | 10,403,130 | −0.29% |
+| **13-card total** | **36,287,899** | **37,104,695** | **+2.25%** |
+| 11c, 3 | 14,104,592 | 14,649,198 | +3.86% |
+| 11c, 42 | 6,537,526 | 5,912,542 | **−9.56%** |
+| corpus | 39,701 | 39,904 | +0.51% |
+
+One deal again: `r13-0002` goes 1,293,640 → 2,281,815, +76.4%, and is the whole
+of seed 11.
+
+### Wall clock — four interleaved paired reps
+
+| workload | nodes | reps won | throughput |
+|---|---:|---:|---:|
+| **13c, seed 3** | +1.05% | 2/4 | +1.1% |
+| **13c, seed 11** | +3.46% | **0/4** | −1.3% |
+| **13c, seed 42** | −0.29% | 1/4 | −0.7% |
+| 11c, seed 3 | +3.86% | 0/4 | −0.1% |
+| 11c, seed 42 | −9.56% | **4/4** | −1.3% |
+| corpus | +0.51% | 3/4 | +1.3% |
+
+**One of six clean**, and it is an 11-card workload. The three 13-card seeds are
+2/4, 0/4 and 1/4.
+
+### Why it failed
+
+Not for lack of mechanism. 11 cards seed 42 is a real 9.56% node win, four reps
+of four — when the rule helps it helps a lot, which is more than N1 or C2's duck
+heuristic ever managed. The problem is variance: the same rule costs 3.46% at 13
+cards seed 11 and 3.86% at 11 cards seed 3, and on a population under 1% of
+nodes the outcome is decided by whichever deal happens to be largest.
+
+**The rule promotes a HIGH card where the incumbent promotes a low one**, which
+is the same qualitative change C2 stumbled into with the ruff — and there it was
+worth 12%. So the direction is not obviously wrong; the selection is. Cashing
+into a void wins the trick and buys the nil bidder a discard, but it also strips
+the cover partner of a control card, and the search finds out which mattered
+only several plies down.
+
+*What would revive it.* A condition that separates the seed-42 shape from the
+seed-11 shape. Nothing in the population counters does: firing rate, ruff-proof
+share and lead-node share are all within a factor of two across the seeds that
+disagree by 13 percentage points of nodes.
+
+*Not measured.* C4, C5 and C6. C6 in particular reuses the `duck_depth` suit
+comparison that C2 measured at +0.08%.
+
+---
+
+## C5 in full — the measurements, patch 75
+
+### The population
+
+The most consistent in the block, and the largest apart from C1's.
+
+| workload | nodes | cover on lead | rule fires | promotes differently | of lead nodes | of all nodes |
+|---|---:|---:|---:|---:|---:|---:|
+| **13c, seed 3** | 1,996,445 | 55,651 (2.8%) | 32,919 | 16,163 | 29.0% | **0.810%** |
+| **13c, seed 11** | 23,858,179 | 544,698 (2.3%) | 385,198 | 262,824 | 48.3% | **1.102%** |
+| **13c, seed 42** | 10,433,275 | 252,503 (2.4%) | 182,748 | 141,960 | 56.2% | **1.361%** |
+
+It fires on 59–72% of cover-lead nodes and changes the move on about half of
+them. Where it declines: the cover partner cannot lead the nil bidder's shortest
+suit (about a fifth of these nodes), or holds nothing above the nil bidder's
+lowest card there (about a fifteenth).
+
+**The shortest suit is tied between two or more suits on roughly 40% of them**,
+and those ties are currently broken by the enumeration's own rotation order.
+That is the loosest joint in the rule and the first place to look next.
+
+### Nodes and wall clock — four interleaved paired reps, one binary
+
+| workload | nodes | reps won | rep ratios | throughput |
+|---|---:|---:|---|---:|
+| **13c, seed 3** | **−4.06%** | **4/4** | 0.988 / 0.949 / 0.951 / 0.963 | +0.1% |
+| **13c, seed 11** | +2.37% | **0/4** | 1.029 / 1.052 / 1.072 / 1.048 | −0.6% |
+| **13c, seed 42** | **−4.34%** | **4/4** | 0.961 / 0.956 / 0.979 / 0.973 | −1.2% |
+| 11c, seed 3 | +6.01% | **0/4** | 1.033 / 1.047 / 1.047 / 1.064 | +0.6% |
+| 11c, seed 42 | **−12.03%** | **4/4** | 0.881 / 0.912 / 0.893 / 0.877 | +0.3% |
+| corpus | +1.27% | 3/4 | — | +1.3% |
+
+13-card aggregate is +0.09%, which is the least informative number here: seed 11
+is two thirds of the workload by nodes, so it decides an average that hides two
+4% wins.
+
+### Why this one is parked rather than rejected
+
+**Throughput is flat** — +1.3% to −1.2%, no consistent sign — so this is not
+C1's failure. And it is not N1's or C2's either, where the rule moved nothing:
+here every workload moves by at least 2.4%, and three of them move by 4% or
+more. **Nothing came out neutral, which is the finding.**
+
+The other four items in this block produced results decided by one deal on an
+otherwise unmoved field. C5 moves several deals per workload — at seed 11,
+`r13-0002` is +50.6% but `r13-0004` is −5.1% and `r13-0006` is +1.5%, so the
+rule is broadly active and the sign varies within a single workload as well as
+between them.
+
+That is a rule doing something real with a condition attached that nobody has
+identified yet. It fails the bar and it is not noise, so it is kept behind an
+opt-in flag rather than deleted.
+
+### The next experiment, named
+
+**The tie-break.** The nil bidder's shortest suit is tied on ~40% of firings and
+those ties currently go to rotation order — which is to say, to spades first,
+the same accident C2 found was worth 12% of nodes. A rule whose sign flips
+between workloads, with an arbitrary choice on two fifths of its firings, has an
+obvious first suspect.
+
+Three tie-breaks worth measuring, each alone: the suit where the cover partner's
+covering card is cheapest; the suit where `duck_depth` is highest, so the cover
+can keep doing this; and the longest cover holding, for the same reason.
+
+*What was not measured.* Whether the win comes from the *cheapest* half of the
+rule or the *shortest suit* half. Leading the cheapest duckable card in a suit
+chosen by rotation order would separate them, and it is one flag.

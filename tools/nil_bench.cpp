@@ -402,6 +402,11 @@ void usage(const char* argv0) {
               << "                    (same answer, many more nodes; full mode only)\n"
               << "  --no-ordering     try moves in canonical order rather than a\n"
               << "                    promising-first one (fast mode only)\n"
+              << "  --cover-duck-short  lead the cheapest duckable card in the nil\n"
+                 "                    bidder's shortest suit (item C5, parked;\n"
+                 "                    same answer, different node count)\n"
+              << "  --no-settled-gains  do not take the static cutoff once every nil\n"
+                 "                    bid is already down (opposed shapes only)\n"
               << "  --no-suit-mix     do not put one card per suit at the head of the\n"
               << "                    move list (same answer, more nodes)\n"
               << "  --no-later-tricks   do not tighten that bound with the opponents'\n"
@@ -480,6 +485,7 @@ std::string memo_label(const nil::SearchOptions& opts) {
     // under this arm as well and a fast-only suffix would silently merge two
     // different trees.
     if (!opts.suit_mixed_order) suffix += "+nosuitmix";
+    if (opts.cover_duck_short) suffix += "+duckshort";
     if (!opts.narrow_window && opts.mode == nil::MODE_FULL) suffix += "+nonarrow";
     if (!opts.presolve_window && opts.mode == nil::MODE_FULL) suffix += "+nopresolve";
     if (!opts.canonical_pv && opts.mode == nil::MODE_FULL) suffix += "+ordered";
@@ -582,6 +588,10 @@ int main(int argc, char** argv) {
             opts.later_tricks = false;
         } else if (arg == "--no-tt-narrow") {
             opts.tt_narrow_window = false;
+        } else if (arg == "--cover-duck-short") {
+            opts.cover_duck_short = true;
+        } else if (arg == "--no-settled-gains") {
+            opts.settled_gains = false;
         } else if (arg == "--no-suit-mix") {
             opts.suit_mixed_order = false;
         } else if (arg == "--no-narrow") {

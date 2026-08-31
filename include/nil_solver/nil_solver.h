@@ -372,6 +372,20 @@ extern "C" {
  * a control arm. */
 #define NIL_FLAG_NO_QUICK_TRICKS 0x200000u
 
+/* With a bid on each side, do not take the static end-of-trick cutoff in
+ * positions where every bid is already down.  Roadmap item 76.  Same answer,
+ * more nodes; a control arm.  Inert for every other seat shape. */
+#define NIL_FLAG_NO_SETTLED_GAINS 0x800000u
+
+/* Let the cover partner, on lead, play the cheapest card the nil bidder can
+ * duck beneath in the nil bidder's shortest suit.  Roadmap item C5.
+ *
+ * OPT-IN, unlike the other ordering flags, because the arm is PARKED rather
+ * than shipped: measured, it wins some workloads on every rep and loses others
+ * on every rep, which fails this project's bar.  Ordering only, so the answer
+ * is the same either way; the node count is not.  See MOVE_ORDERING.md. */
+#define NIL_FLAG_COVER_DUCK_SHORT 0x400000u
+
 /* Pass to nil_set_table_size to go back to letting the library choose the
  * table size, which is what a process that never calls it already gets.
  *

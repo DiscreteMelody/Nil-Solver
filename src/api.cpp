@@ -124,6 +124,8 @@ std::int32_t prepare(const char* pbn, std::int32_t leader, const char* current_t
     opts.quick_tricks = (flags & NIL_FLAG_NO_QUICK_TRICKS) == 0;
     opts.tt_narrow_window = (flags & NIL_FLAG_NO_TT_NARROW) == 0;
     opts.suit_mixed_order = (flags & NIL_FLAG_NO_SUIT_MIX) == 0;
+    opts.settled_gains = (flags & NIL_FLAG_NO_SETTLED_GAINS) == 0;
+    opts.cover_duck_short = (flags & NIL_FLAG_COVER_DUCK_SHORT) != 0;
     opts.narrow_window = (flags & NIL_FLAG_NO_NARROW) == 0;
     opts.presolve_window = (flags & NIL_FLAG_NO_PRESOLVE) == 0;
     opts.tt_megabytes = g_table_megabytes;

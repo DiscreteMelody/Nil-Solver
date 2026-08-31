@@ -98,12 +98,21 @@ struct Ctx {
     bool quick_tricks = true;        // ...plus DDS s3's can-cash floor (item 43)
     bool tt_narrow = true;           // spend a partial table match on the cutoff bound
     bool suit_mix = true;            // one card per suit at the head of the move list
+    bool cover_duck_short = true;    // cover leads the cheapest duckable card, nil's shortest suit
     // True when no remaining trick can lower the value, i.e. every weight is
     // non-negative.  That makes what is already banked a lower bound on the
     // whole subtree, which is the one fact the "already past beta" cutoff in
     // search() rests on.  Always true in MODE_FAST, where the weights are
     // (1, 0, 0) and the value is a count.
     bool gains_nonnegative = false;
+    // The same fact, but true only once every bid is already down.  With one
+    // bid on each side the primary weight is positive and the QUANTITY it
+    // multiplies -- outcome rank -- can still fall, which is what makes
+    // `gains_nonnegative` false for that shape.  It cannot fall once no nil is
+    // left to break, so the gain is non-negative from there on and the static
+    // cutoff is sound again.  A fact about the POSITION rather than about the
+    // weights, so it is tested per node.  Roadmap item 76.
+    bool settled_gains = false;
     // True when a subtree's value is exactly the number of tricks the nil
     // bidder takes in it -- primary 1, nothing weighted above or below.  That
     // is what turns the two proofs in bounds.hpp from statements about the PLAY
@@ -181,6 +190,47 @@ CardId first_legal_move(const State& st) {
     const int seat = st.to_play();
     const Hand moves = legal_moves(st.hands[seat], st.trick_len, st.led_suit(), st.broken);
     return moves ? lowest_card(moves) : NO_CARD;
+}
+
+// ---------------------------------------------------------------------------
+// ROADMAP ITEM C5: THE COVER PARTNER ON LEAD, DUCKING THE NIL BIDDER SHORT.
+// ---------------------------------------------------------------------------
+// Tier three of the old four-tier lead rule, now its own item.
+//
+// Lead, into the nil bidder's SHORTEST suit, the cheapest card it can duck
+// beneath.  Two things happen and both are wanted.  The nil bidder follows suit
+// with its lowest card of that suit, which is under the card just led, so it
+// cannot win the trick -- that much is a guarantee rather than a hope, since
+// the card was chosen to sit above it.  And the suit gets one card shorter,
+// which is the whole point: a suit the nil bidder is VOID in is a suit where
+// every later lead hands it a free discard of its worst card elsewhere.  This
+// rule is the one that manufactures the void that C3 then cashes into.
+//
+// Cheapest, not highest, for the reason 6c was rejected: spending the ace where
+// the seven does the same job throws away a card that covers the nil bidder
+// again later.
+//
+// The SHORTEST suit is the shortest NON-EMPTY one -- a void needs no shortening
+// and is C3's case, not this one.  Ties go to the enumeration's own rotation
+// order, which is a real choice and not an obvious one: the shortest suit is
+// tied roughly 40% of the time.  Leaving ties with the incumbent keeps the rule
+// as small a change as it can be.
+CardId cover_partner_duck_short(const State& st, int nil_seat, Hand moves) {
+    int shortest = -1, shortest_len = 99;
+    for (int i = 1; i <= 4; ++i) {
+        const int su = (3 + i) & 3;
+        const Hand held = st.hands[nil_seat] & suit_mask(su);
+        if (!held) continue;
+        const int len = count_cards(held);
+        if (len < shortest_len) {
+            shortest_len = len;
+            shortest = su;
+        }
+    }
+    if (shortest < 0) return NO_CARD;  // the nil bidder holds nothing at all
+    const Hand mine = moves & suit_mask(shortest);
+    if (!mine) return NO_CARD;         // cannot lead that suit
+    return cheapest_cover_above(mine, lowest_card(st.hands[nil_seat] & suit_mask(shortest)));
 }
 
 // ROADMAP ITEM 6a: THE NIL BIDDER, FOLLOWING SUIT.
@@ -552,7 +602,10 @@ int value_after_impl(Ctx& ctx, const State& st, CardId card, int alpha, int beta
       }
     }
 
-    if (st.trick_len == 3 && ctx.gains_nonnegative && gained >= beta) {
+    const bool gains_ok =
+        ctx.gains_nonnegative ||
+        (ctx.settled_gains && st.nils_broken == ctx.nil_mask);
+    if (st.trick_len == 3 && gains_ok && gained >= beta) {
         // This trick alone has already carried the line to beta, and no later
         // trick can take it back, so the rest of the hand cannot change which
         // side of the window the value falls on.  `gained` is a lower bound on
@@ -1197,9 +1250,12 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
                                : nil_bidder_shed(st, moves);                  // 6a
             }
         } else if (maximizing && st.trick_len == 0) {
-            // 6b.  `maximizing` is the test for an opponent, so the covering
-            // partner falls through to the canonical order until 6c.
+            // 6b.  `maximizing` is the test for an opponent; the covering
+            // partner is the branch below.
             promoted = opponent_attack_lead(st, ctx.nil_seat, moves);
+        } else if (!maximizing && ctx.cover_duck_short && st.trick_len == 0) {
+            // C5.  C1, C2 and C3 were the other seats and cases; all rejected.
+            promoted = cover_partner_duck_short(st, ctx.nil_seat, moves);
         }
         if (promoted != NO_CARD) moves &= ~card_bit(promoted);
     }
@@ -1233,6 +1289,18 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
     // between 0.96x and 1.03x for the rotated tail against a flat 1.03x for
     // this one; a version that is slower than the incumbent on one seed is not
     // worth 0.7% of nodes.
+    // THE INITIAL CURSOR IS LOAD-BEARING, AND IT IS AN ACCIDENT.  Starting at 3
+    // means the rotation below tries suit 0 first, and suit 0 is SPADES, so at
+    // every node where a seat is void in the led suit and holds a trump the
+    // first move searched is a RUFF.  Nothing decided that; it falls out of the
+    // bit layout in cards.hpp meeting the initialiser on the next line.
+    //
+    // It is worth keeping anyway.  Item C2 promoted a discard ahead of that
+    // ruff at the cover partner's void nodes -- 4-5% of all nodes at 13 cards --
+    // and cost 12.01% of nodes across the three 13-card seeds for it.  Anyone
+    // renumbering the suits or changing where this cursor starts should expect
+    // to pay that, and tests/test_nil_solver.cpp pins the mechanism so the loss
+    // shows up as a failure rather than as a slow benchmark.
     int suit_cursor = 3;
     int mixed = 0;  // moves still to take in rotation
     if (ctx.order_moves && ctx.suit_mix && moves &&
@@ -1457,6 +1525,12 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
     // objective.
     ctx.gains_nonnegative = !ctx.opposing && weights.primary >= 0 &&
                             weights.secondary >= 0 && weights.tertiary >= 0;
+    // ...and the per-node form, for the shape the line above refuses outright.
+    // The refusal is about the outcome RANK falling, which needs a live bid to
+    // fall; with every bid already down the remaining gain is the trick term
+    // alone, and that only goes up when its weight does not go down.
+    ctx.settled_gains = opts.settled_gains && ctx.opposing && weights.primary >= 0 &&
+                        weights.secondary >= 0 && weights.tertiary >= 0;
     // Likewise a fact about the weights.  In MODE_FULL the primary is K*K and
     // the secondary is +/-K, so this is false for every K -- including K = 1,
     // where the primary is 1 but the secondary is not zero.  MODE_FULL
@@ -1498,6 +1572,7 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
     ctx.quick_tricks = opts.quick_tricks;
     ctx.tt_narrow = opts.tt_narrow_window;
     ctx.suit_mix = opts.suit_mixed_order;
+    ctx.cover_duck_short = opts.cover_duck_short;
     // Canonicalise whenever the caller wants the canonical line -- and also,
     // whether they asked or not, whenever the value cannot pin nil_tricks on its
     // own.  That is exactly `primary + tertiary == 0`: the coefficient the value

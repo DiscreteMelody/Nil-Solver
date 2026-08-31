@@ -65,6 +65,10 @@ void usage(const char* argv0) {
         << "                          fast mode only)\n"
         << "  --no-last-trick         search the forced final trick instead of\n"
         << "                          evaluating it (same answer, more nodes)\n"
+        << "  --cover-duck-short      lead the cheapest duckable card in the nil\n"
+           "                          bidder's shortest suit (item C5, parked)\n"
+        << "  --no-settled-gains  do not take the static cutoff once every nil\n"
+           "                    bid is already down (opposed shapes only)\n"
         << "  --no-suit-mix           do not put one card per suit at the head of\n"
         << "                          the move list (same answer, more nodes)\n"
         << "  --no-later-tricks       do not tighten that bound with the\n"
@@ -204,6 +208,10 @@ int main(int argc, char** argv) {
             opts.quick_tricks = false;
         } else if (arg == "--no-tt-narrow") {
             opts.tt_narrow_window = false;
+        } else if (arg == "--cover-duck-short") {
+            opts.cover_duck_short = true;
+        } else if (arg == "--no-settled-gains") {
+            opts.settled_gains = false;
         } else if (arg == "--no-suit-mix") {
             opts.suit_mixed_order = false;
         } else if (arg == "--no-narrow") {

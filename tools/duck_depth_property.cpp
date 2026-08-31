@@ -1,4 +1,5 @@
-// Exhaustive property test for duck_depth (MOVE_ORDERING.md item C0).
+// Exhaustive property test for duck_depth and cheapest_cover_above
+// (MOVE_ORDERING.md item C0).
 //
 // C0 is a prerequisite rather than a heuristic: three of the four cover-partner
 // rules read this one number, so nothing downstream is trustworthy if it is
@@ -211,6 +212,22 @@ int main() {
                 if ((got > 0) != any_above)
                     fail("zero-duck condition", nil_cards, cover_cards, suit, got,
                          any_above ? 1 : 0);
+            }
+
+            // cheapest_cover_above, checked against a plain scan.  Every rank
+            // is tried as the target, including ones nobody holds, because a
+            // caller may pass any card of the suit.
+            for (int r = 2; r <= 14; ++r) {
+                const CardId target = make_card(suit, r);
+                CardId want = nil::NO_CARD;
+                for (int q = r + 1; q <= 14; ++q) {
+                    if (cover_cards & card_bit(make_card(suit, q))) {
+                        want = make_card(suit, q);
+                        break;
+                    }
+                }
+                if (nil::cheapest_cover_above(cover_cards, target) != want)
+                    fail("cheapest_cover_above", nil_cards, cover_cards, suit, r, want);
             }
 
             // Order-preserving relabelling of the ranks present.

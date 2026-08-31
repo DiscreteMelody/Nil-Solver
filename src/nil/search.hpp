@@ -478,6 +478,37 @@ struct SearchOptions {
     // On by default, off as the control arm.
     bool suit_mixed_order = true;
 
+    // With a bid on each side, take the static end-of-trick cutoff in positions
+    // where every bid is ALREADY DOWN.  Roadmap item 76.
+    //
+    // The cutoff is guarded by `gains_nonnegative`, which that shape refuses
+    // outright: its primary weight multiplies outcome RANK, and rank falls when
+    // a side loses its own bid, so a non-negative weight does not mean a
+    // non-negative gain.  True as far as it goes, and it goes no further than
+    // the first position where no nil is left to break -- there the rank is
+    // fixed, what remains is the trick term, and that only rises.
+    //
+    // Measured on the patch-69 deals, 43% of an opposed tree sits in exactly
+    // that state, because breaking a nil ENDS the subtree in the single-nil
+    // solver and does not end it here.  Same answer either way; the flag exists
+    // to be the control arm.
+    bool settled_gains = true;
+
+    // On lead, let the cover partner play the cheapest card the nil bidder can
+    // duck beneath, in the nil bidder's shortest suit: the nil bidder is safe
+    // on the trick by construction, and the suit shortens toward the void that
+    // makes later leads free discards.  Roadmap item C5, tier three of the old
+    // four-tier lead rule.  Ordering only: same answer.
+    //
+    // OFF BY DEFAULT AND OPT-IN, which is unusual here and deliberate.  Measured
+    // it is the only item in the move-ordering block with two-sided signal: it
+    // won three of six workloads on every rep, by 4.1%, 4.3% and 12.0% of nodes,
+    // and lost two of six on every rep.  Nothing came out neutral.  That fails
+    // the bar -- every rep a win -- so it does not ship on, and it is kept
+    // rather than deleted because the next experiment is a tie-break rather
+    // than a rewrite.  See MOVE_ORDERING.md.
+    bool cover_duck_short = false;
+
     // Consult the transposition table only at a trick boundary, never in the
     // middle of a trick.
     //

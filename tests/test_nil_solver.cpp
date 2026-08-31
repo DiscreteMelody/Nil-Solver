@@ -355,6 +355,43 @@ int main(int argc, char** argv) {
               nil::duck_depth(H({"C9", "SA", "SK"}), H({"CJ", "S2"}), nil::SUIT_CLUBS), 1);
     }
 
+    std::cout << "Cheapest covering card (item C0)\n";
+    {
+        auto card = [](const char* name) { return nil::lowest_card(H({name})); };
+        auto cheapest = [&](std::initializer_list<const char*> cards, const char* target) {
+            return nil::cheapest_cover_above(H(cards), card(target));
+        };
+        // The point of the primitive: spend the smallest card that does the job.
+        check("spends the eight, not the ace",
+              cheapest({"HA", "HK", "H8"}, "H5") == card("H8") ? 1 : 0, 1);
+        check("nothing above it returns NO_CARD",
+              cheapest({"H4", "H3"}, "H5") == nil::NO_CARD ? 1 : 0, 1);
+        check("strictly above, so the target's own rank does not count",
+              cheapest({"HQ", "H5"}, "H5") == card("HQ") ? 1 : 0, 1);
+        check("a single card that covers",
+              cheapest({"H6"}, "H2") == card("H6") ? 1 : 0, 1);
+    }
+
+    std::cout << "Suit rotation tries a ruff first (item C2's finding)\n";
+    {
+        // order_moves starts suit_cursor at 3, so the first suit the rotation
+        // reaches is 0, and suit 0 is spades.  At a void node holding a trump
+        // that makes the first move searched a ruff.  C2 measured what breaking
+        // this costs: 12.01% of nodes across the three 13-card seeds.  It is an
+        // accident of the bit layout, so it is pinned here rather than trusted.
+        Hand h = H({"C9", "D4", "S3", "HK"});
+        int cursor = 3;
+        const nil::CardId first = nil::take_next_suit(h, cursor);
+        check("the rotation reaches spades first", nil::card_suit(first), nil::SUIT_SPADES);
+        check("and leaves the cursor there", cursor, nil::SUIT_SPADES);
+
+        // With no spade to find it falls through in suit order, not at random.
+        Hand g = H({"C9", "D4", "HK"});
+        int gc = 3;
+        check("no trump, so hearts is next", nil::card_suit(nil::take_next_suit(g, gc)),
+              nil::SUIT_HEARTS);
+    }
+
     std::cout << "Equivalent-card reduction\n";
     {
         // With the queen gone, holding SK and SJ is holding one card twice: the

@@ -251,6 +251,27 @@ inline int duck_depth(Hand nil_cards, Hand cover_cards, int suit) {
 }
 
 // ---------------------------------------------------------------------------
+// THE CHEAPEST CARD THAT COVERS A GIVEN ONE
+// ---------------------------------------------------------------------------
+// The companion to duck_depth, and the second half of MOVE_ORDERING.md item C0:
+// that one counts how much shelter a hand can supply over a whole suit, this
+// one names the card to spend on ONE trick.
+//
+// `cards` must be a single suit's worth and `target` a card of that same suit,
+// which is what makes the bit comparison meaningful -- the suits sit sixteen
+// bits apart, so a mask against a card of another suit compares nothing.  At a
+// following-suit node the legal moves are all one suit by construction, and the
+// caller checks the target the same way; see cover_partner_follow.
+//
+// NO_CARD when nothing covers it, which is a real answer rather than an error:
+// a cover partner holding nothing above the nil bidder's card has no choice to
+// make and should be left in the canonical order.
+inline CardId cheapest_cover_above(Hand cards, CardId target) {
+    const Hand above = cards & ~((card_bit(target) << 1) - 1);
+    return above ? lowest_card(above) : NO_CARD;
+}
+
+// ---------------------------------------------------------------------------
 // NIL PROVABLY SET
 // ---------------------------------------------------------------------------
 // True when the nil bidder is guaranteed at least one more trick, whatever all
