@@ -827,6 +827,168 @@ def _search_opposing(
     return result
 
 
+def _search_conjunction(
+    hands: Tuple[Tuple[Card, ...], ...],
+    leader: int,
+    trick: Tuple[Card, ...],
+    spades_broken: bool,
+    broken_nils: int,
+    ctx: "_ConjCtx",
+) -> bool:
+    """Can the attacking side force ITS bid to survive while the other's dies?
+
+    A BOOLEAN AND-OR SEARCH, written independently of `_search_opposing` on
+    purpose.  The two answer the same question by different routes -- this one
+    over a two-valued objective, that one over a utility pair with a trick
+    tie-break underneath -- and `selftest` requires them to agree on every
+    fixture.  Two algorithms agreeing is worth more than one algorithm passing.
+
+    THE DEFENDING SIDE'S GOAL IS A DISJUNCTION, and that is the whole hazard in
+    this item.  It wins by EITHER keeping its own bid alive OR breaking the
+    attacker's, so it may deliberately dump a trick on the attacker's bidder and
+    abandon its own bid to do it.  Nothing here constrains it to protect: it
+    simply minimises the conjunction, which lets both routes through.  A search
+    that let the defender only protect would report the attacker succeeding on
+    lines it cannot actually win, and no corpus would catch it.
+    """
+    ctx.nodes += 1
+
+    attacker_bid = ctx.nil_of_side[ctx.attacker]
+    defender_bid = ctx.nil_of_side[1 - ctx.attacker]
+
+    # The attacker's own bid is gone, so the conjunction can never hold again.
+    # Sound because a bid never un-breaks.
+    if broken_nils & (1 << attacker_bid):
+        return False
+
+    if not any(hands):
+        return bool(broken_nils & (1 << defender_bid))
+
+    key = None
+    if ctx.memo is not None:
+        key = (hands, leader, trick, spades_broken, broken_nils)
+        cached = ctx.memo.get(key)
+        if cached is not None:
+            return cached
+
+    seat = (leader + len(trick)) % 4
+    maximising = seat % 2 == ctx.attacker
+
+    result = not maximising  # AND for the defender, OR for the attacker
+    for card in legal_moves(hands[seat], trick, spades_broken):
+        next_hands = tuple(
+            tuple(c for c in hand if c != card) if s == seat else hand
+            for s, hand in enumerate(hands)
+        )
+        next_broken_spades = spades_broken_after(spades_broken, trick, card)
+        played = trick + (card,)
+
+        if len(played) == 4:
+            winner = trick_winner(leader, played)
+            next_nils = broken_nils
+            for bid in ctx.nil_of_side:
+                if winner == bid:
+                    next_nils |= 1 << bid
+            value = _search_conjunction(
+                next_hands, winner, (), next_broken_spades, next_nils, ctx
+            )
+        else:
+            value = _search_conjunction(
+                next_hands, leader, played, next_broken_spades, broken_nils, ctx
+            )
+
+        # First answer either way ends the node, which is what makes this cheap
+        # and is the same shape MODE_FAST's [0, 1] window gives the C++ search.
+        if value == maximising:
+            result = value
+            break
+
+    if ctx.memo is not None:
+        ctx.memo[key] = result
+    return result
+
+
+@dataclass
+class _ConjCtx:
+    nil_of_side: Tuple[int, int]
+    attacker: int
+    memo: Optional[Dict] = None
+    nodes: int = 0
+
+
+@dataclass
+class ConjunctionSolution:
+    """Can one side break the other's bid while keeping its own?"""
+
+    roles: List[int]
+    attacker: int                 # side 0 (N/S) or 1 (E/W)
+    attacker_bid: int             # that side's bidder seat
+    defender_bid: int
+    can_force: bool
+    nodes: int
+    position: Position
+
+
+def solve_conjunction(
+    position: Position,
+    roles: Sequence[int],
+    attacker: int,
+    use_memo: bool = True,
+) -> ConjunctionSolution:
+    """Ground truth for the third probe the C++ presolve wants.
+
+    `solve_opposing_nils` settles two of the four (bid safe / bid breakable)
+    combinations outright and leaves the other two with a one-sided bound.  What
+    closes them is this: *can this side force the other's bid down WHILE KEEPING
+    ITS OWN?*
+
+    WHY IT IS ALSO DERIVABLE FROM THE UTILITY SEARCH, which is what makes the
+    agreement check possible.  The conjunction is exactly outcome RANK 3 for the
+    attacking side -- its bid alive, theirs dead -- and rank 3 is the unique best
+    outcome on that side's ladder while being the unique worst, rank 0, on the
+    other's.  Under EVERY partner lean.  So a defender maximising its own utility
+    escapes rank 0 whenever it can and an attacker steers to rank 3 whenever it
+    can, and backward induction on the pair lands on rank 3 exactly when the
+    attacker can force it.  That holds on all three shapes, not only the strictly
+    opposed one, so this probe is already defined for the two the C++ refuses.
+    """
+    position.validate()
+    shape = role_shape(roles)
+    if shape != SHAPE_OPPOSING_NILS:
+        raise ValueError(f"solve_conjunction needs a bid on each side, got {shape}")
+    if attacker not in (0, 1):
+        raise ValueError("attacker must be side 0 (N/S) or 1 (E/W)")
+
+    nil_of_side = []
+    for side in (0, 1):
+        nil_of_side.append(
+            next(x for x in (side, side + 2) if roles[x] in (ROLE_NIL, ROLE_NIL_SET))
+        )
+
+    ctx = _ConjCtx(
+        nil_of_side=tuple(nil_of_side),
+        attacker=attacker,
+        memo={} if use_memo else None,
+    )
+    can_force = _search_conjunction(
+        position.hands,
+        position.leader,
+        position.current_trick,
+        position.spades_broken,
+        0,
+        ctx,
+    )
+    return ConjunctionSolution(
+        roles=list(roles),
+        attacker=attacker,
+        attacker_bid=nil_of_side[attacker],
+        defender_bid=nil_of_side[1 - attacker],
+        can_force=can_force,
+        nodes=ctx.nodes,
+        position=position,
+    )
+
+
 @dataclass
 class OpposingNilSolution:
     """The answer to a deal with one nil on each side."""
@@ -2168,6 +2330,73 @@ def selftest(verbose: bool = True) -> int:
             swung += 1
     check("the role actually changes some outcomes", swung > 0, True)
 
+
+    # ------------------------------------------- the conjunction probe (78)
+    if verbose:
+        print("Can one side break the other's bid while keeping its own")
+
+    # TWO ALGORITHMS, ONE QUESTION.  `_search_conjunction` is a boolean AND-OR
+    # search; `_search_opposing` is backward induction on a utility pair with a
+    # trick tie-break underneath.  The conjunction is exactly outcome rank 3 for
+    # the attacking side, so the two must agree on every fixture -- and they are
+    # written independently, so agreeing is evidence rather than a tautology.
+    #
+    # RUN ON ALL SIXTEEN ARRANGEMENTS, including the eight the C++ refuses.  The
+    # equivalence does not need strict opposition: rank 3 for one side is rank 0
+    # for the other under every partner lean, so the defender escapes it whenever
+    # it can whichever way it leans.
+    conj_shapes = []
+    for first in range(4):
+        for lean_a, lean_b in ((2, 3), (3, 2), (2, 2), (3, 3)):
+            roles = [None] * 4
+            roles[first] = ROLE_NIL
+            roles[(first + 1) % 4] = ROLE_NIL
+            roles[(first + 2) % 4] = lean_a
+            roles[(first + 3) % 4] = lean_b
+            if role_shape(roles) == SHAPE_OPPOSING_NILS:
+                conj_shapes.append(tuple(roles))
+    conj_shapes = sorted(set(conj_shapes))
+    check("every opposing arrangement is covered", len(conj_shapes), 16)
+
+    mismatches = 0
+    forced = 0
+    compared = 0
+    for seed in range(6):
+        fixture = random_fixture(cards_per_hand=3, seed=seed)
+        for roles in conj_shapes:
+            opposing = solve_opposing_nils(fixture.position, list(roles), use_memo=True)
+            for side in (0, 1):
+                conj = solve_conjunction(fixture.position, list(roles), side, use_memo=True)
+                compared += 1
+                forced += 1 if conj.can_force else 0
+                if conj.can_force != (opposing.ranks[side] == 3):
+                    mismatches += 1
+    check("boolean search agrees with the utility search", mismatches, 0)
+    # A check that only ever sees False would pass while measuring nothing, so
+    # the population is asserted too: the conjunction must be forceable
+    # sometimes and not others.
+    check("...on a population that is not all one answer",
+          0 < forced < compared, True)
+
+    # The attacker's own bid being down is a terminal FALSE, and it has to be:
+    # a bid never un-breaks, so the conjunction can never come back.
+    check("a broken attacker bid is unforceable",
+          _search_conjunction((), 0, (), False, 1 << 0,
+                              _ConjCtx(nil_of_side=(0, 1), attacker=0)),
+          False)
+    check("...and the mirror for the other side",
+          _search_conjunction((), 0, (), False, 1 << 1,
+                              _ConjCtx(nil_of_side=(0, 1), attacker=1)),
+          False)
+    check("both bids down is still False for either attacker",
+          _search_conjunction((), 0, (), False, 0b11,
+                              _ConjCtx(nil_of_side=(0, 1), attacker=0)),
+          False)
+    check("only the defender's bid down, on an empty deal, is True",
+          _search_conjunction((), 0, (), False, 1 << 1,
+                              _ConjCtx(nil_of_side=(0, 1), attacker=0)),
+          True)
+
     print("FAILURES:" if failures else "All checks passed.", failures or "")
     return failures
 
@@ -2234,6 +2463,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         action="store_true",
         help="allow more than 7 cards per hand (this will not finish)",
     )
+    p.add_argument(
+        "--conjunction",
+        default=None,
+        metavar="SEAT",
+        help="with a bid on each side, answer only whether the side holding SEAT "
+             "can force ITS bid to survive while the other's dies (item 78's "
+             "probe). SEAT is N/E/S/W and must be one of the two bidders",
+    )
     p.add_argument("--selftest", action="store_true", help="run the built-in checks")
     args = p.parse_args(argv)
 
@@ -2282,6 +2519,37 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             file=sys.stderr,
         )
         return 2
+
+    if args.conjunction is not None:
+        # ITEM 78'S PROBE, ASKED ON ITS OWN.  Answered by the boolean search
+        # rather than read off `solve_opposing_nils`, because the point of having
+        # it is that the two are independent; `selftest` is where they are made
+        # to agree.
+        letter = args.conjunction.strip().upper()[:1]
+        if letter not in SEAT_CHARS:
+            print(f"error: bad --conjunction seat '{args.conjunction}'", file=sys.stderr)
+            return 2
+        seat = SEAT_CHARS.index(letter)
+        if role_shape(roles) != SHAPE_OPPOSING_NILS:
+            print("error: --conjunction needs a bid on each side", file=sys.stderr)
+            return 2
+        if roles[seat] not in (ROLE_NIL, ROLE_NIL_SET):
+            print(f"error: {letter} did not bid nil; --conjunction names the "
+                  f"ATTACKING side's bidder", file=sys.stderr)
+            return 2
+        conj = solve_conjunction(position, roles, seat % 2, use_memo=args.memo)
+        att = SEAT_CHARS[conj.attacker_bid]
+        dfn = SEAT_CHARS[conj.defender_bid]
+        if args.compact:
+            print(f"conjunction={1 if conj.can_force else 0}")
+            print(f"attacker={att}")
+            print(f"defender={dfn}")
+            print(f"nodes={conj.nodes}")
+        else:
+            verdict = "CAN" if conj.can_force else "CANNOT"
+            print(f"{att}'s side {verdict} force {att}'s bid to survive while "
+                  f"{dfn}'s dies  ({conj.nodes} nodes)")
+        return 0
 
     solution = solve_seats(
         position,

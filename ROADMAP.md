@@ -38,6 +38,7 @@ expensive node. Read items 11 and 31 in that light.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ✅ | ~~The conjunction probe, in the oracle (item 78a)~~ | patch 80 | **Ground truth first, as items 58 and 67 did, and it turned out to be derivable as well as searchable.** The probe: *can one side force the other's bid down while keeping its own?* -- the third question item 77's presolve needs, which closes the two mixed cases where 77 can only supply a one-sided bound and where item 79's ceiling is **14.78% and 2.79% against the 86.62% a closed band gets**. The two items MULTIPLY: 78 closes the band, and 79's whole yield is a function of whether it is closed. **THE EQUIVALENCE is the finding**: the conjunction is exactly outcome RANK 3 for the attacking side, and that same outcome is rank 0 -- the unique worst -- for the other side **under both partner leans**, so a defender maximising its own utility escapes it whenever it can and backward induction on the utility pair lands on rank 3 precisely when the attacker can force it. **It therefore holds on all three shapes, not just the strictly opposed one**, so the probe is already defined for the two arrangements the C++ refuses. Shipped anyway as an INDEPENDENT boolean AND-OR search, because the point of having two is that they are written separately: 1,920 comparisons across all sixteen opposing arrangements at 3 and 4 cards, **zero mismatches**, 488 of 1,920 forceable -- and the population is asserted too, since a check that only ever sees False passes while measuring nothing. `solve_conjunction()`, `ConjunctionSolution`, `--conjunction <seat>` with a compact form for 78b's crosscheck. **The hazard 78b must not walk into**: the DEFENDING side's goal is a DISJUNCTION -- its bid lives OR theirs dies -- so it may dump a trick on the attacker's bidder and abandon its own bid. Constrain it to protect and the search reports the attacker winning lines it cannot win, confidently and unrefutably by any corpus. All 164 oracle checks pass; 28/28; no C++ touched and no node count moved |
 | ✅ | ~~The principal-variation walk's window travels with the line~~ | patch 79 | **82,348,545 PV-walk nodes down to 14,751,323, 5.6x, with every reported node count bit-identical; 1.19x of wall time, 4 of 4 reps.** The whole item is wall time -- the walk's nodes are snapshotted out of `search_nodes`, which is why a 22.6% cost sat unnoticed from patch 77 until patch 78's own instrumentation split it out. **The shift the walk never had**: `search_impl` hands children `alpha - gained, beta - gained` because a child's value is measured from the child, and `walk_pv` re-enters at a POSITION rather than descending through `value_after`, so it asked every step the question the ROOT was asked. Loose windows forgave it; a rank band does not, because the root's value carries a `k*k` of rank a sub-position past a broken bid does not. Patch 77 answered by walking under the sentinels -- correct and blunt, since nothing the walk probes then settles the wider window. **THE CONTROL ARM TRIED TO SHIP A BROKEN SOLVER**: the obvious `--no-pv-shift` leaves the band and stops shifting it, which is not the previous behaviour but *the bug patch 77 found* -- the replay check fires on deal 5, deals abort, and the arm reported 100,508,111 nodes against 412,178,524. **A flag whose OFF position is unsound measures nothing.** OFF is now patch 77's actual walk, so both arms answer and one re-searches; it is also a retroactive proof that the sentinels were needed rather than a tweak, because the tweak IS the bug. Single nil gains too, less: `large.txt` 18.67s to 18.02s. **Also fixed: a silent no-op shipped in patch 78** -- the `pv_walk_nodes` row never reached `--opposed-stats` because the edit adding it used a string replace with no assertion, matched nothing and reported success. The counter was live; only the display was missing, and a measurement that stops being printed looks exactly like a measurement of zero. 28/28; all three corpora under `--check-pv --check-moves`; 8 deals byte-identical to HEAD with the PV; 39,701 / 278,059 / 49,084 / 163,393,676 and multinil 4,833,200 unmoved |
 | ✅ | ~~The reachable-rank bound for one bid on each side~~ | patch 78 | **1.20x in nodes and 1.21x on the clock on top of patch 77, 4 of 4 reps; 1.57x from the pre-77 base.** The `target_bounds` this shape lost at patch 68 with the comment *Correct first*. The rank is a step function of the broken-bid mask and a bid never un-breaks, so the ranks a node can still reach are those of the masks containing its own -- four of them, no cards read -- and the subtree's value range follows. **Population and ceiling measured before building**: 24.86% of nodes answerable in aggregate, but **86.62% on deal 6 with far-down and both-down each firing at 100.00%**, against 14.78% on deal 5 and 2.79% on deal 3. **The ceiling is a function of whether patch 77 closed a TWO-SIDED band, not of the cards**, which is also why the near-bid-down row reads 0.41% and is not worth chasing: that state can still reach ranks either side of the answer and is unanswerable by construction. **THE FIRST SPELLING COST 13.8% OF THROUGHPUT** -- sixty-four iterations per node to fire on a quarter of them, measuring 1.20x on nodes and 0.971 on the clock, which is item 44's failure and C1's. **Unlike either, there was a cheaper spelling sitting right there**: the rank term depends on the mask alone and there are four masks, so it is four pairs of numbers settled in `configure()` plus one comparison skipping the two states that never fire. Node counts came back **bit-identical** and throughput went 6.71M to 8.18M nodes/sec. The lesson is not *measure throughput*, which this file has three times over -- it is that **a per-node gate should be a table lookup before it is abandoned.** Nothing is stored in the TT, and the bound is inert along the PV by arithmetic rather than by a gate. **Also found, by this patch's own instrumentation: patch 77 spends ~88M nodes, about 20% of the opposed search, recovering the principal variation, and none of it is in any reported node count** -- it walks under the sentinels while the search ran under a band, so the table does not settle and the walk re-searches. Item 77's *costs nothing that is measured* is true and misleading; item 80 is the fix. Behind `--no-opposed-reach`; `--opposed-stats` ships the measurement arm. 28/28; 39,701 / 278,059 / 49,084 / 163,393,676 and multinil 4,833,200 all unmoved |
 | ✅ | ~~A presolve-seeded root window for one bid on each side~~ | patch 77 | **1.31x in nodes and 1.23x on the clock over the eight contested 13-card deals, 4 of 4 reps.** Item 23's presolve was gated on `nil_count(roles) == 1` since it was written; the opposed shape got no root window at all and searched between sentinels. It now runs TWO fast probes, one per bidder, each an ordinary single-nil question the solver has always answered. **Each answer is a GUARANTEE, which is why they compose**: it holds against every strategy the other side has, including ones that sacrifice the other bid, so it survives being asked inside a deal where the attacker has a bid of its own. A guarantee about one bid confines the outcome to two of the four, and two of four bounds the outcome RANK -- at the top when the minimising side owns it, at the bottom when the maximiser does. **Both bids safe means both live, both breakable means both die, and neither needs a third search**; the two mixed cases get a one-sided bound only, which is item 23's shape and is why deal 3 LOSES 0.87x. Range 0.87x to 2.65x, probes 7.5% of the armed total, throughput -6.4% because the nodes the band removes are the cheap ones under a broken bid. **THE BUG THIS FOUND is worth more than the entry.** `walk_pv` re-searches each PV step under the ROOT's window, unshifted by what the line has banked -- sound against the sentinels and against item 23's loose beta, and NOT sound against a rank band, because a sub-position past a broken bid does not carry the `k*k` the root paid for and fails high on every step. Caught by the replay check on deal 5, search -70 against replay -322. **It hid on 7 of 8 deals**: when both bids live the rank never moves along its own PV, so the unshifted window contains every step by accident. A bug that hides on seven eighths of the corpus is a bug that ships. **The random-deal sample is much weaker and says so honestly** -- 0.99x to 1.30x, and a wash on the clock at 11c seed 3 -- because a hand drawn at random usually gives a bidder an ace and the search never has to work. That is patch 69's lesson for the third time. **`opposing_crosscheck` re-run with `PRESOLVE_MIN_TRICKS` forced to zero**, since the shipped gate of 8 means the 3-5 card suite cannot reach the new code: 96/96, 96/96, 48/48 across all eight strictly opposed role sets. Also shipped: `Solution::presolve_nodes` so the cost reads off the run that measures the benefit, and **`nil_bench --deals`**, because `opposed13.txt` has been in the repo since patch 76 with nothing able to read it. NOT wired into `solve_moves`, and the comment there says why. 28/28; 39,701 / 278,059 / 49,084 / 163,393,676 and multinil 4,833,200 all unmoved |
@@ -3767,217 +3768,81 @@ window; that one spends it at every node. (c) `PRESOLVE_MIN_TRICKS` is 8 and 9
 cards is the one size that measured a loss — the floor may want to be higher for
 this shape, but it is a tuning knob and a separate variable.
 
-### 78. The conjunction probe: break theirs while keeping ours — ⭐⭐⭐⭐
+### 78. The conjunction probe: break theirs while keeping ours — ⭐⭐⭐⭐ — **78a done, patch 80; 78b next**
 
-**The third probe item 77 needs and MODE_FAST cannot express.** Item 77's two
-probes settle two of the four cases outright and leave the other two with a
-one-sided bound, which is worth about nothing -- `opposed13.txt` deal 3 is a
-0.87x LOSS for exactly this reason. What closes them is one more boolean
-question: *can this side force the other's bid down WHILE KEEPING ITS OWN?*
+**The third probe item 77 needs and `MODE_FAST` cannot express.** 77's two probes
+settle two of the four combinations outright and leave the other two with a
+one-sided bound, which is worth close to nothing: `opposed13.txt` deal 3 is a
+0.87x LOSS for exactly this reason, and item 79's ceiling on the two mixed deals
+is **14.78% and 2.79% against the 86.62% a closed band gets**. The question that
+closes them: *can this side force the other's bid down WHILE KEEPING ITS OWN?*
 
-**It is a two-sided objective and that is the whole hazard.** The obvious
-spelling -- constrain the attackers to keep their own bid clean, leave the
-defenders protecting theirs -- is WRONG, and wrong in the direction that returns
-a confident bad answer rather than an error. The defending side's winning
-condition is a DISJUNCTION: *our bid lives OR theirs dies*. It may deliberately
-dump a trick on the attacker's bidder, abandoning its own bid, and that is a
-legitimate refutation. A search that only lets it protect will report the
-attackers succeeding on lines they cannot actually win. Nothing in the corpus
-would catch it; the oracle has to go first, as it did for items 58 and 67.
+**They multiply rather than add**, which is why this is worth more now than when
+it was first proposed. 78 converts a one-sided bound into a closed band; 79's
+whole yield is a function of whether the band is closed. Deal 5 is 72% of what is
+left of the opposed tree and is one of the two.
 
-**The search stays boolean, and it degenerates helpfully.** The value is in
-{0, 1} throughout, so the `[0, 1]` window and the AND-OR structure survive. Two
-phase transitions do most of the work:
+#### 78a — the oracle, done in patch 80
 
-* the optional bidder takes a trick — the conjunction has failed, **return 0
-  with no search**;
-* the primary bidder takes a trick — the first conjunct is banked and the
-  residual question is *can that side still keep its own bid clean*, which is
-  **literally plain MODE_FAST with the optional seat as the nil bidder**, with
-  all of its machinery and its bound proofs valid again.
+Ground truth first, as items 58 and 67 did. **Two independent algorithms, made to
+agree.** `_search_conjunction` is a boolean AND-OR search over a two-valued
+objective. `_search_opposing` is backward induction on a utility pair with a
+trick tie-break underneath. They answer the same question by different routes and
+`selftest` requires agreement on every fixture.
+
+**THE EQUIVALENCE, which is the useful part and was not obvious going in.** The
+conjunction is exactly outcome **rank 3** for the attacking side — its bid alive,
+theirs dead. Rank 3 is the unique best on that side's ladder and the same outcome
+is rank **0**, the unique worst, on the other's, **under both partner leans**. So
+a defender maximising its own utility escapes it whenever it can and an attacker
+steers to it whenever it can, and backward induction on the pair lands on rank 3
+precisely when the attacker can force it. **That holds on all three shapes, not
+only the strictly opposed one**, so this probe is already defined for the two
+arrangements the C++ refuses — which is a free head start on item 60.
+
+**Measured**: 1,920 comparisons across all sixteen opposing arrangements at 3 and
+4 cards, **zero mismatches**, with 488 of the 1,920 coming back forceable. The
+population is asserted in `selftest` too, because a check that only ever sees
+False passes while measuring nothing.
+
+Also shipped: `solve_conjunction()`, `ConjunctionSolution`, and
+`--conjunction <seat>` on the oracle CLI with a `--compact` form, so 78b's
+crosscheck has something to shell out to. The CLI answers from the BOOLEAN search
+rather than reading the rank off the utility search — the point of having two is
+that they are independent, and `selftest` is the one place they are joined.
+
+#### 78b — the C++ search, next
+
+**The defending side's goal is a DISJUNCTION and that is the whole hazard.** It
+wins by EITHER keeping its own bid alive OR breaking the attacker's, so it may
+deliberately dump a trick on the attacker's bidder and abandon its own bid to do
+it. A search that lets it only protect reports the attacker succeeding on lines
+it cannot win — a confident wrong answer, not an error, and no corpus would catch
+it. The oracle's search is written so this falls out rather than being handled:
+it minimises the conjunction, which lets both routes through.
+
+**The search stays boolean and degenerates helpfully.** The value is in {0, 1}
+throughout, so the `[0, 1]` window and the AND-OR structure survive. Two
+transitions do most of the work:
+
+* the attacker's own bid breaks — **return 0 with no search**, sound because a
+  bid never un-breaks, and already the first line of the oracle's search;
+* the defender's bid breaks — the first conjunct is banked and the residual is
+  *can the attacking side still keep its own bid clean*, which is **literally
+  plain `MODE_FAST` with that seat as the nil bidder**, machinery and bound
+  proofs valid again.
 
 So only the both-intact phase is new code. Both proofs in `bounds.hpp` still fire
-there, to different consumers: the optional bid provably doomed settles the node
-at 0, and the optional bid provably safe collapses the whole query to a plain
-fast search on the primary.
+there, to different consumers: the attacker's bid provably doomed settles the
+node at 0, and provably safe collapses the query to a plain fast search on the
+defender's.
 
-**What it needs before it ships.** Its own `ValueTag` — the predicate is not
-`TAG_FAST`'s, and the key already carries the broken-nil mask as of patch 59.
-Ground truth in `nil_oracle.py` first, then `opposing_crosscheck.py`. And a floor
-measurement before a driver: the both-intact phase walks into precisely the
-region that makes the opposed search expensive, so its cost is the open question
-and it should be measured on `opposed13.txt` deals 3 and 5 before anything is
-built on top of it.
-
-**Do (b) from item 77's next-experiments list first if only one gets done.** The
-reachable-rank bound inside the tree needs no new probe, no new objective and no
-oracle work, and it is what spends the window this patch seeds.
-
-### 79. ~~The reachable-rank bound: `target_bounds` for one bid on each side~~ — ⭐⭐⭐⭐⭐ — **done, patch 78**
-
-**1.20x in nodes and 1.21x on the clock on top of patch 77, four reps of four,
-and 1.57x from the pre-77 base.** The bound `configure()` has been switching off
-for this shape since patch 68 with the comment *Correct first*, re-derived over
-the thing the opposed value is actually written in.
-
-**The derivation, and it is shorter than the one it replaces.** The rank is a
-step function of the broken-bid mask and a bid never un-breaks, so from mask `m`
-the reachable ranks are exactly those of the masks containing it — four of them,
-no cards read. `score_trick` charges the rank as a DELTA against the mask the
-node arrived with, so the subtree is worth
-`primary * (rank(final) - rank(m)) + secondary * (far tricks from here)`, and
-both terms have a range computable from `m` and the tricks left. No simplex, no
-trapezoid: containment on a four-element lattice.
-
-**Population and ceiling measured BEFORE building, on `opposed13.txt` with patch
-77 in place** (`--opposed-stats`, measurement only, free when off):
-
-| state | share of nodes | would answer |
-|---|---:|---:|
-| both bids intact | 15.54% | 0.00% |
-| near bid down | 18.01% | 0.41% |
-| far bid down | 30.73% | 34.37% |
-| both bids down | 35.72% | 39.82% |
-| **total** | | **24.86%** |
-
-**The aggregate hides the whole story and the per-deal split tells it.** Deal 6,
-where patch 77 closed a TWO-SIDED band: **86.62% of nodes answerable, with
-far-down and both-down each firing at 100.00%**. Deal 5, where 77 could only
-supply a one-sided beta: 14.78%. Deal 3: 2.79%. **The ceiling is a function of
-whether item 77 closed the band, not of the cards** — with a band around rank R
-every node under a broken far bid sits a whole `k*k` below it and every both-down
-node has its rank pinned, while a node with the NEAR bid down can still reach
-ranks either side of R and is unanswerable by construction. That is why the
-near-down row reads 0.41% and not something worth chasing, and it is what item 3
-of the old sequence was aimed at.
-
-**Spent**: 492,147,251 -> 412,178,524, and 646,389,160 -> 412,178,524 against the
-pre-77 base. Per deal 0.99x / 1.05x / 1.16x / 1.25x / 1.31x / 1.64x / 1.96x /
-**3.29x**, the last being deal 6 as the ceiling predicted. Wall clock, one
-binary, `--no-opposed-reach` the only difference: **4 of 4 reps** at 0.829 /
-0.841 / 0.820 / 0.811.
-
-**THE FIRST SPELLING COST 13.8% OF THROUGHPUT AND IS THE PART WORTH READING.**
-It enumerated the reachable masks and popcounted each — about sixty-four
-iterations per node, to fire on a quarter of them. Measured: **1.20x on nodes and
-0.971 / 0.983 on the clock**, a node win handed straight back. That is item 44's
-failure exactly, and item C1's: a rule charged to every node to change the answer
-at a few. **Unlike either of those there was a cheaper spelling sitting right
-there.** The rank term depends on the mask and on nothing else and there are four
-masks, so it is four pairs of numbers settled once in `configure()`, plus a
-single comparison skipping the two states the measurement says never fire. Node
-counts came back **bit-identical at 412,178,524** and throughput went 6.71M to
-8.18M nodes/sec. **The lesson is not "measure throughput" — this file has that
-one three times over. It is that a per-node gate should be a table lookup before
-it is abandoned**: the loop and the table compute the same function, and nothing
-in the first version's node count could have told them apart.
-
-**What it does NOT do.** Nothing is stored in the table: a node answered by a
-comparison is cheaper to redo than to remember, and an entry whose value came
-from the mask would be read back by a search that arrived under a different one.
-And it is **inert along the principal variation by arithmetic rather than by a
-gate** — patch 77 walks the line under the sentinels, where no finite range
-reaches either end — so the line is recovered by searching, not by the bound that
-shortened the search.
-
-**Verified.** All 8 deals agree arm-on and arm-off on the value, all three trick
-counts, `nils_set` and the full PV. Banked fixed points unmoved: 39,701 /
-278,059 / 49,084 / 163,393,676, `multinil.txt` full 4,833,200. 28/28. And
-`opposing_crosscheck` re-run with `PRESOLVE_MIN_TRICKS` forced to zero so BOTH
-arms fire at sizes the shipped gate skips: 96/96 at 3 cards, 96/96 at 4, 48/48 at
-5, across all eight strictly opposed role sets.
-
-**A COST PATCH 77 WAS HIDING, found by this patch's own instrumentation.**
-Splitting PV-walk nodes out of the population exposed **about 88 million nodes,
-roughly 20% of the opposed search, spent recovering the principal variation** —
-and none of it appears in any reported node count, because `search_nodes` is
-snapshotted before the walk. Patch 77 caused it: it walks the line under the
-sentinels while the search ran under a band, so the table entries do not settle
-the wider window and the walk re-searches. Item 77's entry says the reopened walk
-*costs nothing that is measured*, which is true and misleading, and this is the
-correction. **The proper fix is to shift the band as the walk descends rather
-than reopening it**, and it is now the cheapest large win left — see item 80.
-
-*Corrected at patch 79.* The `pv_walk_nodes` row this paragraph is measured from
-**never actually reached `--opposed-stats` in the shipped patch**: the edit that
-added it used a string replace with no assertion, so it matched nothing, changed
-nothing and reported success. The counter was live and populated the whole time
-and the 88M figure above was read off it during development, but a reader of
-patch 78 could not have reproduced it. Restored in patch 79 with the assertion
-that would have caught it. The number is also slightly different when measured
-against patch 78 rather than mid-development: **82,348,545**, 22.64% of the
-search.
-
-### 80. ~~The principal-variation walk's window travels with the line~~ — ⭐⭐⭐⭐ — **done, patch 79**
-
-**82,348,545 PV-walk nodes down to 14,751,323, a 5.6x cut, with every reported
-node count bit-identical.** 1.19x of wall time on `opposed13.txt`, four reps of
-four. The whole item is wall time: the walk's nodes are snapshotted out of
-`search_nodes`, so nothing this patch touches appears in any number this file has
-banked, which is exactly why it sat unnoticed since patch 77 created it.
-
-**The shift the walk never had.** `search_impl` hands its children
-`alpha - gained, beta - gained`, because a child's value is measured from the
-child. `walk_pv` re-enters at a POSITION rather than descending through
-`value_after`, so it never applied that shift and asked every step the question
-the ROOT was asked. Harmless while the windows here were loose -- the sentinels,
-or item 23's beta, which caps a value whose remaining part only gets less
-negative. Not harmless once patch 77 made a band: the root's value carries a
-whole `k*k` of rank that a sub-position past a broken bid does not, so the step
-sits outside an unshifted band, comes back a bound, and `canonical_move_for`
-matches the bound instead of the value.
-
-Patch 77 answered that by walking under the sentinels. Correct, and blunt: the
-search ran under a band, so nothing the walk probes settles the wider window and
-it re-searches most of what it visits. Shifting asks each step precisely the
-question the search answered for it, and the walk is lookups again.
-
-| arm | PV-walk nodes | share of the search | wall |
-|---|---:|---:|---:|
-| patch 77's walk (`--no-pv-shift`) | 82,348,545 | 22.64% | 50.6-51.9 s |
-| shifted (item 80) | 14,751,323 | 4.05% | 42.9-43.6 s |
-
-Reps 0.862 / 0.859 / 0.839 / 0.840, one binary, arm toggled at runtime. **Single
-nil gains too, less**: `large.txt` full 18.67 s to 18.02 s, smaller because item
-23 seeds only beta and an unshifted beta is wrong by less.
-
-**THE CONTROL ARM TRIED TO SHIP A BROKEN SOLVER, and that is the part worth
-reading.** The obvious spelling of `--no-pv-shift` leaves the band in place and
-stops shifting it -- which is not "the previous behaviour", it is *the bug patch
-77 found*. The replay check fires on deal 5 and the solve FAILS; the arm came
-back at 100,508,111 nodes against 412,178,524 because the deals were aborting.
-**A flag whose OFF position is unsound measures nothing and hands a caller a
-broken solver.** OFF is now what patch 77 actually shipped -- the sentinels,
-where the walk is correct and slow -- so both arms answer and exactly one of them
-re-searches. It is also a retroactive proof that patch 77 needed the sentinels
-rather than a tweak: the tweak is the bug.
-
-**WHY A FINITE ALPHA IS SAFE, which is what patch 77 was worried about.**
-`canonical_move_for`'s comment says the window has WINDOW_MIN beneath it so no
-child can fail low. That condition is SUFFICIENT, not necessary, and the
-difference is what lets the band be reused. With the shifted window `v` is exact
-and so strictly inside; a child failing low returns at or below alpha, one
-failing high at or above beta, and neither can equal `v`, while the child whose
-true value IS `v` lies strictly inside and comes back exact. No false match is
-available in either direction, so the canonically lowest matching move is still
-the one found. Pinned rather than argued: `--check-pv --check-moves` passes on
-all three corpora, which is every recorded PV in the repo, and all eight opposed
-deals are byte-identical to patch 78's output with the line included.
-
-**A SILENT NO-OP SHIPPED IN PATCH 78 AND IS FIXED HERE.** The `pv_walk_nodes`
-row never reached `--opposed-stats`: the edit that added it used a string
-replace with no assertion, so it matched nothing, changed nothing and reported
-success. The counter was live and populated the whole time; only the display
-line was missing, which is the quietest possible failure -- a measurement that
-silently stops being printed looks exactly like a measurement of zero. Restored,
-with the assertion that would have caught it. **Every edit that claims to find
-something must fail loudly when it does not**, which is the same lesson as
-patch 60's unforked verifier in a smaller package.
-
-**Verified.** 28/28. All 560 corpus values plus `large.txt` and `multinil.txt`
-under `--check-pv --check-moves`. All 8 opposed deals byte-identical to the
-pushed HEAD, PV included. 39,701 / 278,059 / 49,084 / 163,393,676 and multinil
-4,833,200 unmoved. Behind `--no-pv-shift` / `NIL_FLAG_NO_PV_SHIFT`.
+**What it needs.** Its own `ValueTag` — the predicate is not `TAG_FAST`'s — and
+the key already carries the broken-bid mask as of patch 59. A crosscheck against
+`--conjunction`. And **a floor measurement before a driver**: the both-intact
+phase walks into precisely the region that makes the opposed search expensive, so
+its COST is the open question, not its correctness. Measure it on deals 3 and 5
+before building anything on top of it.
 
 ### 60. Nils on OPPOSING sides — ⭐⭐⭐
 
@@ -4002,7 +3867,7 @@ whether this one is affordable at all.
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 36 ✅ → 41 ✅ → 42 ⊘ → 47 ✅ → 43 ⊘→✅ → 43b ⊘ → 44 ⏸ → 54 ✅ → 58 ✅ → 56 ✅ → 57 ✅ → 59 ✅ → 61 ✅ → 62 ✅ → N1 ⊘ → C0 ✅ → C1 ⊘ → C2 ⊘ → C3 ⊘ → C4 → C5 ⏸ → C6 → O1 → 77 ✅ → 79 ✅ → 80 ✅ → 78 → 45 → 29b (single-suit) → 9 ⊘ → 10 ⊘ → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 36 ✅ → 41 ✅ → 42 ⊘ → 47 ✅ → 43 ⊘→✅ → 43b ⊘ → 44 ⏸ → 54 ✅ → 58 ✅ → 56 ✅ → 57 ✅ → 59 ✅ → 61 ✅ → 62 ✅ → N1 ⊘ → C0 ✅ → C1 ⊘ → C2 ⊘ → C3 ⊘ → C4 → C5 ⏸ → C6 → O1 → 77 ✅ → 79 ✅ → 80 ✅ → 78a ✅ → 78b → 45 → 29b (single-suit) → 9 ⊘ → 10 ⊘ → measure → 11..14
 ```
 
 **Three results off the move-ordering block, all negative, and the third one
