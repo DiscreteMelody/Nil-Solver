@@ -1,0 +1,24 @@
+# ONE 13-CARD DEAL WHERE BOTH BIDS ARE DEAD ALMOST IMMEDIATELY, kept apart from
+# opposed13.txt because it is a different problem wearing the same cards.
+#
+# These are opposed13.txt deal 5's cards with the roles rotated: the bids sit on
+# S and W instead of N and E.  S holds KQ of spades under W's AJT9, so both bids
+# are doomed before a card is played, and the census says so --
+#
+#   both bids intact       1,091 nodes    0.00%
+#   one bid down       4,604,147 nodes    7.39%
+#   both bids down    57,726,139 nodes   92.61%
+#
+# -- against 8.62% / 52.35% / 39.04% for the same cards with N and E bidding.
+#
+# WHY IT IS WORTH KEEPING.  The nil question is free here and the search still
+# costs 62 million nodes, because 92.6% of it is a trick count with every trick
+# bound switched off (items 68, 79).  That makes this the cleanest test case in
+# the repo for item 82: anything that bounds the settled region should move this
+# deal more than any deal in opposed13.txt, and anything that does not move it is
+# not bounding the settled region.
+#
+# Run with --leader N --seats 3 2 0 0.  Reference, patch 84:
+#   62,331,424 nodes, tricks NS=4 EW=9, both bids set.
+# The SAME cards with --seats 0 0 3 2 are opposed13.txt deal 5 at 292,597,961.
+N:853.95.K9852.864 7642.J642.3.Q732 KQ.KQ8.T76.AKJ95 AJT9.AT73.AQJ4.T

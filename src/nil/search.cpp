@@ -3145,8 +3145,24 @@ std::string format_solution(const Position& pos, const Solution& sol,
         os << "  (marked * below)\n";
     }
     if (!fast) {
-        os << "Tricks for " << SEAT_CHARS[sol.nil_seat()] << "   " << sol.nil_tricks << " of "
-           << pos.tricks_remaining() << '\n'
+        // NAME EVERY BIDDER THE COUNT ACTUALLY COVERS.  `nil_tricks` is
+        // incremented whenever ANY bidder wins a trick, which is right -- with a
+        // bid on each side the interesting quantity is how many tricks the bids
+        // took between them -- and the old label named one seat, so a reader of
+        // a two-bid deal saw "Tricks for N 6" and reasonably took it to mean N
+        // won six.  N won two; E won four.  Reported by a user comparing two
+        // role assignments of the same cards, which is exactly the comparison
+        // the label made impossible.
+        os << "Tricks for ";
+        bool first_bidder = true;
+        for (int seat = 0; seat < 4; ++seat) {
+            if (!sol.roles.is_nil(seat)) continue;
+            if (!first_bidder) os << '+';
+            os << SEAT_CHARS[seat];
+            first_bidder = false;
+        }
+        os << "  " << (nil_count(sol.roles) > 1 ? "combined " : "") << sol.nil_tricks
+           << " of " << pos.tricks_remaining() << '\n'
            << "Side tricks    " << side << '=' << sol.nil_side_tricks << "  " << other << '='
            << sol.opponent_tricks << '\n';
     }
