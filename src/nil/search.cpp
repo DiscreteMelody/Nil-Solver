@@ -98,6 +98,7 @@ struct Ctx {
     // the hot path -- the same trick the opposing shape already plays when it
     // writes its value from the far side.
     bool conjunction = false;
+    bool settled_tricks = true;  // item 82's trick floor, where the rank is spent
     // That side's bidder, and the role of its partner, which is what decides
     // its ranking of the two middle outcomes.
     int far_nil_seat = 0;
@@ -904,6 +905,70 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
     // gate: the walk runs under the sentinels, where no finite range reaches
     // either end.  So the line the search chose is recovered by searching, not
     // by the bound that shortened the search.
+    // ---- item 82: the rank is spent, so bound what is left ----------------
+    //
+    // With every bid down the rank cannot move again, so this subtree is worth
+    // `secondary * (far tricks from here)` and nothing else -- an ordinary
+    // double-dummy trick count, which is what DDS sections 3 and 4 bound and
+    // what this shape has had switched off since patch 68.
+    //
+    // TWO FLOORS, BOTH SOUND, POINTING OPPOSITE WAYS.  A floor on the NEAR
+    // side's tricks caps the far side's and so caps the value; a floor on the
+    // FAR side's floors it.  `forced_spade_tricks` holds down every line and is
+    // summed side-wide, which its own comment licenses.  `cash_tricks` is a
+    // statement about one strategy and so speaks only for the side holding it --
+    // enough in both directions here, because the far side maximises its own
+    // tricks and the near side minimises them, so each one's cashing bounds the
+    // value from its own end.
+    //
+    // GATED ON THE CLAIM BEING SMALL, and the gate is free: the size of the
+    // claim needed falls out of the window and the tricks left with no proof
+    // run at all.  71.88% of this region needs at most two tricks proven and
+    // 0.47% needs four or more, so attempting a proof where it cannot succeed is
+    // a cost with no matching yield -- which is exactly how item 79's first
+    // spelling gave back a 1.20x node win, and item 44 before it.
+    //
+    // INERT ALONG THE PRINCIPAL VARIATION by arithmetic rather than by a gate:
+    // that walk runs with WINDOW_MIN beneath it, so `cap` is -1 and `need_far`
+    // exceeds the tricks left, and both claims come back unset.
+    // `ctx.opposing` IS LOAD-BEARING, not decoration.  Without it the gate
+    // `nils_broken == nil_mask` also opens on a SINGLE-nil deal the moment its
+    // one bid breaks -- and there the value is not the far side's tricks, it is
+    // `primary * nil_tricks + secondary * ...`, so the two floors below bound
+    // the wrong quantity and the node returns a confident wrong number.  Caught
+    // by the 560-position corpus: 80 failures and 278,059 nodes moved to
+    // 270,562.  A shape test that reads as boilerplate is the one to check.
+    if (ctx.settled_tricks && ctx.opposing && st.trick_len == 0 &&
+        st.nils_broken == ctx.nil_mask && ctx.secondary_weight > 0 && !st.empty()) {
+        const int t = count_cards(st.hands[st.to_play()]);
+        const int k = ctx.secondary_weight;
+        const int cap = alpha >= 0 ? alpha / k : -1;
+        const int need_far_v = (beta + k - 1) / k;
+        const int need_near = (cap >= 0 && cap < t) ? t - cap : -1;
+        const int need_far = (need_far_v > 0 && need_far_v <= t) ? need_far_v : -1;
+        const bool worth_asking = (need_near >= 1 && need_near <= 3) ||
+                                  (need_far >= 1 && need_far <= 3);
+        if (worth_asking) {
+            int forced[4] = {0, 0, 0, 0};
+            forced_spade_tricks(st.hands, forced);
+            int floor_near = forced[ctx.nil_seat] + forced[(ctx.nil_seat + 2) & 3];
+            int floor_far = forced[ctx.far_nil_seat] + forced[(ctx.far_nil_seat + 2) & 3];
+            int cash_sum = 0;
+            int cash_best = 0;
+            cash_tricks(st.hands, st.leader, cash_sum, cash_best);
+            if (((st.leader ^ ctx.nil_seat) & 1) == 0) {
+                if (cash_best > floor_near) floor_near = cash_best;
+            } else {
+                if (cash_best > floor_far) floor_far = cash_best;
+            }
+            // Fail low: the near side takes at least `floor_near`, so the far
+            // side takes at most the rest and the value cannot reach alpha.
+            if (need_near >= 0 && floor_near >= need_near) return k * (t - floor_near);
+            // Fail high: the far side takes at least `floor_far` outright.
+            if (need_far >= 0 && floor_far >= need_far) return k * floor_far;
+        }
+    }
+
     if (ctx.opposed_reach && st.nils_broken != 0) {
         const int idx = ctx.reach_index(st.nils_broken);
         if (ctx.reach_useful[idx]) {
@@ -1762,6 +1827,7 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
         ctx.opposing = seat_shape(copy, ignored) == SHAPE_OPPOSING_NILS;
     }
     ctx.multi_nil = !ctx.opposing && nil_count(roles) > 1;
+    ctx.settled_tricks = opts.settled_tricks;
     ctx.conjunction = opts.conjunction_seat >= 0;
     if (ctx.conjunction) {
         // THE DEFENDER GOES IN `nil_seat`.  `maximizing` reads that seat's

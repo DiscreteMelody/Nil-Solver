@@ -38,6 +38,7 @@ expensive node. Read items 11 and 31 in that light.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ✅ | ~~The both-down region is a pure trick count: spent (item 82)~~ | patch 88 | **4 of 4 reps a win on both workloads, and patch 87's pessimism was wrong.** `opposed13.txt` 402,422,529 -> 368,219,325 (1.093x nodes) at 0.919 / 0.933 / 0.944 / 0.941, **~1.07x on the clock**; the settled deal 62,331,424 -> 55,488,773 (1.123x) at 0.952 / 0.963 / 0.995 / 0.994. With every bid down the rank cannot move again, so the subtree is worth the far side's remaining tricks alone; `forced_spade_tricks` summed side-wide holds down every line, and `cash_tricks` speaks for one side but that is enough both ways, since the far side maximises its own tricks and the near side minimises them. **Patch 87 predicted this would give its node win back on throughput** by analogy with item 79's first spelling. **The gate is why it did not**: the size of the claim needed falls out of the window with no proof run at all, so proofs are attempted only where they could succeed and the 28% of the region that is unreachable never pays -- an option item 79's first spelling did not have. **SEVEN OF EIGHT DEALS MEASURE EXACTLY 1.000x, and that is the point**: only deal 5 answers *both bids die*, and everywhere else item 79 has already refuted the settled region by arithmetic. This is the item that answers the case T raised -- what prunes when neither bid can survive -- and it fires on exactly that case and nowhere else. **Conversion is WORST where the region is densest**: the settled deal is 35.87% settled boundaries against 12.37%, has the bigger node win, and converts it least, because the proofs are charged in proportion to the region and paid in proportion to what they answer. **THE CORPUS CAUGHT A REAL BUG**: the first gate was `nils_broken == nil_mask` alone, which reads as *every bid is down* and is -- **including on a single-nil deal the moment its one bid breaks**, where the value is `primary * nil_tricks + ...` and both floors bound the wrong quantity. 80 of 560 positions failed and the banked count moved 278,059 -> 270,562. Fix is one clause, `ctx.opposing &&`. The lesson is not *test your changes*, which the banked counts did on the first run -- it is that **a shape test reading as boilerplate is the one to check**. Behind `--no-settled-tricks`; 29/29; all 8 deals identical arm-on/off incl. PV; 39,701 / 278,059 / 49,084 / 163,393,676 / 4,833,200 unmoved |
 | ✅ | ~~The settled region: stronger trick proofs measured (item 82)~~ | patch 87 | **Roughly double the firing rate, and still probably not enough -- said before anyone builds it.** Two upgrades the file was most of the way to. `forced_spade_tricks` summed side-wide replaces `top_spade_run`: strictly stronger, since the run function reads ONE hand and only its top run while the forced function prices in spoilers and speaks about all four, and its own comment already established that two hands' floors may be added. And **DDS section 3's can-cash count, which this file had SPECIFIED AND NEVER WRITTEN** -- the comment describing it sat above an unrelated function with nothing implementing it; `cash_tricks()` is that comment, written. It bounds a node from one side only, which at a settled node is enough both ways: the far side maximises its own tricks so cashing floors the value, the near side minimises them so cashing caps it. `best` is used and never `sum`, because a measurement that overstates its own ceiling is worse than none. **Firing rate 12.97% -> 23.65% (opposed13) and 8.10% -> 16.14% (settled deal)**, the two proofs overlapping on under a fifth of what they cover, which is **2.93% and 5.79% of ALL nodes**. **THAT IS THE PROBLEM**: item 79's ceiling was 24.86% and returned 1.20x; this is 3% and 6%, charged at every settled trick boundary (12.37% and 35.87% of nodes) to fire on a sixth to a quarter of them. **That is the profile item 79's FIRST spelling had when it measured 1.20x on nodes and 0.971 on the clock**, and 79 escaped only because its rank term collapsed to a four-entry table -- neither of these does, because both read the cards. **Recommendation: gate before spending.** The gate is free, since the required claim is already computed from the window with no proof run: 71.88% of the region needs at most two tricks and 0.47% needs four or more, so the proofs need only be attempted where they could possibly succeed. Measurement only: 29/29, opposed 402,422,529, banked counts unmoved |
 | ✅ | ~~The settled region: firing rate of the cheapest trick proof (item 82)~~ | patch 86 | **The sufficiency ceiling said a one-trick claim would do on half the region; this asks whether one is PROVABLE there, because item 81 died in exactly that gap.** Proof used is the cheapest sound one in the file, `top_spade_run` -- the holder of the top outstanding spades and how many it holds consecutively, which are trump and so win the tricks they are played on. Deliberately weak: no side-suit winners, no ruffs, no bound from the other end. **Spade run proves the claim on 12.97% of the region (opposed13) and 8.10% (settled deal), which is 1.61% and 2.90% of ALL nodes** -- real but thin. **THE FINDING IS THE NEXT ROW: 45.83% and 61.38% are cases where the top-spade holder IS the side that must prove something and the run is simply too short.** The proof is being asked the right question and falling short on STRENGTH, which is the opposite of item 81, where the proofs missed the case entirely and there was nowhere to go. Only 16-17% is out of reach of a spade-flavoured proof at all. **So the case for writing full QuickTricks is the 45.83% / 61.38%, not the 12.97% / 8.10%**: side-suit winners and ruffs would address up to 58.8% and 69.5% of the region, or 7.3% and 21% of all nodes on the two workloads. Lesson one level up: a sufficiency bound is not a firing rate, and a firing rate for a WEAK proof is not one for a strong proof. Measurement only, nothing spent: 29/29, opposed 402,422,529, banked counts unmoved |
 | ✅ | ~~Two corrections and a test deal, from a reader's question~~ | patch 85 | **Both found by T asking two questions about the same deal, and both were things the measurements could not have caught.** (1) **Item 82's prose overreached.** It said deal 5 *is not a nil problem any more, it is a double-dummy trick count wearing a nil problem's clothes*. T asked whether that ignores branches where both bids get set, and gave the case: **a cover that wins every trick robs both bids of one, so both SURVIVE** -- rank 2, better than the answer for whoever reaches it, and the search must consider it. A node's rank is settled only once its MASK IS FULL, and deal 5 is 8.62% intact, 52.35% one-down, 39.04% both-down: **61% of it is still a nil problem** and only the last 39% is the pure trick count item 82 measures. The measurement was always scoped to that 39% and was right; the prose was not. **A wrong sentence sitting next to correct numbers is the kind that survives review.** (2) **`nil_tricks` counts tricks won by ANY bidder**, which is right for a two-bid deal, and the CLI labelled it `Tricks for N`, so a reader saw *Tricks for N 6* and reasonably read it as N winning six. N won two; E won four. Now `Tricks for N+E  combined 6 of 13`. Reported by a user comparing two role assignments of one deal -- exactly the comparison the label made impossible. (3) **`tests/corpus/opposed13_settled.txt`**: deal 5's cards with the bids on S and W instead of N and E, where S's KQ of spades under W's AJT9 kills both before a card is played. Census **0.00% intact, 7.39% one down, 92.61% both down**. So the 4.7x gap between the two assignments -- 292,597,961 against 62,331,424 -- **is not the solver being worse at one**, they are different questions. And the EASY one still costs 62 million nodes with the nil question free, because 92.6% of it is a trick count with every bound off: the cleanest test case in the repo for item 82, whose own ceiling here is 46.78% needing one trick. 29/29; opposed 402,422,529 and every banked count unmoved |
@@ -4014,7 +4015,7 @@ claim is re-checkable rather than merely recorded. Free when off. No node count
 moved: 29/29, 402,422,529 on the opposed deals, and 39,701 / 278,059 / 49,084 /
 163,393,676 / 4,833,200 all unmoved.
 
-### 82. The both-down region is a pure trick count — ⭐⭐⭐⭐⭐ — **ceiling measured, patch 84; build next**
+### 82. ~~The both-down region is a pure trick count~~ — ⭐⭐⭐⭐⭐ — **done, patch 88**
 
 **THE ANSWER TO "WHAT PRUNES WHEN BOTH BIDS MUST DIE" IS: STOP PRUNING ON NILS
 AND PRUNE ON TRICKS.** The question is the right one and the arithmetic answers
@@ -4189,7 +4190,47 @@ proofs need only be attempted where they could possibly succeed. Whether that
 recovers the throughput is the measurement that decides the item, and it is one
 paired-rep run away.
 
-**WHAT IS STILL UNMEASURED.** Whether the proofs pay for themselves on the clock. The lesson holds one level up: a sufficiency bound is not
+#### Spent, patch 88 -- and the pessimism in patch 87 was wrong
+
+**4 of 4 reps a win on both workloads.** `opposed13.txt` 402,422,529 ->
+368,219,325 (1.093x) at 0.919 / 0.933 / 0.944 / 0.941 on the clock, **~1.07x**.
+The settled deal 62,331,424 -> 55,488,773 (1.123x) at 0.952 / 0.963 / 0.995 /
+0.994.
+
+Patch 87 said this was a marginal build likely to give its node win back on
+throughput, by analogy with item 79's first spelling. **The analogy was wrong and
+the gate is why.** The size of the claim needed falls out of the window with no
+proof run at all, so the proofs are attempted only where they could possibly
+succeed -- `need >= 1 && need <= 3` -- and the 28% of the region that could never
+be reached never pays. Item 79's first spelling had no such gate available.
+
+**SEVEN OF EIGHT DEALS MEASURE EXACTLY 1.000x**, and that is the point rather
+than a disappointment. Only deal 5 moves, because only deal 5 answers *both bids
+die*. Everywhere else the answer is an extreme rank and item 79 has already
+refuted the settled region by arithmetic before this bound is reached. **This is
+the item that answers the case T raised** -- what prunes when neither bid can
+survive -- and it fires on exactly that case and nowhere else.
+
+**The conversion is WORSE where the region is densest**, which is worth
+recording: the settled deal is 35.87% settled boundaries against opposed13's
+12.37%, has the larger node win, and converts it least well. The proofs are
+charged in proportion to the region and paid in proportion to what they answer,
+so a deal made mostly of the region pays most for them.
+
+#### THE CORPUS CAUGHT A REAL BUG, and it is the one worth remembering
+
+The first version gated on `st.nils_broken == ctx.nil_mask` and nothing else.
+That reads as *every bid is down*, and it is -- **including on a single-nil deal
+the moment its one bid breaks**. There the value is not the far side's tricks, it
+is `primary * nil_tricks + secondary * ...`, so both floors bound the wrong
+quantity and the node returns a confident wrong number. **80 of the 560 corpus
+positions failed and the banked count moved 278,059 -> 270,562.**
+
+The fix is one clause, `ctx.opposing &&`. The lesson is not *test your changes* --
+the banked counts caught it on the first run, exactly as designed. It is that
+**a shape test which reads as boilerplate is the one to check**: `nils_broken ==
+nil_mask` looks like a statement about this shape and is a statement about every
+shape, and nothing in the opposed measurements could have revealed it. The lesson holds one level up: a sufficiency bound is not
 a firing rate, and a firing rate for a WEAK proof is not one for a strong proof. The next step is a gated consumer and a paired-rep run.
 
 ### 60. Nils on OPPOSING sides — ⭐⭐⭐
@@ -4215,7 +4256,7 @@ whether this one is affordable at all.
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 36 ✅ → 41 ✅ → 42 ⊘ → 47 ✅ → 43 ⊘→✅ → 43b ⊘ → 44 ⏸ → 54 ✅ → 58 ✅ → 56 ✅ → 57 ✅ → 59 ✅ → 61 ✅ → 62 ✅ → N1 ⊘ → C0 ✅ → C1 ⊘ → C2 ⊘ → C3 ⊘ → C4 → C5 ⏸ → C6 → O1 → 77 ✅ → 79 ✅ → 80 ✅ → 78a ✅ → 78b ✅ → 78c ✅ → 81 ⊘ → 82 ✅(ceiling) → 82b → 45 → 29b (single-suit) → 9 ⊘ → 10 ⊘ → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 36 ✅ → 41 ✅ → 42 ⊘ → 47 ✅ → 43 ⊘→✅ → 43b ⊘ → 44 ⏸ → 54 ✅ → 58 ✅ → 56 ✅ → 57 ✅ → 59 ✅ → 61 ✅ → 62 ✅ → N1 ⊘ → C0 ✅ → C1 ⊘ → C2 ⊘ → C3 ⊘ → C4 → C5 ⏸ → C6 → O1 → 77 ✅ → 79 ✅ → 80 ✅ → 78a ✅ → 78b ✅ → 78c ✅ → 81 ⊘ → 82 ✅ → 45 → 29b (single-suit) → 9 ⊘ → 10 ⊘ → measure → 11..14
 ```
 
 **Three results off the move-ordering block, all negative, and the third one

@@ -229,6 +229,8 @@ int main(int argc, char** argv) {
             opts.narrow_window = false;
         } else if (arg == "--conjunction" && i + 1 < argc) {
             conjunction_text = argv[++i];
+        } else if (arg == "--no-settled-tricks") {
+            opts.settled_tricks = false;
         } else if (arg == "--no-conjunction-presolve") {
             opts.conjunction_presolve = false;
         } else if (arg == "--no-pv-shift") {
