@@ -785,6 +785,34 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
             if (answers) ++os.would_answer_intact;
         }
         if (answers) ++os.would_answer;
+
+        // Item 81.  Only at a trick boundary, which is where the proofs' own
+        // preconditions hold, and only with exactly one bid still live.
+        const bool one_down = near_down != far_down;
+        if (one_down && st.trick_len == 0) {
+            ++os.one_down_boundary;
+            const int live = near_down ? ctx.far_nil_seat : ctx.nil_seat;
+            const bool doomed = nil_must_take_a_trick(st.hands, live);
+            const bool safe = !doomed &&
+                              nil_cannot_be_forced(st.hands, live, st.leader == live);
+            if (doomed) ++os.one_down_proof_doomed;
+            if (safe) ++os.one_down_proof_safe;
+            if (doomed || safe) {
+                // The rank the proof pins the subtree to, and the bound that
+                // follows: a single value where item 79 has to allow two.
+                const unsigned final_mask =
+                    doomed ? (st.nils_broken | (1u << live)) : st.nils_broken;
+                const int step = ctx.primary_weight *
+                                 (far_side_rank(final_mask, ctx) -
+                                  far_side_rank(st.nils_broken, ctx));
+                const int t = count_cards(st.hands[st.to_play()]);
+                const int span = ctx.secondary_weight * t;
+                const int plo = step + (span < 0 ? span : 0);
+                const int phi = step + (span > 0 ? span : 0);
+                if (answers) ++os.one_down_answered_now;
+                if (phi <= alpha || plo >= beta) ++os.one_down_answered_pinned;
+            }
+        }
         }
     }
 

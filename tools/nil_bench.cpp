@@ -1134,7 +1134,22 @@ int main(int argc, char** argv) {
                   << "    " << std::left << std::setw(24) << "PV walk, uncounted"
                   << std::right << std::setw(14) << os.pv_walk_nodes << "  "
                   << std::setw(6) << 100.0 * double(os.pv_walk_nodes) / n
-                  << "% of the search\n"
+                  << "% of the search\n";
+        const double b = os.one_down_boundary ? double(os.one_down_boundary) : 1.0;
+        std::cout << "\n  one bid live, at a trick boundary (item 81)\n"
+                  << "    nodes                    " << std::setw(14) << os.one_down_boundary
+                  << "  " << std::setw(6) << 100.0 * os.one_down_boundary / n << "% of nodes\n"
+                  << "    proof: bid is doomed     " << std::setw(14)
+                  << os.one_down_proof_doomed << "  " << std::setw(6)
+                  << 100.0 * os.one_down_proof_doomed / b << "% of those\n"
+                  << "    proof: bid is safe       " << std::setw(14)
+                  << os.one_down_proof_safe << "  " << std::setw(6)
+                  << 100.0 * os.one_down_proof_safe / b << "% of those\n"
+                  << "    answered already         " << std::setw(14)
+                  << os.one_down_answered_now << "\n"
+                  << "    answered if rank PINNED  " << std::setw(14)
+                  << os.one_down_answered_pinned << "  " << std::setw(6)
+                  << 100.0 * double(os.one_down_answered_pinned) / n << "% of nodes\n"
                   << std::defaultfloat;
     }
     if (nilset_stats) {

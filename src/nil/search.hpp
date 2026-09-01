@@ -898,6 +898,27 @@ struct OpposedStats {
     // it walks the line under the sentinels while the search ran under a band,
     // so the table entries do not settle the wider window and the walk
     // re-searches.  Not included in `nodes` or in any state row.
+    // ---- item 81's population and ceiling ---------------------------------
+    //
+    // WITH EXACTLY ONE BID STILL LIVE THE POSITION IS A SINGLE-NIL POSITION.
+    // The dead bid can never come back, so the only thing left that can move the
+    // outcome rank is whether the survivor survives -- which is precisely the
+    // question `bounds.hpp` answers, and precisely the machinery
+    // `disable_single_nil_machinery` switches off for this shape.  Item 76 made
+    // that argument for the BOTH-down region; the one-down region is unclaimed
+    // and is about half the tree.
+    //
+    // A proof firing pins the rank, which collapses item 79's reachable set from
+    // two values to one and so tightens its bound by a whole `k*k`.  These count
+    // how often each step of that is available: how many one-down nodes sit at a
+    // trick boundary where the proofs can be asked, how often either fires, and
+    // -- the only number that matters -- how many nodes the PINNED bound would
+    // answer that the two-valued one does not.
+    std::uint64_t one_down_boundary = 0;
+    std::uint64_t one_down_proof_doomed = 0;
+    std::uint64_t one_down_proof_safe = 0;
+    std::uint64_t one_down_answered_now = 0;
+    std::uint64_t one_down_answered_pinned = 0;
     std::uint64_t pv_walk_nodes = 0;
 };
 
