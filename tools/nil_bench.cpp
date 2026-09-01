@@ -1163,6 +1163,16 @@ int main(int argc, char** argv) {
                       << std::setw(14) << os.settled_need[i] << "  " << std::setw(6)
                       << 100.0 * double(os.settled_need[i]) / sb << "% of those\n";
         }
+        std::cout << "    -- and of those, does the cheapest proof deliver it? --\n"
+                  << "    top-spade run proves it " << std::setw(14)
+                  << os.settled_spade_proved << "  " << std::setw(6)
+                  << 100.0 * double(os.settled_spade_proved) / sb << "% of the region\n"
+                  << "    right side, too few      " << std::setw(14)
+                  << os.settled_spade_short << "  " << std::setw(6)
+                  << 100.0 * double(os.settled_spade_short) / sb << "%\n"
+                  << "    wrong side or no spades  " << std::setw(14)
+                  << os.settled_spade_wrong_side << "  " << std::setw(6)
+                  << 100.0 * double(os.settled_spade_wrong_side) / sb << "%\n";
         std::cout << std::defaultfloat;
     }
     if (nilset_stats) {

@@ -809,6 +809,28 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
             } else {
                 ++os.settled_need[best > 6 ? 6 : best];
             }
+            // Which SIDE has to prove what, and whether the spade run does it.
+            // Failing low is a claim about the near side taking the rest;
+            // failing high is a claim about the far side taking its own.
+            if (best > 0) {
+                const int need_near = (cap >= 0 && cap < t) ? t - cap : -1;
+                const int need_of_far = (need_far > 0 && need_far <= t) ? need_far : -1;
+                int run = 0;
+                const int owner = top_spade_run(st.hands, run);
+                if (owner < 0) {
+                    ++os.settled_spade_wrong_side;
+                } else {
+                    const bool owner_is_near = ((owner ^ ctx.nil_seat) & 1) == 0;
+                    const int want = owner_is_near ? need_near : need_of_far;
+                    if (want < 0) {
+                        ++os.settled_spade_wrong_side;
+                    } else if (run >= want) {
+                        ++os.settled_spade_proved;
+                    } else {
+                        ++os.settled_spade_short;
+                    }
+                }
+            }
         }
 
         // Item 81.  Only at a trick boundary, which is where the proofs' own

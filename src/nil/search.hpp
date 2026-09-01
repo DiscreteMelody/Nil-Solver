@@ -943,6 +943,26 @@ struct OpposedStats {
     std::uint64_t settled_hopeless = 0;   // window admits the whole range
     std::uint64_t settled_need[7] = {0, 0, 0, 0, 0, 0, 0};
 
+    // ...and how often the WEAKEST proof available actually delivers it.
+    //
+    // Item 81 died in the gap between "a claim this weak would suffice" and "a
+    // claim this weak is provable", so the gap is measured here before anything
+    // is spent.  The proof used is the cheapest sound one in the file:
+    // `top_spade_run`, which gives the holder of the top outstanding spades and
+    // how many it holds consecutively.  Spades are trump, so nothing beats them
+    // and each wins the trick it is played on -- a floor on that SEAT's tricks,
+    // hence on its side's, needing one mask test and a short loop.
+    //
+    // It is deliberately the weak version.  DDS section 3 counts side-suit
+    // winners and ruffs as well, and section 4 bounds the other side from the
+    // other end.  If even the spade run alone fires often, the full bound is
+    // worth writing; if it does not, that is the number to know before writing
+    // it rather than after.
+    std::uint64_t settled_spade_proved = 0;
+    std::uint64_t settled_spade_short = 0;   // right side, not enough tricks
+    std::uint64_t settled_spade_wrong_side = 0;
+
+
     std::uint64_t pv_walk_nodes = 0;
 };
 
