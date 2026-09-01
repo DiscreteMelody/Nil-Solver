@@ -1828,9 +1828,48 @@ CardId canonical_move_for(Ctx& ctx, const State& st, int value, int alpha, int b
     return NO_CARD;  // caller keeps whatever the search recorded
 }
 
+// THE WINDOW TRAVELS WITH THE LINE.  Roadmap item 80.
+//
+// Every step of the walk re-searches a position that is one or more tricks
+// DEEPER than the root, and a deeper position's value is measured from itself:
+// it does not include what the line has already banked.  So the question the
+// root was asked is not the question a step should be asked, and the difference
+// is exactly the running gain -- which is what `search_impl` has always handed
+// its own children as `alpha - gained, beta - gained` and what this walk, which
+// re-enters at a position rather than descending through `value_after`, never
+// did.
+//
+// It did not matter while the windows here were loose.  Patch 77 made one that
+// is not: a rank band is `k*k` wide in the primary and a sub-position past a
+// broken bid does not carry the `k*k` the root paid for it, so every step past
+// the break fell outside an unshifted band, came back a bound rather than a
+// value, and `canonical_move_for` matched the bound.  Patch 77 answered that by
+// walking under the sentinels, which is correct and blunt: the search ran under
+// a band, so nothing the walk probes settles the wider window and it re-searches
+// most of what it visits -- 82,348,545 nodes on `opposed13.txt`, 22.6% of the
+// search, and invisible because `search_nodes` is snapshotted before the walk.
+//
+// Shifting is the fix the blunt one stood in for.  Each step is asked precisely
+// the question the search answered for it, so the table settles it and the walk
+// is lookups again.
+//
+// WHY A FINITE ALPHA IS SAFE HERE, which is what patch 77 was worried about.
+// `canonical_move_for` compares each candidate's value against `v`, the node's
+// own value, and its comment says the window has WINDOW_MIN beneath it so no
+// child can fail low.  That condition is SUFFICIENT and not necessary. With the
+// shifted band, `v` is exact and therefore strictly inside the window; a child
+// that fails low returns at or below alpha and a child that fails high returns
+// at or above beta, so neither can equal `v`, and the child whose true value IS
+// `v` lies strictly inside and comes back exact. No false match is available in
+// either direction, so the canonically lowest matching move is still the one
+// found.
 bool walk_pv(Ctx& ctx, State st, CardId first, std::vector<Play>& pv_out, std::string& err,
              int pv_alpha = WINDOW_MIN, int pv_beta = WINDOW_MAX) {
     CardId move = first;
+    // What the line has banked so far.  Bounded by a few hundred against a
+    // sentinel of 2^29, so shifting the window by it cannot overflow -- the same
+    // headroom argument WINDOW_MIN was halved for.
+    int gained = 0;
     while (!st.empty()) {
         if (move == NO_CARD) {
             err = "internal error: no move available at a non-terminal position";
@@ -1838,12 +1877,14 @@ bool walk_pv(Ctx& ctx, State st, CardId first, std::vector<Play>& pv_out, std::s
         }
         pv_out.push_back(Play{st.to_play(), move});
         State next;
-        advance(ctx, st, move, next);
+        gained += advance(ctx, st, move, next);
         st = next;
         if (st.empty()) break;
-        const int v = search(ctx, st, move, pv_alpha, pv_beta);
+        const int step_alpha = pv_alpha - gained;
+        const int step_beta = pv_beta - gained;
+        const int v = search(ctx, st, move, step_alpha, step_beta);
         if (ctx.canonicalise) {
-            const CardId c = canonical_move_for(ctx, st, v, pv_alpha, pv_beta);
+            const CardId c = canonical_move_for(ctx, st, v, step_alpha, step_beta);
             if (c != NO_CARD) move = c;
         }
     }
@@ -2109,10 +2150,6 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
     int root_beta = WINDOW_MAX;
     std::uint64_t presolve_nodes = 0;
     TTStats presolve_stats;
-    // Set when the root window is a rank BAND rather than a loose cap, which is
-    // tight enough that the principal-variation walk must not reuse it.  See
-    // the note where it is set.
-    bool pv_open_window = false;
     const bool presolve_eligible = opts.presolve_window && !roles.nil_already_set() &&
                                    pos.tricks_remaining() >= PRESOLVE_MIN_TRICKS;
     if (presolve_eligible && nil_count(roles) == 1) {
@@ -2247,33 +2284,27 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
             opposed_rank_band(rank_lo, rank0, pos.tricks_remaining(), weights, lo, hi);
             root_alpha = lo - 1;
         }
-        // THE PV WALK MUST NOT REUSE THIS WINDOW, and the reason is the one
-        // thing about it that is genuinely new.
+        // THE PV WALK ONCE COULD NOT REUSE THIS WINDOW, and the story is worth
+        // keeping because the first fix was the wrong shape.
         //
-        // `walk_pv` re-searches each step of the line under the window the ROOT
-        // was asked about, UNSHIFTED by what the line has banked on the way
-        // down.  That has always been sound because the windows it was handed
-        // were loose: the sentinels, or item 23's beta, which caps a value whose
-        // remaining part only ever gets less negative.  A rank band is not
-        // loose.  The root's value carries `primary * (rank - rank0)` -- a whole
-        // k*k -- and a sub-position reached AFTER the bid in question has broken
-        // does not: its value is the trick term alone, which sits far above a
-        // band centred on a rank the root had to pay for.  Every such step then
-        // fails high, `canonical_move_for` compares against a bound rather than
-        // a value, and the walk leaves the line the search actually chose.
+        // `walk_pv` re-searched each step of the line under the window the ROOT
+        // was asked about, UNSHIFTED by what the line had banked.  Sound against
+        // a loose window; not against a band.  The root's value carries
+        // `primary * (rank - rank0)` -- a whole k*k -- and a sub-position
+        // reached AFTER that bid has broken does not, so it sits far above a
+        // band centred on a rank the root paid for.  Every such step failed
+        // high, `canonical_move_for` compared against a bound rather than a
+        // value, and the walk left the line the search chose.  Caught by the
+        // replay check on `opposed13.txt` deal 5: search -70, replay -322, and
+        // it HID ON 7 OF 8 DEALS because a line where both bids live never moves
+        // the rank and so contains every step by accident.
         //
-        // Caught by the replay check on `opposed13.txt` deal 5, which is the
-        // only deal in that file whose optimal line breaks a bid: search -70,
-        // replay -322.  The four-fifths of the corpus where both bids live never
-        // moves the rank along its own PV, so the unshifted window contains
-        // every step by accident and the fault does not show.  A bug that hides
-        // on 7 of 8 deals is a bug that ships.
-        //
-        // The walk goes back to the sentinels, where every step comes back
-        // exact.  It costs nothing that is measured -- `search_nodes` is
-        // snapshotted before the walk -- and nothing on any other shape, whose
-        // windows are untouched.
-        if (have_lo || have_hi) pv_open_window = true;
+        // Patch 77 answered it by walking under the sentinels.  Correct, and it
+        // cost 82,348,545 nodes -- 22.6% of the opposed search, invisible
+        // because `search_nodes` is snapshotted before the walk.  Item 80
+        // replaced it with the shift the walk never had, which asks each step
+        // the question the search answered for it.  Nothing is special-cased
+        // here any more.
     }
 
     Ctx ctx;
@@ -2306,8 +2337,16 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
     // search picked, so the PV matches the oracle's play for play.
     out.pv.clear();
     ctx.in_pv_walk = true;
-    const int pv_alpha = pv_open_window ? WINDOW_MIN : root_alpha;
-    const int pv_beta = pv_open_window ? WINDOW_MAX : root_beta;
+    // THE CONTROL ARM IS PATCH 77'S WALK, NOT AN UNSHIFTED ONE, and the
+    // difference is not pedantry.  The first spelling of `--no-pv-shift` left
+    // the band in place and stopped shifting it, which is precisely the bug
+    // patch 77 found: the replay check fires on `opposed13.txt` deal 5 and the
+    // solve fails.  A flag whose OFF position is unsound measures nothing and
+    // hands a caller a broken solver, so OFF is what patch 77 actually shipped
+    // -- the sentinels, where the walk is correct and slow. Both arms answer;
+    // one of them re-searches.
+    const int pv_alpha = opts.pv_shift_window ? root_alpha : WINDOW_MIN;
+    const int pv_beta = opts.pv_shift_window ? root_beta : WINDOW_MAX;
     if (!walk_pv(ctx, st, move, out.pv, err, pv_alpha, pv_beta)) return false;
 
     // A solver that lies is worse than no solver.  Replaying recovers the trick

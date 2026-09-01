@@ -38,6 +38,7 @@ expensive node. Read items 11 and 31 in that light.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ✅ | ~~The principal-variation walk's window travels with the line~~ | patch 79 | **82,348,545 PV-walk nodes down to 14,751,323, 5.6x, with every reported node count bit-identical; 1.19x of wall time, 4 of 4 reps.** The whole item is wall time -- the walk's nodes are snapshotted out of `search_nodes`, which is why a 22.6% cost sat unnoticed from patch 77 until patch 78's own instrumentation split it out. **The shift the walk never had**: `search_impl` hands children `alpha - gained, beta - gained` because a child's value is measured from the child, and `walk_pv` re-enters at a POSITION rather than descending through `value_after`, so it asked every step the question the ROOT was asked. Loose windows forgave it; a rank band does not, because the root's value carries a `k*k` of rank a sub-position past a broken bid does not. Patch 77 answered by walking under the sentinels -- correct and blunt, since nothing the walk probes then settles the wider window. **THE CONTROL ARM TRIED TO SHIP A BROKEN SOLVER**: the obvious `--no-pv-shift` leaves the band and stops shifting it, which is not the previous behaviour but *the bug patch 77 found* -- the replay check fires on deal 5, deals abort, and the arm reported 100,508,111 nodes against 412,178,524. **A flag whose OFF position is unsound measures nothing.** OFF is now patch 77's actual walk, so both arms answer and one re-searches; it is also a retroactive proof that the sentinels were needed rather than a tweak, because the tweak IS the bug. Single nil gains too, less: `large.txt` 18.67s to 18.02s. **Also fixed: a silent no-op shipped in patch 78** -- the `pv_walk_nodes` row never reached `--opposed-stats` because the edit adding it used a string replace with no assertion, matched nothing and reported success. The counter was live; only the display was missing, and a measurement that stops being printed looks exactly like a measurement of zero. 28/28; all three corpora under `--check-pv --check-moves`; 8 deals byte-identical to HEAD with the PV; 39,701 / 278,059 / 49,084 / 163,393,676 and multinil 4,833,200 unmoved |
 | ✅ | ~~The reachable-rank bound for one bid on each side~~ | patch 78 | **1.20x in nodes and 1.21x on the clock on top of patch 77, 4 of 4 reps; 1.57x from the pre-77 base.** The `target_bounds` this shape lost at patch 68 with the comment *Correct first*. The rank is a step function of the broken-bid mask and a bid never un-breaks, so the ranks a node can still reach are those of the masks containing its own -- four of them, no cards read -- and the subtree's value range follows. **Population and ceiling measured before building**: 24.86% of nodes answerable in aggregate, but **86.62% on deal 6 with far-down and both-down each firing at 100.00%**, against 14.78% on deal 5 and 2.79% on deal 3. **The ceiling is a function of whether patch 77 closed a TWO-SIDED band, not of the cards**, which is also why the near-bid-down row reads 0.41% and is not worth chasing: that state can still reach ranks either side of the answer and is unanswerable by construction. **THE FIRST SPELLING COST 13.8% OF THROUGHPUT** -- sixty-four iterations per node to fire on a quarter of them, measuring 1.20x on nodes and 0.971 on the clock, which is item 44's failure and C1's. **Unlike either, there was a cheaper spelling sitting right there**: the rank term depends on the mask alone and there are four masks, so it is four pairs of numbers settled in `configure()` plus one comparison skipping the two states that never fire. Node counts came back **bit-identical** and throughput went 6.71M to 8.18M nodes/sec. The lesson is not *measure throughput*, which this file has three times over -- it is that **a per-node gate should be a table lookup before it is abandoned.** Nothing is stored in the TT, and the bound is inert along the PV by arithmetic rather than by a gate. **Also found, by this patch's own instrumentation: patch 77 spends ~88M nodes, about 20% of the opposed search, recovering the principal variation, and none of it is in any reported node count** -- it walks under the sentinels while the search ran under a band, so the table does not settle and the walk re-searches. Item 77's *costs nothing that is measured* is true and misleading; item 80 is the fix. Behind `--no-opposed-reach`; `--opposed-stats` ships the measurement arm. 28/28; 39,701 / 278,059 / 49,084 / 163,393,676 and multinil 4,833,200 all unmoved |
 | ✅ | ~~A presolve-seeded root window for one bid on each side~~ | patch 77 | **1.31x in nodes and 1.23x on the clock over the eight contested 13-card deals, 4 of 4 reps.** Item 23's presolve was gated on `nil_count(roles) == 1` since it was written; the opposed shape got no root window at all and searched between sentinels. It now runs TWO fast probes, one per bidder, each an ordinary single-nil question the solver has always answered. **Each answer is a GUARANTEE, which is why they compose**: it holds against every strategy the other side has, including ones that sacrifice the other bid, so it survives being asked inside a deal where the attacker has a bid of its own. A guarantee about one bid confines the outcome to two of the four, and two of four bounds the outcome RANK -- at the top when the minimising side owns it, at the bottom when the maximiser does. **Both bids safe means both live, both breakable means both die, and neither needs a third search**; the two mixed cases get a one-sided bound only, which is item 23's shape and is why deal 3 LOSES 0.87x. Range 0.87x to 2.65x, probes 7.5% of the armed total, throughput -6.4% because the nodes the band removes are the cheap ones under a broken bid. **THE BUG THIS FOUND is worth more than the entry.** `walk_pv` re-searches each PV step under the ROOT's window, unshifted by what the line has banked -- sound against the sentinels and against item 23's loose beta, and NOT sound against a rank band, because a sub-position past a broken bid does not carry the `k*k` the root paid for and fails high on every step. Caught by the replay check on deal 5, search -70 against replay -322. **It hid on 7 of 8 deals**: when both bids live the rank never moves along its own PV, so the unshifted window contains every step by accident. A bug that hides on seven eighths of the corpus is a bug that ships. **The random-deal sample is much weaker and says so honestly** -- 0.99x to 1.30x, and a wash on the clock at 11c seed 3 -- because a hand drawn at random usually gives a bidder an ace and the search never has to work. That is patch 69's lesson for the third time. **`opposing_crosscheck` re-run with `PRESOLVE_MIN_TRICKS` forced to zero**, since the shipped gate of 8 means the 3-5 card suite cannot reach the new code: 96/96, 96/96, 48/48 across all eight strictly opposed role sets. Also shipped: `Solution::presolve_nodes` so the cost reads off the run that measures the benefit, and **`nil_bench --deals`**, because `opposed13.txt` has been in the repo since patch 76 with nothing able to read it. NOT wired into `solve_moves`, and the comment there says why. 28/28; 39,701 / 278,059 / 49,084 / 163,393,676 and multinil 4,833,200 all unmoved |
 | ✅ | ~~The static cutoff in positions where every bid is already down~~ | patch 76 | **-1.29% of nodes on the opposed corpus, sound, and it is the SMALL half of a much more useful finding.** `gains_nonnegative` guards the end-of-trick static cutoff and is refused outright for the opposed shape, on the grounds that its primary weight multiplies outcome RANK and rank falls when a side loses its own bid. True, and it goes no further than the first position where NO NIL IS LEFT TO BREAK: there the rank is fixed, what remains is the trick term, and that only rises. So the refusal is a fact about the WEIGHTS where it should be a fact about the POSITION, and it is now tested per node against `st.nils_broken == ctx.nil_mask`. All three opposed weights are already non-negative (`primary = k*k`, `secondary = +k`, `tertiary = 0`); the blanket `!ctx.opposing` was the only thing switching it off. **Every one of the eight opposed deals improves** -- -0.27% to -4.55%, 654,842,428 -> 646,389,160 -- and every answer, all 560 corpus values, all 19 `large.txt` rows and 39,701 / 278,059 / 49,084 are unmoved. Behind `--no-settled-gains` / `NIL_FLAG_NO_SETTLED_GAINS`. **THE PREDICTION WAS WRONG AND THAT IS THE VALUABLE PART.** It was built because 43% of an opposed tree sits in the all-broken state, so a cutoff restored there looked like a large win. It is worth 1.29%. A cutoff being LEGAL in 43% of the tree says nothing about how often it FIRES: the static test needs one trick's gain to carry the line to beta, and in an all-broken state the primary contribution is already banked, so the per-trick gain is small against the window and the test almost never trips. **Population is not the same as firing rate, and this project has now been caught by that twice** -- once here and once on move-ordering item C1, where a rule that ran on 8-15% of nodes changed the move on 0.2-2.9% of them. Measure the firing rate, not the eligible population. **Also banked: `tests/corpus/opposed13.txt`**, the eight deals patch 69's timings were taken on. Patch 69 recorded the timings and NOT the deals; they survived only because a session transcript happened to contain the generator, and were recovered from it here. A measurement is only valid against the tree it was taken on, and that tree was very nearly lost |
@@ -3897,39 +3898,86 @@ the wider window and the walk re-searches. Item 77's entry says the reopened wal
 correction. **The proper fix is to shift the band as the walk descends rather
 than reopening it**, and it is now the cheapest large win left — see item 80.
 
-### 80. The principal-variation walk re-searches what the band already answered — ⭐⭐⭐⭐
+*Corrected at patch 79.* The `pv_walk_nodes` row this paragraph is measured from
+**never actually reached `--opposed-stats` in the shipped patch**: the edit that
+added it used a string replace with no assertion, so it matched nothing, changed
+nothing and reported success. The counter was live and populated the whole time
+and the 88M figure above was read off it during development, but a reader of
+patch 78 could not have reproduced it. Restored in patch 79 with the assertion
+that would have caught it. The number is also slightly different when measured
+against patch 78 rather than mid-development: **82,348,545**, 22.64% of the
+search.
 
-**About 88 million nodes on `opposed13.txt`, roughly 20% of the opposed search,
-and not one of them appears in any node count this file has banked.**
-`search_nodes` is snapshotted before the walk, deliberately and correctly -- the
-walk is not search -- so the cost has been invisible since patch 77 created it.
+### 80. ~~The principal-variation walk's window travels with the line~~ — ⭐⭐⭐⭐ — **done, patch 79**
 
-**What patch 77 did and why it had to.** `walk_pv` re-searches each step of the
-line under the window the ROOT was asked about, UNSHIFTED by what the line has
-banked. That is sound against a loose window and unsound against a rank band: a
-sub-position past a broken bid does not carry the `k*k` the root paid, so every
-step past the break fails high and `canonical_move_for` matches a bound instead
-of a value. Patch 77 fixed it by walking under the sentinels, which is correct
-and blunt -- the search ran under a band, so the entries the walk probes do not
-settle the wider window and it re-searches most of what it visits.
+**82,348,545 PV-walk nodes down to 14,751,323, a 5.6x cut, with every reported
+node count bit-identical.** 1.19x of wall time on `opposed13.txt`, four reps of
+four. The whole item is wall time: the walk's nodes are snapshotted out of
+`search_nodes`, so nothing this patch touches appears in any number this file has
+banked, which is exactly why it sat unnoticed since patch 77 created it.
 
-**The fix is the shift the walk never had.** `search_impl` already hands children
-`alpha - gained, beta - gained`; the walk does not, because it re-enters at a
-position rather than descending through `value_after`. Carrying the running gain
-down the walk and offsetting the band by it asks each step the question the
-search asked it, which is what makes the table answer. `advance()` already
-returns the gain.
+**The shift the walk never had.** `search_impl` hands its children
+`alpha - gained, beta - gained`, because a child's value is measured from the
+child. `walk_pv` re-enters at a POSITION rather than descending through
+`value_after`, so it never applied that shift and asked every step the question
+the ROOT was asked. Harmless while the windows here were loose -- the sentinels,
+or item 23's beta, which caps a value whose remaining part only gets less
+negative. Not harmless once patch 77 made a band: the root's value carries a
+whole `k*k` of rank that a sub-position past a broken bid does not, so the step
+sits outside an unshifted band, comes back a bound, and `canonical_move_for`
+matches the bound instead of the value.
 
-**Why it is worth doing before item 78.** It needs no new objective, no oracle
-work and no probe. It is invisible to every banked count, so it cannot move a
-fixed point. And it is pure wall time on the slowest shape in the solver: patch
-77 measured 1.31x on nodes and 1.23x on the clock, and part of that gap is this.
+Patch 77 answered that by walking under the sentinels. Correct, and blunt: the
+search ran under a band, so nothing the walk probes settles the wider window and
+it re-searches most of what it visits. Shifting asks each step precisely the
+question the search answered for it, and the walk is lookups again.
 
-**How to measure it.** `--opposed-stats` already reports `pv_walk_nodes`
-separately from the population, so the before number exists. The after number is
-the same field. The answer, the trick counts and the principal variation must all
-be identical -- this is a window change on a walk that recovers a line the search
-has already chosen, so anything that moves is a bug.
+| arm | PV-walk nodes | share of the search | wall |
+|---|---:|---:|---:|
+| patch 77's walk (`--no-pv-shift`) | 82,348,545 | 22.64% | 50.6-51.9 s |
+| shifted (item 80) | 14,751,323 | 4.05% | 42.9-43.6 s |
+
+Reps 0.862 / 0.859 / 0.839 / 0.840, one binary, arm toggled at runtime. **Single
+nil gains too, less**: `large.txt` full 18.67 s to 18.02 s, smaller because item
+23 seeds only beta and an unshifted beta is wrong by less.
+
+**THE CONTROL ARM TRIED TO SHIP A BROKEN SOLVER, and that is the part worth
+reading.** The obvious spelling of `--no-pv-shift` leaves the band in place and
+stops shifting it -- which is not "the previous behaviour", it is *the bug patch
+77 found*. The replay check fires on deal 5 and the solve FAILS; the arm came
+back at 100,508,111 nodes against 412,178,524 because the deals were aborting.
+**A flag whose OFF position is unsound measures nothing and hands a caller a
+broken solver.** OFF is now what patch 77 actually shipped -- the sentinels,
+where the walk is correct and slow -- so both arms answer and exactly one of them
+re-searches. It is also a retroactive proof that patch 77 needed the sentinels
+rather than a tweak: the tweak is the bug.
+
+**WHY A FINITE ALPHA IS SAFE, which is what patch 77 was worried about.**
+`canonical_move_for`'s comment says the window has WINDOW_MIN beneath it so no
+child can fail low. That condition is SUFFICIENT, not necessary, and the
+difference is what lets the band be reused. With the shifted window `v` is exact
+and so strictly inside; a child failing low returns at or below alpha, one
+failing high at or above beta, and neither can equal `v`, while the child whose
+true value IS `v` lies strictly inside and comes back exact. No false match is
+available in either direction, so the canonically lowest matching move is still
+the one found. Pinned rather than argued: `--check-pv --check-moves` passes on
+all three corpora, which is every recorded PV in the repo, and all eight opposed
+deals are byte-identical to patch 78's output with the line included.
+
+**A SILENT NO-OP SHIPPED IN PATCH 78 AND IS FIXED HERE.** The `pv_walk_nodes`
+row never reached `--opposed-stats`: the edit that added it used a string
+replace with no assertion, so it matched nothing, changed nothing and reported
+success. The counter was live and populated the whole time; only the display
+line was missing, which is the quietest possible failure -- a measurement that
+silently stops being printed looks exactly like a measurement of zero. Restored,
+with the assertion that would have caught it. **Every edit that claims to find
+something must fail loudly when it does not**, which is the same lesson as
+patch 60's unforked verifier in a smaller package.
+
+**Verified.** 28/28. All 560 corpus values plus `large.txt` and `multinil.txt`
+under `--check-pv --check-moves`. All 8 opposed deals byte-identical to the
+pushed HEAD, PV included. 39,701 / 278,059 / 49,084 / 163,393,676 and multinil
+4,833,200 unmoved. Behind `--no-pv-shift` / `NIL_FLAG_NO_PV_SHIFT`.
 
 ### 60. Nils on OPPOSING sides — ⭐⭐⭐
 
@@ -3954,7 +4002,7 @@ whether this one is affordable at all.
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 36 ✅ → 41 ✅ → 42 ⊘ → 47 ✅ → 43 ⊘→✅ → 43b ⊘ → 44 ⏸ → 54 ✅ → 58 ✅ → 56 ✅ → 57 ✅ → 59 ✅ → 61 ✅ → 62 ✅ → N1 ⊘ → C0 ✅ → C1 ⊘ → C2 ⊘ → C3 ⊘ → C4 → C5 ⏸ → C6 → O1 → 77 ✅ → 79 ✅ → 80 → 78 → 45 → 29b (single-suit) → 9 ⊘ → 10 ⊘ → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 36 ✅ → 41 ✅ → 42 ⊘ → 47 ✅ → 43 ⊘→✅ → 43b ⊘ → 44 ⏸ → 54 ✅ → 58 ✅ → 56 ✅ → 57 ✅ → 59 ✅ → 61 ✅ → 62 ✅ → N1 ⊘ → C0 ✅ → C1 ⊘ → C2 ⊘ → C3 ⊘ → C4 → C5 ⏸ → C6 → O1 → 77 ✅ → 79 ✅ → 80 ✅ → 78 → 45 → 29b (single-suit) → 9 ⊘ → 10 ⊘ → measure → 11..14
 ```
 
 **Three results off the move-ordering block, all negative, and the third one

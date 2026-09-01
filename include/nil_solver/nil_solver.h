@@ -409,6 +409,21 @@ extern "C" {
  * value, same trick counts and same principal variation; a control arm. */
 #define NIL_FLAG_NO_OPPOSED_REACH 0x1000000u
 
+/* Do not shift the principal-variation walk's window by what the line has
+ * already banked.  Roadmap item 80.
+ *
+ * Recovering the line re-searches each of its steps, and a step is a DEEPER
+ * position whose value is measured from itself -- so the question the root was
+ * asked is not the question a step should be asked, and the difference is the
+ * running gain.  Unshifted, a step past a broken bid falls outside a window
+ * built around the root's outcome and re-searches instead of reading the table.
+ *
+ * Answer-neutral, PV-neutral, and neutral in every node count reported: the
+ * walk's own nodes are snapshotted out of the total. It is worth 1.24x of WALL
+ * TIME on tests/corpus/opposed13.txt and nothing at all on paper, which is why
+ * it needs a flag to be measurable. A control arm. */
+#define NIL_FLAG_NO_PV_SHIFT 0x2000000u
+
 #define NIL_FLAG_NO_SETTLED_GAINS 0x800000u
 
 /* Let the cover partner, on lead, play the cheapest card the nil bidder can

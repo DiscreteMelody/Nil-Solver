@@ -618,6 +618,13 @@ struct SearchOptions {
     // `target_bounds` this shape lost at patch 68, re-derived over the thing the
     // opposed value is actually written in.  Off is the control arm.
     bool opposed_reach = true;
+    // Roadmap item 80: shift the principal-variation walk's window by what the
+    // line has banked, so each step is asked the question the search answered
+    // for it rather than the question the ROOT was asked.  Off is the control
+    // arm and is what patch 77 shipped.  Answer-neutral, PV-neutral and
+    // node-neutral in everything reported -- the walk's own nodes are
+    // snapshotted out of the count -- so it moves wall time and nothing else.
+    bool pv_shift_window = true;
 
     // Report how often each arm's gate opens and each arm fires (items 43 and
     // 44).  Measurement only and free when off: every counter is guarded on a

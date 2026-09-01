@@ -219,6 +219,8 @@ int main(int argc, char** argv) {
             opts.suit_mixed_order = false;
         } else if (arg == "--no-narrow") {
             opts.narrow_window = false;
+        } else if (arg == "--no-pv-shift") {
+            opts.pv_shift_window = false;
         } else if (arg == "--no-opposed-reach") {
             opts.opposed_reach = false;
         } else if (arg == "--no-presolve") {

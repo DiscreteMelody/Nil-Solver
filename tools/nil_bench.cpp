@@ -430,6 +430,8 @@ void usage(const char* argv0) {
               << "  --tt-stats        also report transposition table behaviour\n"
               << "  --rank-stats      also report the winning-rank mask histogram\n"
               << "  --nilset-stats    also report forced-trick proof coverage\n"
+              << "  --no-pv-shift     do not shift the principal-variation walk's\n"
+              << "                    window by what the line has banked\n"
               << "  --no-opposed-reach  do not answer a one-bid-per-side node from the\n"
               << "                    ranks its broken-bid mask can still reach\n"
               << "  --opposed-stats   also report where a one-bid-per-side search\n"
@@ -688,6 +690,8 @@ int main(int argc, char** argv) {
             check_moves = true;
         } else if (arg == "--check-pv") {
             check_pv = true;
+        } else if (arg == "--no-pv-shift") {
+            opts.pv_shift_window = false;
         } else if (arg == "--no-opposed-reach") {
             opts.opposed_reach = false;
         } else if (arg == "--opposed-stats") {
@@ -1125,6 +1129,10 @@ int main(int argc, char** argv) {
         std::cout << "    " << std::left << std::setw(24) << "TOTAL would answer"
                   << std::right << std::setw(14) << os.would_answer << "  "
                   << std::setw(6) << 100.0 * double(os.would_answer) / n << "% of nodes\n"
+                  << "    " << std::left << std::setw(24) << "PV walk, uncounted"
+                  << std::right << std::setw(14) << os.pv_walk_nodes << "  "
+                  << std::setw(6) << 100.0 * double(os.pv_walk_nodes) / n
+                  << "% of the search\n"
                   << std::defaultfloat;
     }
     if (nilset_stats) {
