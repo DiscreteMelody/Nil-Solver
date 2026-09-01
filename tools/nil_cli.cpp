@@ -91,6 +91,10 @@ void usage(const char* argv0) {
         << "  --moves                 score every legal card, not just the best:\n"
         << "                          one line per card with whether the nil\n"
         << "                          survives it and what it costs\n"
+        << "  --conjunction <seat>    with a bid on each side, answer only whether\n"
+        << "                          the side holding <seat> can force ITS bid to\n"
+        << "                          survive while the other's dies.  Implies fast\n"
+        << "                          mode; reports one boolean and no trick counts\n"
         << "  --compact               print only the machine-readable result\n"
         << "  --help                  this message\n";
 }
@@ -115,6 +119,7 @@ int main(int argc, char** argv) {
     std::string seats_text = "0 3 2 3";
     bool spades_broken = false;
     bool compact = false;
+    std::string conjunction_text;
     bool list_moves = false;
     bool tt_stats = false;
     nil::SearchOptions opts;
@@ -219,6 +224,8 @@ int main(int argc, char** argv) {
             opts.suit_mixed_order = false;
         } else if (arg == "--no-narrow") {
             opts.narrow_window = false;
+        } else if (arg == "--conjunction" && i + 1 < argc) {
+            conjunction_text = argv[++i];
         } else if (arg == "--no-pv-shift") {
             opts.pv_shift_window = false;
         } else if (arg == "--no-opposed-reach") {
@@ -273,6 +280,18 @@ int main(int argc, char** argv) {
         std::cerr << "error: --seats: " << err << "\n";
         return 2;
     }
+    if (!conjunction_text.empty()) {
+        const int seat = nil::parse_seat(conjunction_text);
+        if (seat < 0) {
+            std::cerr << "error: bad --conjunction seat '" << conjunction_text << "'\n";
+            return 2;
+        }
+        opts.conjunction_seat = seat;
+        // The probe has no trick counts and no line, so asking for it in full
+        // mode is a category error rather than a slower way to the same answer.
+        opts.mode = nil::MODE_FAST;
+    }
+
     pos.leader = leader;
     pos.spades_broken = spades_broken;
     if (!trick_text.empty()) {
@@ -297,6 +316,26 @@ int main(int argc, char** argv) {
     } else if (!nil::solve(pos, roles, opts, sol, err)) {
         std::cerr << "error: " << err << "\n";
         return 3;
+    }
+
+    if (!conjunction_text.empty()) {
+        const int att = opts.conjunction_seat & 3;
+        int def = att;
+        for (int seat = 0; seat < 4; ++seat) {
+            if (roles.is_nil(seat) && ((seat ^ att) & 1) != 0) def = seat;
+        }
+        if (compact) {
+            std::cout << "conjunction=" << (sol.conjunction ? 1 : 0) << "\n"
+                      << "attacker=" << nil::SEAT_CHARS[att] << "\n"
+                      << "defender=" << nil::SEAT_CHARS[def] << "\n"
+                      << "nodes=" << sol.nodes << "\n";
+        } else {
+            std::cout << nil::SEAT_CHARS[att] << "'s side "
+                      << (sol.conjunction ? "CAN" : "CANNOT") << " force "
+                      << nil::SEAT_CHARS[att] << "'s bid to survive while "
+                      << nil::SEAT_CHARS[def] << "'s dies  (" << sol.nodes << " nodes)\n";
+        }
+        return 0;
     }
 
     if (compact) {

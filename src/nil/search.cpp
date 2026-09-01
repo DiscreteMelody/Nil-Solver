@@ -87,6 +87,17 @@ struct Ctx {
     // rank, which the other side's rank mirrors exactly because the two sum to
     // a constant, plus its own trick count.
     bool opposing = false;
+    // ITEM 78's PROBE, which rides on the opposing shape rather than replacing
+    // it.  The value is the CONJUNCTION indicator -- 1 exactly when the far
+    // side's bid is alive and the near side's is dead -- so the window is
+    // [0, 1] and the search is the same AND-OR shape MODE_FAST is.
+    //
+    // WHY IT REUSES `nil_seat` FOR THE DEFENDER.  `maximizing` is
+    // `(seat ^ ctx.nil_seat) & 1`, so pointing `nil_seat` at the DEFENDING
+    // side's bidder makes the attacking side the maximiser with no new test on
+    // the hot path -- the same trick the opposing shape already plays when it
+    // writes its value from the far side.
+    bool conjunction = false;
     // That side's bidder, and the role of its partner, which is what decides
     // its ranking of the two middle outcomes.
     int far_nil_seat = 0;
@@ -522,6 +533,21 @@ inline Hand ranks_read_by_set_proof(const Hand hands[4], int nil_seat) {
 // transition rather than a second copy of it.  Two copies of this arithmetic is
 // The rank, for the side the value is written from -- the one opposite
 // ctx.nil_seat.  A function of the mask alone.
+// Item 78's probe as a function of the mask: 1 when the FAR side's bid is alive
+// and the near side's is dead.
+//
+// THAT IS RANK 3 AND NOTHING ELSE, which is the whole reason this probe fits
+// here.  `side_rank` gives 3 to exactly that outcome under BOTH partner leans --
+// the leans only ever swap the two middle rungs -- so the indicator needs no
+// lean and no role, only the two bidder seats.  `nil_oracle.py` proves the same
+// identity from the other end: backward induction on the utility pair lands on
+// rank 3 precisely when the far side can force it.
+inline int conjunction_value(unsigned mask, const Ctx& ctx) {
+    const bool far_alive = (mask & (1u << ctx.far_nil_seat)) == 0;
+    const bool near_dead = (mask & (1u << ctx.nil_seat)) != 0;
+    return (far_alive && near_dead) ? 1 : 0;
+}
+
 inline int far_side_rank(unsigned mask, const Ctx& ctx) {
     const bool far_survives = (mask & (1u << ctx.far_nil_seat)) == 0;
     const bool near_survives = (mask & (1u << ctx.nil_seat)) == 0;
@@ -567,6 +593,26 @@ void opposed_reach_bound(const Ctx& ctx, unsigned mask, int tricks_left, int& lo
 inline int score_trick(const Ctx& ctx, const State& st, int winner, State& next) {
     next.nils_broken = st.nils_broken;
     int gained = 0;
+    if (ctx.conjunction) {
+        // A DELTA, exactly as the outcome rank is, and for the same reason: the
+        // indicator is a step function of the mask, not something a trick earns
+        // a share of.  Summed along a line the deltas telescope to
+        // conj(final) - conj(nothing broken), and conj of an empty mask is zero,
+        // so the accumulated value IS the answer rather than differing from it
+        // by a constant.
+        //
+        // The delta is -1 as well as +1: the far bid dying after the near one
+        // already has takes the indicator back down.  That is why
+        // `gains_nonnegative` is false here and the static end-of-trick cutoff
+        // stays off.
+        const unsigned bit = 1u << winner;
+        if ((ctx.nil_mask & bit) && !(st.nils_broken & bit)) {
+            const unsigned after = st.nils_broken | bit;
+            gained += conjunction_value(after, ctx) - conjunction_value(st.nils_broken, ctx);
+            next.nils_broken = static_cast<unsigned char>(after);
+        }
+        return gained;  // no trick term: the probe is the boolean and nothing else
+    }
     if (ctx.opposing) {
         // THE RANK IS A STEP FUNCTION OF THE MASK, so it cannot be weighted per
         // trick the way a single nil's count is.  It is charged as a DELTA
@@ -1617,6 +1663,21 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
         ctx.opposing = seat_shape(copy, ignored) == SHAPE_OPPOSING_NILS;
     }
     ctx.multi_nil = !ctx.opposing && nil_count(roles) > 1;
+    ctx.conjunction = opts.conjunction_seat >= 0;
+    if (ctx.conjunction) {
+        // THE DEFENDER GOES IN `nil_seat`.  `maximizing` reads that seat's
+        // parity, so pointing it at the defending bidder makes the ATTACKING
+        // side the maximiser without a second test in search().  It also puts
+        // the attacker in `far_nil_seat`, which is what `conjunction_value`
+        // reads, so the indicator comes out the right way round for free.
+        ctx.far_nil_seat = opts.conjunction_seat & 3;
+        for (int seat = 0; seat < 4; ++seat) {
+            if (roles.is_nil(seat) && ((seat ^ ctx.far_nil_seat) & 1) != 0) {
+                ctx.nil_seat = seat;
+            }
+        }
+        ctx.far_partner_role = roles.role[(ctx.far_nil_seat + 2) & 3];
+    }
     if (ctx.opposing) {
         // The value is written from the side that does NOT hold ctx.nil_seat, so
         // that seat's parity keeps driving the existing maximising test: the
@@ -1648,7 +1709,10 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
     // non-negative weight breaks the static cutoff this flag guards, which is
     // exactly the kind of assumption that survives a rename and dies on a new
     // objective.
-    ctx.gains_nonnegative = !ctx.opposing && weights.primary >= 0 &&
+    // ...AND NOT UNDER THE CONJUNCTION EITHER, for the same reason spelled a
+    // different way: its delta is -1 when the far bid dies after the near one
+    // already has, so what is banked bounds nothing.
+    ctx.gains_nonnegative = !ctx.opposing && !ctx.conjunction && weights.primary >= 0 &&
                             weights.secondary >= 0 && weights.tertiary >= 0;
     // ...and the per-node form, for the shape the line above refuses outright.
     // The refusal is about the outcome RANK falling, which needs a live bid to
@@ -1661,8 +1725,15 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
     // where the primary is 1 but the secondary is not zero.  MODE_FULL
     // therefore never takes a static cutoff, and its node counts stay the fixed
     // point they have been since patch 8.
+    // The conjunction's weights are (1, 0, 0) too, and they mean something
+    // else: the value is an INDICATOR, not `ctx.nil_seat`'s trick count.  The
+    // proofs in bounds.hpp are statements about that count, so reading the
+    // weights alone would wire two sound proofs to a value they say nothing
+    // about -- the exact failure mode `disable_single_nil_machinery` exists to
+    // prevent.  Excluded by name.
     ctx.value_is_nil_tricks =
-        weights.primary == 1 && weights.secondary == 0 && weights.tertiary == 0;
+        !ctx.conjunction && weights.primary == 1 && weights.secondary == 0 &&
+        weights.tertiary == 0;
     ctx.static_bounds = opts.use_static_bounds;
     ctx.full_static_bounds = opts.full_static_bounds;
     // Both halves matter.  MODE_FULL never reorders whatever the caller asked
@@ -1717,7 +1788,9 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
     // Which QUESTION this solve's values answer.  The key says which position an
     // entry is about; without this a two-nil value would be readable by a
     // one-nil search at the same cards, and the two are on different scales.
-    ctx.tt_tag = ctx.opposing
+    ctx.tt_tag = ctx.conjunction
+                     ? TAG_CONJUNCTION
+                 : ctx.opposing
                      ? TAG_OPPOSING_NILS
                      : (ctx.multi_nil ? TAG_MULTI_NIL
                                       : (opts.mode == MODE_FAST ? TAG_FAST : TAG_FULL));
@@ -1784,6 +1857,17 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
     if (ctx.opposing) {
         disable_single_nil_machinery(ctx);
         ctx.target_bounds = false;
+    }
+    if (ctx.conjunction) {
+        // Everything the opposing shape gives up, and for the same reasons: the
+        // proofs are about one bidder's trick count and the reach bounds are
+        // about an outcome rank plus a trick total, and this value is neither.
+        // Item 79's mask bound is off too -- the indicator's reachable set is
+        // not the rank's, and re-deriving it is a separate item with its own
+        // measurement, not a line squeezed into this one.
+        disable_single_nil_machinery(ctx);
+        ctx.target_bounds = false;
+        ctx.opposed_reach = false;
     }
 }
 
@@ -1932,6 +2016,16 @@ ObjectiveWeights objective_weights(int tricks_remaining, const SeatRoles& roles,
     // a pair that both bid: the trick term reaches K*tricks_remaining at most,
     // and that is under K*K.  No tertiary -- each side's own tricks are one
     // number, and there is no cover partner whose share could break a tie.
+    if (opts.conjunction_seat >= 0) {
+        // Item 78's probe.  Nothing is packed above or below the indicator, so
+        // the value IS the indicator and the window worth searching is [0, 1] --
+        // the same arithmetic that makes MODE_FAST an AND-OR search.
+        ObjectiveWeights w;
+        w.primary = 1;
+        w.secondary = 0;
+        w.tertiary = 0;
+        return w;
+    }
     {
         std::string ignored;
         SeatRoles copy = roles;
@@ -2052,6 +2146,73 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
     if (!validate(pos, err)) return false;
 
     const ObjectiveWeights weights = objective_weights(pos.tricks_remaining(), roles, opts);
+
+    // ---- item 78: the conjunction probe -----------------------------------
+    //
+    // A THIRD QUESTION ABOUT THE OPPOSED SHAPE, not a third mode.  Item 77's two
+    // probes settle two of the four (bid safe / bid breakable) combinations and
+    // leave the other two with a one-sided bound; this is what closes them.
+    //
+    // The value is the indicator and the window is [0, 1], so this is the same
+    // AND-OR search MODE_FAST is: the attacking side needs ONE line where its
+    // bid survives and the other dies, the defending side needs EVERY such line
+    // to fail.  What is new is the defending side's goal, and it is the hazard
+    // this item is really about: it wins by EITHER keeping its own bid alive OR
+    // breaking the attacker's, a DISJUNCTION, so it may deliberately dump a
+    // trick on the attacker's bidder and abandon its own bid to do it.  Nothing
+    // here constrains it to protect -- it minimises the indicator, which lets
+    // both routes through.  A search that let it only protect would report the
+    // attacker succeeding on lines it cannot win, and no corpus would catch it.
+    if (opts.conjunction_seat >= 0) {
+        std::string shape_err;
+        SeatRoles copy = roles;
+        if (seat_shape(copy, shape_err) != SHAPE_OPPOSING_NILS) {
+            err = "the conjunction probe asks about a deal with a bid on EACH side; " +
+                  describe_seat_roles(roles) + " is not one";
+            return false;
+        }
+        const int attacker = opts.conjunction_seat & 3;
+        if (!roles.is_nil(attacker)) {
+            err = std::string("the conjunction probe names the ATTACKING side's bidder, and ") +
+                  SEAT_CHARS[attacker] + " did not bid (" + describe_seat_roles(roles) + ")";
+            return false;
+        }
+        if (opts.mode != MODE_FAST) {
+            err = "the conjunction probe answers one boolean and has no trick counts or "
+                  "principal variation to report; ask it in fast mode";
+            return false;
+        }
+
+        out = Solution();
+        out.roles = roles;
+        out.mode = MODE_FAST;
+        out.nil_tricks = TRICKS_NOT_COMPUTED;
+        out.nil_side_tricks = TRICKS_NOT_COMPUTED;
+        out.opponent_tricks = TRICKS_NOT_COMPUTED;
+
+        Ctx cctx;
+        configure(cctx, roles, opts, weights);
+        State root = state_of(pos);
+        CardId root_move = NO_CARD;
+        const int value = search(cctx, root, root_move, 0, 1);
+        if (value < 0 || value > 1) {
+            std::ostringstream os;
+            os << "internal inconsistency: the conjunction probe returned " << value
+               << ", which is not an indicator";
+            err = os.str();
+            return false;
+        }
+        const TTStats cstats = cctx.tt ? cctx.tt->stats() : TTStats();
+        out.conjunction = value > 0;
+        out.value = value;
+        out.nodes = cctx.nodes;
+        out.tt_probes = cstats.probes;
+        out.tt_hits = cstats.hits;
+        out.tt_partial = cstats.partial;
+        out.tt_stores = cstats.stores;
+        out.tt_evictions = cstats.evictions;
+        return true;
+    }
 
     // FAST MODE IS A SINGLE-NIL QUESTION, and refuses to be asked another.
     //

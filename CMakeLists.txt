@@ -401,6 +401,18 @@ if(NIL_SOLVER_BUILD_TESTS)
               --cases 48 --cards 4 --seed 17)
     set_tests_properties(opposing_crosscheck PROPERTIES TIMEOUT 600)
 
+    # ITEM 78'S PROBE, checked against TWO oracle routes at once: its own boolean
+    # AND-OR search, and the outcome rank of the exhaustive utility search, which
+    # is 3 for the attacking side exactly when the conjunction holds.  A shared
+    # misreading of the question would have to survive two algorithms and one
+    # derivation.  The tool reports the forceable count so a run that is all one
+    # answer, and therefore proves little, says so.
+    add_test(NAME conjunction_crosscheck
+      COMMAND ${Python3_EXECUTABLE}
+              "${CMAKE_CURRENT_SOURCE_DIR}/tools/conjunction_crosscheck.py"
+              --cases 14 --cards 3 --seed 17)
+    set_tests_properties(conjunction_crosscheck PROPERTIES TIMEOUT 600)
+
     add_test(NAME subgame_consistency
       COMMAND ${Python3_EXECUTABLE}
               "${CMAKE_CURRENT_SOURCE_DIR}/tools/subgame_consistency.py"

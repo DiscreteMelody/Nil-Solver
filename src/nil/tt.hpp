@@ -141,6 +141,12 @@ enum ValueTag : std::uint8_t {
     // One bid on each side: the value is an outcome RANK plus one side's
     // tricks, which is a third scale again.
     TAG_OPPOSING_NILS = 4,
+    // Item 78's probe: can one side force the other's bid down while keeping
+    // its own?  A boolean on a two-valued scale, which is a fifth scale again --
+    // and unlike TAG_FAST it is not symmetric in the two bidders, so it may not
+    // share entries with a plain fast search at the same cards even though both
+    // store 0 or 1.
+    TAG_CONJUNCTION = 5,
 };
 
 // 24 bytes, no padding on any sane ABI.

@@ -38,6 +38,7 @@ expensive node. Read items 11 and 31 in that light.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ✅ | ~~The conjunction probe in C++, measured but not yet wired in (item 78b)~~ | patch 81 | **Built, cross-checked against two oracle routes, and MEASURED BEFORE BEING WIRED IN -- the measurement says it pays on one of the two deals it was built for and probably not the other.** A question about a shape rather than a mode: `conjunction_seat` names the attacking side's bidder and `solve()` refuses it anywhere but `SHAPE_OPPOSING_NILS`. **The indicator is RANK 3 and nothing else**, under both partner leans, so it reads two bidder seats and no role; charged as a delta the way the rank already is, telescoping to the answer. **Two gates had to be excluded BY NAME rather than read off the weights**: the probe's weights are `(1, 0, 0)` exactly like MODE_FAST's and mean something else, so `value_is_nil_tricks` would have wired two sound proofs to a value they say nothing about -- `disable_single_nil_machinery`'s failure mode arriving through the back door -- and `gains_nonnegative` is false because the delta is **-1** as well as +1. **The defending side's goal is a DISJUNCTION**, its bid alive OR the attacker's dead, so it may dump a trick on the attacker's bidder and abandon its own; a search that let it only protect would report the attacker winning lines it cannot win, confidently and unrefutably by any corpus. **Checked against the oracle's independent boolean search AND the outcome rank of its exhaustive utility search**: 320 probes at 3 cards and 256 at 4 across all eight strictly opposed role sets, all three agreeing every time, 80 and 58 forceable so the run is not all one answer. **THE FLOOR MEASUREMENT IS THE DELIVERABLE.** Only the two MIXED deals ever ask -- the other six are settled by 77's plain probes. Deal 5: 3,476,421 against 296,509,340, **1.2%**. Deal 3: 3,040,879 against 15,161,073, **20.1%** -- on a deal that is already a 0.87x loss from patch 77 and whose item-79 ceiling is 2.79% against deal 5's 14.78%, so it has less to win as well as more to pay. **The probe wants a gate, and the honest gate is not obvious**: hand size does not separate these two deals and nor does anything 77 already knows. Nothing is wired in, so nothing moved: 29/29, 39,701 / 278,059 / 49,084 / 163,393,676, multinil 4,833,200 and opposed 412,178,524 all unmoved |
 | ✅ | ~~The conjunction probe, in the oracle (item 78a)~~ | patch 80 | **Ground truth first, as items 58 and 67 did, and it turned out to be derivable as well as searchable.** The probe: *can one side force the other's bid down while keeping its own?* -- the third question item 77's presolve needs, which closes the two mixed cases where 77 can only supply a one-sided bound and where item 79's ceiling is **14.78% and 2.79% against the 86.62% a closed band gets**. The two items MULTIPLY: 78 closes the band, and 79's whole yield is a function of whether it is closed. **THE EQUIVALENCE is the finding**: the conjunction is exactly outcome RANK 3 for the attacking side, and that same outcome is rank 0 -- the unique worst -- for the other side **under both partner leans**, so a defender maximising its own utility escapes it whenever it can and backward induction on the utility pair lands on rank 3 precisely when the attacker can force it. **It therefore holds on all three shapes, not just the strictly opposed one**, so the probe is already defined for the two arrangements the C++ refuses. Shipped anyway as an INDEPENDENT boolean AND-OR search, because the point of having two is that they are written separately: 1,920 comparisons across all sixteen opposing arrangements at 3 and 4 cards, **zero mismatches**, 488 of 1,920 forceable -- and the population is asserted too, since a check that only ever sees False passes while measuring nothing. `solve_conjunction()`, `ConjunctionSolution`, `--conjunction <seat>` with a compact form for 78b's crosscheck. **The hazard 78b must not walk into**: the DEFENDING side's goal is a DISJUNCTION -- its bid lives OR theirs dies -- so it may dump a trick on the attacker's bidder and abandon its own bid. Constrain it to protect and the search reports the attacker winning lines it cannot win, confidently and unrefutably by any corpus. All 164 oracle checks pass; 28/28; no C++ touched and no node count moved |
 | ✅ | ~~The principal-variation walk's window travels with the line~~ | patch 79 | **82,348,545 PV-walk nodes down to 14,751,323, 5.6x, with every reported node count bit-identical; 1.19x of wall time, 4 of 4 reps.** The whole item is wall time -- the walk's nodes are snapshotted out of `search_nodes`, which is why a 22.6% cost sat unnoticed from patch 77 until patch 78's own instrumentation split it out. **The shift the walk never had**: `search_impl` hands children `alpha - gained, beta - gained` because a child's value is measured from the child, and `walk_pv` re-enters at a POSITION rather than descending through `value_after`, so it asked every step the question the ROOT was asked. Loose windows forgave it; a rank band does not, because the root's value carries a `k*k` of rank a sub-position past a broken bid does not. Patch 77 answered by walking under the sentinels -- correct and blunt, since nothing the walk probes then settles the wider window. **THE CONTROL ARM TRIED TO SHIP A BROKEN SOLVER**: the obvious `--no-pv-shift` leaves the band and stops shifting it, which is not the previous behaviour but *the bug patch 77 found* -- the replay check fires on deal 5, deals abort, and the arm reported 100,508,111 nodes against 412,178,524. **A flag whose OFF position is unsound measures nothing.** OFF is now patch 77's actual walk, so both arms answer and one re-searches; it is also a retroactive proof that the sentinels were needed rather than a tweak, because the tweak IS the bug. Single nil gains too, less: `large.txt` 18.67s to 18.02s. **Also fixed: a silent no-op shipped in patch 78** -- the `pv_walk_nodes` row never reached `--opposed-stats` because the edit adding it used a string replace with no assertion, matched nothing and reported success. The counter was live; only the display was missing, and a measurement that stops being printed looks exactly like a measurement of zero. 28/28; all three corpora under `--check-pv --check-moves`; 8 deals byte-identical to HEAD with the PV; 39,701 / 278,059 / 49,084 / 163,393,676 and multinil 4,833,200 unmoved |
 | ✅ | ~~The reachable-rank bound for one bid on each side~~ | patch 78 | **1.20x in nodes and 1.21x on the clock on top of patch 77, 4 of 4 reps; 1.57x from the pre-77 base.** The `target_bounds` this shape lost at patch 68 with the comment *Correct first*. The rank is a step function of the broken-bid mask and a bid never un-breaks, so the ranks a node can still reach are those of the masks containing its own -- four of them, no cards read -- and the subtree's value range follows. **Population and ceiling measured before building**: 24.86% of nodes answerable in aggregate, but **86.62% on deal 6 with far-down and both-down each firing at 100.00%**, against 14.78% on deal 5 and 2.79% on deal 3. **The ceiling is a function of whether patch 77 closed a TWO-SIDED band, not of the cards**, which is also why the near-bid-down row reads 0.41% and is not worth chasing: that state can still reach ranks either side of the answer and is unanswerable by construction. **THE FIRST SPELLING COST 13.8% OF THROUGHPUT** -- sixty-four iterations per node to fire on a quarter of them, measuring 1.20x on nodes and 0.971 on the clock, which is item 44's failure and C1's. **Unlike either, there was a cheaper spelling sitting right there**: the rank term depends on the mask alone and there are four masks, so it is four pairs of numbers settled in `configure()` plus one comparison skipping the two states that never fire. Node counts came back **bit-identical** and throughput went 6.71M to 8.18M nodes/sec. The lesson is not *measure throughput*, which this file has three times over -- it is that **a per-node gate should be a table lookup before it is abandoned.** Nothing is stored in the TT, and the bound is inert along the PV by arithmetic rather than by a gate. **Also found, by this patch's own instrumentation: patch 77 spends ~88M nodes, about 20% of the opposed search, recovering the principal variation, and none of it is in any reported node count** -- it walks under the sentinels while the search ran under a band, so the table does not settle and the walk re-searches. Item 77's *costs nothing that is measured* is true and misleading; item 80 is the fix. Behind `--no-opposed-reach`; `--opposed-stats` ships the measurement arm. 28/28; 39,701 / 278,059 / 49,084 / 163,393,676 and multinil 4,833,200 all unmoved |
@@ -3768,7 +3769,7 @@ window; that one spends it at every node. (c) `PRESOLVE_MIN_TRICKS` is 8 and 9
 cards is the one size that measured a loss — the floor may want to be higher for
 this shape, but it is a tuning knob and a separate variable.
 
-### 78. The conjunction probe: break theirs while keeping ours — ⭐⭐⭐⭐ — **78a done, patch 80; 78b next**
+### 78. The conjunction probe: break theirs while keeping ours — ⭐⭐⭐⭐ — **78a patch 80, 78b patch 81; 78c next**
 
 **The third probe item 77 needs and `MODE_FAST` cannot express.** 77's two probes
 settle two of the four combinations outright and leave the other two with a
@@ -3811,38 +3812,82 @@ crosscheck has something to shell out to. The CLI answers from the BOOLEAN searc
 rather than reading the rank off the utility search — the point of having two is
 that they are independent, and `selftest` is the one place they are joined.
 
-#### 78b — the C++ search, next
+#### 78b — the C++ search, done in patch 81
 
-**The defending side's goal is a DISJUNCTION and that is the whole hazard.** It
-wins by EITHER keeping its own bid alive OR breaking the attacker's, so it may
-deliberately dump a trick on the attacker's bidder and abandon its own bid to do
-it. A search that lets it only protect reports the attacker succeeding on lines
-it cannot win — a confident wrong answer, not an error, and no corpus would catch
-it. The oracle's search is written so this falls out rather than being handled:
-it minimises the conjunction, which lets both routes through.
+**Built, cross-checked and MEASURED BEFORE BEING WIRED IN, and the measurement
+says it pays on one of the two deals it was built for and probably not on the
+other.**
 
-**The search stays boolean and degenerates helpfully.** The value is in {0, 1}
-throughout, so the `[0, 1]` window and the AND-OR structure survive. Two
-transitions do most of the work:
+**It is a question about a shape, not a mode.** `SearchOptions::conjunction_seat`
+names the ATTACKING side's bidder; everything else about the deal still comes
+from `seats`, and `solve()` refuses the probe on any shape but
+`SHAPE_OPPOSING_NILS`. The value is the indicator, the window is `[0, 1]`, and
+the search is the same AND-OR shape MODE_FAST is.
 
-* the attacker's own bid breaks — **return 0 with no search**, sound because a
-  bid never un-breaks, and already the first line of the oracle's search;
-* the defender's bid breaks — the first conjunct is banked and the residual is
-  *can the attacking side still keep its own bid clean*, which is **literally
-  plain `MODE_FAST` with that seat as the nil bidder**, machinery and bound
-  proofs valid again.
+**The indicator is rank 3 and nothing else**, which is why it fitted here rather
+than needing a new objective. `side_rank` gives 3 to *my bid alive, theirs dead*
+under BOTH partner leans -- the leans only ever swap the two middle rungs -- so
+the indicator reads two bidder seats and no role at all. Charged as a DELTA the
+way the outcome rank already is, telescoping to `conj(final)`, and `conj` of an
+empty mask is zero, so the accumulated value IS the answer rather than differing
+by a constant.
 
-So only the both-intact phase is new code. Both proofs in `bounds.hpp` still fire
-there, to different consumers: the attacker's bid provably doomed settles the
-node at 0, and provably safe collapses the query to a plain fast search on the
-defender's.
+**Two things had to be excluded by name rather than by reading the weights.**
+The probe's weights are `(1, 0, 0)`, the same as MODE_FAST's, and they mean
+something else: the value is an INDICATOR, not `ctx.nil_seat`'s trick count. Left
+alone, `value_is_nil_tricks` would have wired two sound proofs to a value they
+say nothing about -- the exact failure `disable_single_nil_machinery` exists to
+prevent, arriving through the back door. And `gains_nonnegative` is false here
+because the delta is **-1** as well as +1: the far bid dying after the near one
+already has takes the indicator back down.
 
-**What it needs.** Its own `ValueTag` — the predicate is not `TAG_FAST`'s — and
-the key already carries the broken-bid mask as of patch 59. A crosscheck against
-`--conjunction`. And **a floor measurement before a driver**: the both-intact
-phase walks into precisely the region that makes the opposed search expensive, so
-its COST is the open question, not its correctness. Measure it on deals 3 and 5
-before building anything on top of it.
+**The defending side's goal is a DISJUNCTION**, which is the hazard this whole
+item is about. It wins by EITHER keeping its own bid alive OR breaking the
+attacker's, so it may deliberately dump a trick on the attacker's bidder and
+abandon its own bid. Nothing constrains it to protect: it minimises the
+indicator, which lets both routes through. A search that let it only protect
+would report the attacker succeeding on lines it cannot win -- confidently, and
+unrefutably by any corpus.
+
+**Checked against TWO oracle routes at once**, because one would not have been
+enough: the oracle's independently-written boolean search, and the outcome rank
+of its exhaustive utility search. **320 probes at 3 cards and 256 at 4, across
+all eight strictly opposed role sets, all three answers agreeing every time**,
+with 80 and 58 respectively coming back forceable so the run is not all one
+answer. `tools/conjunction_crosscheck.py`, ctest #29.
+
+#### The floor measurement, which is the deliverable
+
+Per this file's own rule, the cost was measured before the probe was wired into
+anything. **Only the two MIXED deals need it** -- the six where both bids are
+safe are settled by item 77's two plain probes and never ask a third question.
+
+| deal | case | total nodes | probe | cost |
+|---:|---|---:|---:|---:|
+| 3 | mixed | 15,161,073 | 3,040,879 | **20.1%** |
+| 5 | mixed | 296,509,340 | 3,476,421 | **1.2%** |
+
+**Deal 5 is where this pays and deal 3 probably is not.** 1.2% to close a band on
+72% of what is left of the opposed tree is an obvious bet; 20.1% on a deal that
+is *already* a 0.87x loss from patch 77 is not, and item 79's ceiling on deal 3
+is 2.79% against deal 5's 14.78%, so deal 3 has less to win as well as more to
+pay. **The probe is therefore likely to want a gate rather than to run
+unconditionally**, and the honest version of that gate is not obvious: hand size
+does not separate these two deals and neither does anything item 77 already
+knows. That is the open question 78c inherits.
+
+Also worth recording: the probe is **not** uniformly cheap. Deal 7's N-attacking
+probe costs 11,526,620 nodes, four times deal 5's -- but deal 7 is a both-safe
+deal and never asks, so it never pays. A gate that fires on the wrong deals would
+cost more than the arm returns.
+
+#### 78c — wiring it into the presolve, next
+
+Unbuilt. What it needs: the gate above, the band arithmetic for a closed rank
+(item 77 already has `opposed_rank_band`, which takes a single rank), and item
+79's ceiling re-measured on deals 3 and 5 once their band closes -- that number
+is the whole justification and it does not exist yet. The prediction to falsify
+is that it moves toward deal 6's 86.62% from their current 2.79% and 14.78%.
 
 ### 60. Nils on OPPOSING sides — ⭐⭐⭐
 
@@ -3867,7 +3912,7 @@ whether this one is affordable at all.
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 36 ✅ → 41 ✅ → 42 ⊘ → 47 ✅ → 43 ⊘→✅ → 43b ⊘ → 44 ⏸ → 54 ✅ → 58 ✅ → 56 ✅ → 57 ✅ → 59 ✅ → 61 ✅ → 62 ✅ → N1 ⊘ → C0 ✅ → C1 ⊘ → C2 ⊘ → C3 ⊘ → C4 → C5 ⏸ → C6 → O1 → 77 ✅ → 79 ✅ → 80 ✅ → 78a ✅ → 78b → 45 → 29b (single-suit) → 9 ⊘ → 10 ⊘ → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 36 ✅ → 41 ✅ → 42 ⊘ → 47 ✅ → 43 ⊘→✅ → 43b ⊘ → 44 ⏸ → 54 ✅ → 58 ✅ → 56 ✅ → 57 ✅ → 59 ✅ → 61 ✅ → 62 ✅ → N1 ⊘ → C0 ✅ → C1 ⊘ → C2 ⊘ → C3 ⊘ → C4 → C5 ⏸ → C6 → O1 → 77 ✅ → 79 ✅ → 80 ✅ → 78a ✅ → 78b ✅ → 78c → 45 → 29b (single-suit) → 9 ⊘ → 10 ⊘ → measure → 11..14
 ```
 
 **Three results off the move-ordering block, all negative, and the third one

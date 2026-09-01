@@ -625,6 +625,14 @@ struct SearchOptions {
     // node-neutral in everything reported -- the walk's own nodes are
     // snapshotted out of the count -- so it moves wall time and nothing else.
     bool pv_shift_window = true;
+    // ITEM 78's PROBE.  The seat of the ATTACKING side's bidder, or -1 for a
+    // normal solve.  With it set the search answers one boolean and nothing
+    // else: can that side force ITS bid to survive while the other's dies?
+    //
+    // It is not a mode, it is a question about a shape -- SHAPE_OPPOSING_NILS
+    // and nothing else -- so it rides on `seats` rather than replacing it, and
+    // solve() refuses it anywhere the shape does not apply.
+    int conjunction_seat = -1;
 
     // Report how often each arm's gate opens and each arm fires (items 43 and
     // 44).  Measurement only and free when off: every counter is guarded on a
@@ -696,6 +704,10 @@ struct Solution {
     // be read off the same run that measures its benefit rather than inferred
     // from a second one.  Included in `nodes` rather than beside it -- the
     // presolve is work this solve did -- and zero whenever none ran.
+    // Item 78's probe, when `SearchOptions::conjunction_seat` asked for it:
+    // can the named side force ITS bid to survive while the other's dies?
+    // False on every solve that did not ask.
+    bool conjunction = false;
     std::uint64_t presolve_nodes = 0;
     // Which mode produced this, so a caller holding a Solution can tell what is
     // in it without having kept the SearchOptions around.
