@@ -962,6 +962,25 @@ struct OpposedStats {
     std::uint64_t settled_spade_short = 0;   // right side, not enough tricks
     std::uint64_t settled_spade_wrong_side = 0;
 
+    // ...and the same question asked of the STRONGER proofs, patch 87.
+    //
+    // `settled_forced` is `forced_spade_tricks` summed over the proving side's
+    // two hands -- strictly stronger than `top_spade_run`, which reads one hand
+    // and only its top run, and sound to add because each floor is proved on its
+    // own hand and two hands cannot win the same trick.
+    //
+    // `settled_cash` adds DDS section 3's can-cash count for the side ON LEAD.
+    // A can-cash count is a statement about one strategy, so it bounds the node
+    // from one side only -- but at a settled node that is enough both ways: the
+    // far side maximises its own tricks, so cashing floors the value, and the
+    // near side minimises them, so its cashing caps the value.  `best` is used
+    // rather than `sum`, because `sum` is optimistic and a measurement that
+    // overstates its own ceiling is worse than none.
+    std::uint64_t settled_forced_proved = 0;
+    std::uint64_t settled_cash_proved = 0;
+    std::uint64_t settled_either_proved = 0;
+
+
 
     std::uint64_t pv_walk_nodes = 0;
 };

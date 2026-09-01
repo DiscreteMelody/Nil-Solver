@@ -518,6 +518,40 @@ inline void forced_spade_tricks(const Hand hands[4], int out[4]) {
 // shortening the guard that the next suit's count was computed against.  A
 // population measured between the two is a population known to within the
 // bracket, which is the honest thing to report before anything is wired to it.
+inline void cash_tricks(const Hand hands[4], int seat, int& sum, int& best) {
+    sum = 0;
+    best = 0;
+    const int lho = (seat + 1) & 3;
+    const int rho = (seat + 3) & 3;
+    const Hand all = hands[0] | hands[1] | hands[2] | hands[3];
+    const bool lho_trumps = (hands[lho] & suit_mask(SUIT_SPADES)) != 0;
+    const bool rho_trumps = (hands[rho] & suit_mask(SUIT_SPADES)) != 0;
+    for (int suit = 0; suit < 4; ++suit) {
+        Hand outstanding = all & suit_mask(suit);
+        if (!outstanding) continue;
+        const Hand mine = hands[seat] & suit_mask(suit);
+        if (!mine) continue;
+        int run = 0;
+        while (outstanding) {
+            const CardId c = highest_card(outstanding);
+            if (!(mine & card_bit(c))) break;
+            ++run;
+            outstanding &= ~card_bit(c);
+        }
+        if (run == 0) continue;
+        if (suit != SUIT_SPADES && (lho_trumps || rho_trumps)) {
+            // An opponent void in the suit and holding a spade ruffs, so only
+            // the rounds where BOTH must still follow are safe.
+            const int a = count_cards(hands[lho] & suit_mask(suit));
+            const int b = count_cards(hands[rho] & suit_mask(suit));
+            const int guard = a < b ? a : b;
+            if (run > guard) run = guard;
+        }
+        sum += run;
+        if (run > best) best = run;
+    }
+}
+
 // Extremes of per_nil * n + per_partner * p over the triangle
 //
 //     n >= kn,   p >= kp,   n + p <= room

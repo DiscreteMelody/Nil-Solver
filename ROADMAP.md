@@ -38,6 +38,7 @@ expensive node. Read items 11 and 31 in that light.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ✅ | ~~The settled region: stronger trick proofs measured (item 82)~~ | patch 87 | **Roughly double the firing rate, and still probably not enough -- said before anyone builds it.** Two upgrades the file was most of the way to. `forced_spade_tricks` summed side-wide replaces `top_spade_run`: strictly stronger, since the run function reads ONE hand and only its top run while the forced function prices in spoilers and speaks about all four, and its own comment already established that two hands' floors may be added. And **DDS section 3's can-cash count, which this file had SPECIFIED AND NEVER WRITTEN** -- the comment describing it sat above an unrelated function with nothing implementing it; `cash_tricks()` is that comment, written. It bounds a node from one side only, which at a settled node is enough both ways: the far side maximises its own tricks so cashing floors the value, the near side minimises them so cashing caps it. `best` is used and never `sum`, because a measurement that overstates its own ceiling is worse than none. **Firing rate 12.97% -> 23.65% (opposed13) and 8.10% -> 16.14% (settled deal)**, the two proofs overlapping on under a fifth of what they cover, which is **2.93% and 5.79% of ALL nodes**. **THAT IS THE PROBLEM**: item 79's ceiling was 24.86% and returned 1.20x; this is 3% and 6%, charged at every settled trick boundary (12.37% and 35.87% of nodes) to fire on a sixth to a quarter of them. **That is the profile item 79's FIRST spelling had when it measured 1.20x on nodes and 0.971 on the clock**, and 79 escaped only because its rank term collapsed to a four-entry table -- neither of these does, because both read the cards. **Recommendation: gate before spending.** The gate is free, since the required claim is already computed from the window with no proof run: 71.88% of the region needs at most two tricks and 0.47% needs four or more, so the proofs need only be attempted where they could possibly succeed. Measurement only: 29/29, opposed 402,422,529, banked counts unmoved |
 | ✅ | ~~The settled region: firing rate of the cheapest trick proof (item 82)~~ | patch 86 | **The sufficiency ceiling said a one-trick claim would do on half the region; this asks whether one is PROVABLE there, because item 81 died in exactly that gap.** Proof used is the cheapest sound one in the file, `top_spade_run` -- the holder of the top outstanding spades and how many it holds consecutively, which are trump and so win the tricks they are played on. Deliberately weak: no side-suit winners, no ruffs, no bound from the other end. **Spade run proves the claim on 12.97% of the region (opposed13) and 8.10% (settled deal), which is 1.61% and 2.90% of ALL nodes** -- real but thin. **THE FINDING IS THE NEXT ROW: 45.83% and 61.38% are cases where the top-spade holder IS the side that must prove something and the run is simply too short.** The proof is being asked the right question and falling short on STRENGTH, which is the opposite of item 81, where the proofs missed the case entirely and there was nowhere to go. Only 16-17% is out of reach of a spade-flavoured proof at all. **So the case for writing full QuickTricks is the 45.83% / 61.38%, not the 12.97% / 8.10%**: side-suit winners and ruffs would address up to 58.8% and 69.5% of the region, or 7.3% and 21% of all nodes on the two workloads. Lesson one level up: a sufficiency bound is not a firing rate, and a firing rate for a WEAK proof is not one for a strong proof. Measurement only, nothing spent: 29/29, opposed 402,422,529, banked counts unmoved |
 | ✅ | ~~Two corrections and a test deal, from a reader's question~~ | patch 85 | **Both found by T asking two questions about the same deal, and both were things the measurements could not have caught.** (1) **Item 82's prose overreached.** It said deal 5 *is not a nil problem any more, it is a double-dummy trick count wearing a nil problem's clothes*. T asked whether that ignores branches where both bids get set, and gave the case: **a cover that wins every trick robs both bids of one, so both SURVIVE** -- rank 2, better than the answer for whoever reaches it, and the search must consider it. A node's rank is settled only once its MASK IS FULL, and deal 5 is 8.62% intact, 52.35% one-down, 39.04% both-down: **61% of it is still a nil problem** and only the last 39% is the pure trick count item 82 measures. The measurement was always scoped to that 39% and was right; the prose was not. **A wrong sentence sitting next to correct numbers is the kind that survives review.** (2) **`nil_tricks` counts tricks won by ANY bidder**, which is right for a two-bid deal, and the CLI labelled it `Tricks for N`, so a reader saw *Tricks for N 6* and reasonably read it as N winning six. N won two; E won four. Now `Tricks for N+E  combined 6 of 13`. Reported by a user comparing two role assignments of one deal -- exactly the comparison the label made impossible. (3) **`tests/corpus/opposed13_settled.txt`**: deal 5's cards with the bids on S and W instead of N and E, where S's KQ of spades under W's AJT9 kills both before a card is played. Census **0.00% intact, 7.39% one down, 92.61% both down**. So the 4.7x gap between the two assignments -- 292,597,961 against 62,331,424 -- **is not the solver being worse at one**, they are different questions. And the EASY one still costs 62 million nodes with the nil question free, because 92.6% of it is a trick count with every bound off: the cleanest test case in the repo for item 82, whose own ceiling here is 46.78% needing one trick. 29/29; opposed 402,422,529 and every banked count unmoved |
 | ✅ | ~~The both-down region is a pure trick count: ceiling measured (item 82)~~ | patch 84 | **The answer to *what prunes when both bids must die* is: stop pruning on nils and prune on tricks.** The ranks a node can still reach are those of the masks containing its own, and against a *both die* answer **all four masks either straddle the band or sit exactly on it** -- so no arithmetic on the mask refutes anything. Against a *both live* answer two of the four sit entirely below and vanish on arrival, which is deal 6's 86.62% and item 79's whole yield. **Deal 5's 1.013x from item 78c is that table, not a weak probe.** The consequence: with the rank pinned at the root by items 77 and 78, every node inherits it and the entire remaining job of a 292-million-node search is the far side's TRICK COUNT -- a double-dummy trick count wearing a nil problem's clothes, solved with every trick bound switched off. **How strong would a bound have to be?** Asked before re-expressing QuickTricks or LaterTricks, because that is most of the work of shipping them; the answer falls out of the window and the tricks left with no bound written. The region is 12.37% of nodes at a trick boundary, and **71.88% of it needs at most two tricks proven, 48.05% exactly one** -- an ace, a top trump, a ruff, the first thing DDS section 3 computes. Only 0.11% is hopeless. Deal 5 alone is the same or better: 15.91% of nodes, 49.56% needing one trick. **Against item 81, rejected one patch earlier, the contrast is the argument**: 81 had a 19.08% population and a 10.8% firing rate because its proofs missed the common middle case, where here the DEMAND is a whole rank lower. **Still unmeasured, and 81 is why that is said plainly**: this bounds how strong a proof must be, NOT how often one fires, and 81 died in exactly that gap. Measurement arm shipped under `--opposed-stats`; nothing spent, nothing moved: 29/29, opposed 402,422,529, banked counts unmoved |
@@ -4138,11 +4139,58 @@ its head. **The case for writing the full bound is the 45.83% / 61.38%, not the
 12.97% / 8.10%.** A full QuickTricks would address up to 58.8% and 69.5% of the
 region, which is 7.3% and 21% of all nodes on the two workloads.
 
-**WHAT IS STILL UNMEASURED.** How much of that headroom side-suit winners and
-ruffs actually convert. The lesson holds one level up: a sufficiency bound is not
-a firing rate, and a firing rate for a WEAK proof is not one for a strong proof. The next step is the rest of section 3 -- side-suit
-winners and ruffs on top of the spade run -- measured the same way before it is
-spent.
+#### The stronger proofs, measured at patch 87
+
+Two upgrades, both of which the file was already most of the way to.
+
+**`forced_spade_tricks` summed side-wide**, replacing `top_spade_run`. Strictly
+stronger: the run function reads ONE hand and only its top run, the forced
+function prices in spoilers from outside the hand and speaks about all four, and
+its own comment already established that two hands' floors may be added because
+each is proved on its own hand and two hands cannot win the same trick.
+
+**DDS section 3's can-cash count, which this file had SPECIFIED AND NEVER
+WRITTEN.** The comment at `bounds.hpp` describing it -- the per-suit run, all of
+it cashing in trumps, `min(run, shorter opponent's length)` in a side suit when
+either opponent holds a spade, `sum` optimistic and `best` sound -- sat above an
+unrelated function with nothing implementing it. `cash_tricks()` is that
+comment, written. A can-cash count bounds a node from ONE side only, and at a
+settled node that is enough in both directions: the far side maximises its own
+tricks so its cashing floors the value, the near side minimises them so its
+cashing caps it. `best` is used, never `sum`, because a measurement that
+overstates its own ceiling is worse than none.
+
+| proof | opposed13 | settled deal |
+|---|---:|---:|
+| top-spade run (patch 86) | 12.97% | 8.10% |
+| forced spades, side-wide | 17.12% | 9.97% |
+| can-cash, side on lead | 11.24% | 8.84% |
+| **either** | **23.65%** | **16.14%** |
+
+**Roughly double, and the two are complementary** -- 17.12 + 11.24 = 28.36
+against an either of 23.65, so they overlap on less than a fifth of what they
+cover. In whole-tree terms the region is 12.37% and 35.87% of nodes, so the pair
+answers **2.93% of all nodes on `opposed13.txt` and 5.79% on the settled deal**.
+
+**AND THAT IS THE PROBLEM, stated before anyone builds it.** Item 79's ceiling
+was 24.86% of nodes and it returned 1.20x. This is 3% and 6%, and it would be
+charged at every settled trick boundary -- 12.37% and 35.87% of nodes -- to fire
+on a sixth to a quarter of them. **That is the profile item 79's first spelling
+had when it measured 1.20x on nodes and 0.971 on the clock**, and item 79 escaped
+only because its rank term collapsed to a four-entry table. `forced_spade_tricks`
+walks every outstanding spade and `cash_tricks` walks four suits; neither
+collapses to a lookup, because both read the cards.
+
+**So this is a marginal build, and the honest recommendation is to gate it before
+spending it.** The gate is available and cheap: 71.88% of the region needs at
+most two tricks proven, and a node needing four or more is 0.47% -- the required
+claim is already computed from the window with no proof run at all, so the
+proofs need only be attempted where they could possibly succeed. Whether that
+recovers the throughput is the measurement that decides the item, and it is one
+paired-rep run away.
+
+**WHAT IS STILL UNMEASURED.** Whether the proofs pay for themselves on the clock. The lesson holds one level up: a sufficiency bound is not
+a firing rate, and a firing rate for a WEAK proof is not one for a strong proof. The next step is a gated consumer and a paired-rep run.
 
 ### 60. Nils on OPPOSING sides — ⭐⭐⭐
 

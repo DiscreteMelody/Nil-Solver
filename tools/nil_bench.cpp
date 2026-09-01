@@ -1173,6 +1173,16 @@ int main(int argc, char** argv) {
                   << "    wrong side or no spades  " << std::setw(14)
                   << os.settled_spade_wrong_side << "  " << std::setw(6)
                   << 100.0 * double(os.settled_spade_wrong_side) / sb << "%\n";
+        std::cout << "    -- stronger proofs (patch 87) --\n"
+                  << "    forced spades, side-wide " << std::setw(14)
+                  << os.settled_forced_proved << "  " << std::setw(6)
+                  << 100.0 * double(os.settled_forced_proved) / sb << "% of the region\n"
+                  << "    can-cash, side on lead   " << std::setw(14)
+                  << os.settled_cash_proved << "  " << std::setw(6)
+                  << 100.0 * double(os.settled_cash_proved) / sb << "%\n"
+                  << "    EITHER                   " << std::setw(14)
+                  << os.settled_either_proved << "  " << std::setw(6)
+                  << 100.0 * double(os.settled_either_proved) / sb << "% of the region\n";
         std::cout << std::defaultfloat;
     }
     if (nilset_stats) {

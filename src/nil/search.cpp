@@ -830,6 +830,30 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
                         ++os.settled_spade_short;
                     }
                 }
+
+                // The stronger proofs, asked of BOTH sides rather than only
+                // whichever happens to hold the top spade.
+                int forced[4] = {0, 0, 0, 0};
+                forced_spade_tricks(st.hands, forced);
+                const int near_seat_a = ctx.nil_seat;
+                const int far_seat_a = ctx.far_nil_seat;
+                const int floor_near =
+                    forced[near_seat_a & 3] + forced[(near_seat_a + 2) & 3];
+                const int floor_far = forced[far_seat_a & 3] + forced[(far_seat_a + 2) & 3];
+                const bool by_forced =
+                    (need_near >= 0 && floor_near >= need_near) ||
+                    (need_of_far >= 0 && floor_far >= need_of_far);
+
+                int cash_sum = 0;
+                int cash_best = 0;
+                cash_tricks(st.hands, st.leader, cash_sum, cash_best);
+                const bool lead_is_near = ((st.leader ^ ctx.nil_seat) & 1) == 0;
+                const int want_lead = lead_is_near ? need_near : need_of_far;
+                const bool by_cash = want_lead >= 0 && cash_best >= want_lead;
+
+                if (by_forced) ++os.settled_forced_proved;
+                if (by_cash) ++os.settled_cash_proved;
+                if (by_forced || by_cash) ++os.settled_either_proved;
             }
         }
 
