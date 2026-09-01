@@ -690,6 +690,8 @@ int main(int argc, char** argv) {
             check_moves = true;
         } else if (arg == "--check-pv") {
             check_pv = true;
+        } else if (arg == "--no-conjunction-presolve") {
+            opts.conjunction_presolve = false;
         } else if (arg == "--no-pv-shift") {
             opts.pv_shift_window = false;
         } else if (arg == "--no-opposed-reach") {

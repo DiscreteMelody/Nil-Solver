@@ -634,6 +634,12 @@ struct SearchOptions {
     // solve() refuses it anywhere the shape does not apply.
     int conjunction_seat = -1;
 
+    // ITEM 78c: spend a THIRD probe when the first two disagree, to close the
+    // rank band they can only bound from one end.  Inert unless the presolve
+    // runs at all, and inert on the two-thirds of deals the first two settle
+    // outright.  Off is the control arm.
+    bool conjunction_presolve = true;
+
     // Report how often each arm's gate opens and each arm fires (items 43 and
     // 44).  Measurement only and free when off: every counter is guarded on a
     // null pointer that is set only when this is true.

@@ -424,6 +424,17 @@ extern "C" {
  * it needs a flag to be measurable. A control arm. */
 #define NIL_FLAG_NO_PV_SHIFT 0x2000000u
 
+/* With a bid on each side, do not spend a THIRD probe to close the root window
+ * when the first two disagree.  Roadmap item 78c.
+ *
+ * The two probes under NIL_FLAG_NO_PRESOLVE settle the rank outright when they
+ * agree -- both bids safe means both live, both breakable means both die -- and
+ * bound it from one end only when exactly one bid is safe.  This spends one more
+ * boolean search to close that case: the side whose bid CANNOT be broken asks
+ * whether it can also take the other's.  Same value, same trick counts, same
+ * principal variation; a control arm. */
+#define NIL_FLAG_NO_CONJUNCTION_PRESOLVE 0x4000000u
+
 #define NIL_FLAG_NO_SETTLED_GAINS 0x800000u
 
 /* Let the cover partner, on lead, play the cheapest card the nil bidder can

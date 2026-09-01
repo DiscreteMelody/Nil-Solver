@@ -127,6 +127,7 @@ std::int32_t prepare(const char* pbn, std::int32_t leader, const char* current_t
     opts.settled_gains = (flags & NIL_FLAG_NO_SETTLED_GAINS) == 0;
     opts.opposed_reach = (flags & NIL_FLAG_NO_OPPOSED_REACH) == 0;
     opts.pv_shift_window = (flags & NIL_FLAG_NO_PV_SHIFT) == 0;
+    opts.conjunction_presolve = (flags & NIL_FLAG_NO_CONJUNCTION_PRESOLVE) == 0;
     opts.cover_duck_short = (flags & NIL_FLAG_COVER_DUCK_SHORT) != 0;
     opts.narrow_window = (flags & NIL_FLAG_NO_NARROW) == 0;
     opts.presolve_window = (flags & NIL_FLAG_NO_PRESOLVE) == 0;

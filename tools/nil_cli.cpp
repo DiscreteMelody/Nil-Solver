@@ -57,6 +57,9 @@ void usage(const char* argv0) {
         << "  --no-narrow             do not narrow the window as moves come back\n"
         << "                          (same answer and same PV, many more nodes;\n"
         << "                          full mode only)\n"
+        << "  --no-conjunction-presolve  with a bid on each side, do not spend a\n"
+        << "                          third probe to close the root window when the\n"
+        << "                          first two disagree (same answer, more nodes)\n"
         << "  --no-opposed-reach      with a bid on each side, do not answer a node\n"
         << "                          from the ranks its broken-bid mask can still\n"
         << "                          reach (same answer, more nodes)\n"
@@ -226,6 +229,8 @@ int main(int argc, char** argv) {
             opts.narrow_window = false;
         } else if (arg == "--conjunction" && i + 1 < argc) {
             conjunction_text = argv[++i];
+        } else if (arg == "--no-conjunction-presolve") {
+            opts.conjunction_presolve = false;
         } else if (arg == "--no-pv-shift") {
             opts.pv_shift_window = false;
         } else if (arg == "--no-opposed-reach") {

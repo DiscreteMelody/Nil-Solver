@@ -2390,6 +2390,12 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
         int rank_hi = 3;
         bool have_lo = false;
         bool have_hi = false;
+        // Which probe came back safe, kept because the THIRD probe below is
+        // asked by the side whose bid is the one that cannot be broken.
+        bool near_safe = false;
+        bool far_safe = false;
+        bool near_answered = false;
+        bool far_answered = false;
 
         for (int which = 0; which < 2; ++which) {
             const bool probing_near = which == 0;
@@ -2409,6 +2415,13 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
             if (!ok) continue;
 
             const bool safe = probe.nils_set == 0;
+            if (probing_near) {
+                near_safe = safe;
+                near_answered = true;
+            } else {
+                far_safe = safe;
+                far_answered = true;
+            }
             // The two outcomes the guarantee leaves standing.  Whichever bid the
             // probe was about is pinned; the other is still free.
             const bool near_lives = probing_near ? safe : true;
@@ -2429,6 +2442,72 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
                 const int ceil_rank = a > b ? a : b;
                 if (!have_hi || ceil_rank < rank_hi) rank_hi = ceil_rank;
                 have_hi = true;
+            }
+        }
+
+        // ---- item 78c: the third probe, when the first two disagree --------
+        //
+        // WHEN THEY AGREE THERE IS NOTHING LEFT TO ASK.  Both bids safe pins the
+        // rank at "both live"; both breakable pins it at the outcome each side
+        // can force on the other.  It is only when exactly ONE bid is safe that
+        // the two bounds land on the same end and the band stays open, and that
+        // is where deals 3 and 5 of `opposed13.txt` sit -- deal 5 being 72% of
+        // what is left of the opposed tree.
+        //
+        // THE SIDE THAT ASKS IS THE ONE WHOSE BID IS SAFE.  Its bid cannot be
+        // taken away, so the only question left is whether it can ALSO take the
+        // other's, and that is exactly the conjunction: *can this side force the
+        // other's bid down while keeping its own?*  Item 78b's probe, answering
+        // one boolean over a [0, 1] window.
+        //
+        // TWO CANDIDATES REMAIN AND THE PROBE NAMES ONE.  A one-sided bound
+        // always leaves exactly two of the four outcome ranks standing, and the
+        // conjunction is the extreme one of the pair -- the asking side's best
+        // and the other's worst.  So a true answer pins the rank there and a
+        // false answer pins it on the other candidate.  Rather than case out the
+        // partner leans, the candidates are enumerated and the refuted one is
+        // struck off; if that ever leaves other than one standing the band is
+        // left as it was, which costs the tightening and nothing else.
+        if (opts.conjunction_presolve && near_answered && far_answered &&
+            near_safe != far_safe) {
+            SearchOptions conj_opts = opts;
+            conj_opts.mode = MODE_FAST;
+            conj_opts.conjunction_seat = near_safe ? near_seat : far_seat;
+            Solution conj;
+            std::string conj_err;
+            if (solve(pos, roles, conj_opts, conj, conj_err)) {
+                presolve_nodes += conj.nodes;
+                presolve_stats.probes += conj.tt_probes;
+                presolve_stats.hits += conj.tt_hits;
+                presolve_stats.partial += conj.tt_partial;
+                presolve_stats.stores += conj.tt_stores;
+                presolve_stats.evictions += conj.tt_evictions;
+
+                // The outcome the conjunction asserts: the asking side's bid
+                // alive and the other's dead.
+                const int conj_rank = near_safe
+                                          ? opposed_rank(true, false, far_partner_role)
+                                          : opposed_rank(false, true, far_partner_role);
+                int survivors = 0;
+                int only = 0;
+                for (int n = 0; n < 2; ++n) {
+                    for (int f = 0; f < 2; ++f) {
+                        const int r = opposed_rank(n != 0, f != 0, far_partner_role);
+                        if (have_lo && r < rank_lo) continue;
+                        if (have_hi && r > rank_hi) continue;
+                        if (conj.conjunction ? r != conj_rank : r == conj_rank) continue;
+                        if (survivors == 0 || r != only) {
+                            ++survivors;
+                            only = r;
+                        }
+                    }
+                }
+                if (survivors == 1) {
+                    rank_lo = only;
+                    rank_hi = only;
+                    have_lo = true;
+                    have_hi = true;
+                }
             }
         }
 
