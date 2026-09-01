@@ -392,6 +392,23 @@ extern "C" {
 /* With a bid on each side, do not take the static end-of-trick cutoff in
  * positions where every bid is already down.  Roadmap item 76.  Same answer,
  * more nodes; a control arm.  Inert for every other seat shape. */
+/* With a bid on each side, do not answer a node from the outcome ranks its
+ * broken-bid mask can still reach.  Roadmap item 79.
+ *
+ * A bid never un-breaks, so from a given set of broken bids the reachable
+ * outcome ranks are exactly those of the sets containing it -- four of them,
+ * computable without reading a card.  The rank is charged as a step, so a
+ * subtree's value range follows from that set and the tricks left, and a node
+ * whose whole range sits on one side of the window is answered with a fail-soft
+ * bound.  This is the NIL_FLAG_NO_TARGET_BOUNDS idea, re-derived over the
+ * region a two-bid objective actually reaches.
+ *
+ * Worth 1.20x in nodes and 1.21x on the clock on top of the presolve above, and
+ * 1.57x with it.  Inert for every other seat shape and inert along the principal
+ * variation, which is walked under a window no finite range reaches.  Same
+ * value, same trick counts and same principal variation; a control arm. */
+#define NIL_FLAG_NO_OPPOSED_REACH 0x1000000u
+
 #define NIL_FLAG_NO_SETTLED_GAINS 0x800000u
 
 /* Let the cover partner, on lead, play the cheapest card the nil bidder can

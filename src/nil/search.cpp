@@ -54,6 +54,11 @@ NilSetStats& nil_set_stats_storage() {
     return stats;
 }
 
+OpposedStats& opposed_stats_storage() {
+    static thread_local OpposedStats stats;
+    return stats;
+}
+
 QuickTrickStats& quick_trick_stats_storage() {
     static thread_local QuickTrickStats stats;
     return stats;
@@ -164,6 +169,36 @@ struct Ctx {
     bool track_ranks = false;
     RankMaskStats* rank_stats = nullptr;
     NilSetStats* nilset_stats = nullptr;  // roadmap item 32, measurement only
+    OpposedStats* opposed_stats = nullptr;  // roadmap item 79, measurement only
+    // Set once the value is known and the remaining work is recovering the
+    // line, so item 79's sweep can keep those nodes out of the population.
+    bool in_pv_walk = false;
+    bool opposed_reach = true;  // item 79's bound, spent rather than counted
+    // ITEM 79, PRECOMPUTED.  The rank term depends on the mask and on nothing
+    // else, and there are four masks, so it is four pairs of numbers settled
+    // once in configure() rather than a sixteen-way walk at every node.
+    //
+    // THE FIRST SPELLING COST 13.8% OF THROUGHPUT and gave back most of a 1.20x
+    // node win.  It enumerated the reachable masks and popcounted each -- about
+    // sixty-four iterations per node, to fire on a quarter of them.  That is
+    // item 44's failure exactly, and unlike item 44 there was a cheaper
+    // spelling sitting right there.
+    //
+    // Indexed by (near bid down) << 1 | (far bid down), already multiplied by
+    // primary_weight, so a node adds only the trick span.
+    int reach_lo[4] = {0, 0, 0, 0};
+    int reach_hi[4] = {0, 0, 0, 0};
+    // Which states can EVER fire, so the common case leaves after one test.
+    // Measured on opposed13.txt: with both bids intact the reachable set spans
+    // every rank and the bound answered 0 nodes of 68.5 million; with only the
+    // near bid down it straddles the band and answered 0.41%.  Both are skipped
+    // outright rather than computed and discarded.
+    bool reach_useful[4] = {false, false, false, false};
+
+    int reach_index(unsigned mask) const {
+        return static_cast<int>((((mask >> nil_seat) & 1u) << 1) |
+                                ((mask >> far_nil_seat) & 1u));
+    }
     QuickTrickStats* quick_stats = nullptr;  // roadmap item 43, measurement only
 };
 
@@ -493,6 +528,29 @@ inline int far_side_rank(unsigned mask, const Ctx& ctx) {
     return side_rank(far_survives, near_survives, ctx.far_partner_role);
 }
 
+
+// ---- item 79: the reachable-rank bound, MEASURED but not spent -------------
+//
+// The rank is a step function of the broken-bid mask and a bid never un-breaks,
+// so from mask `m` the reachable ranks are exactly those of the masks that
+// contain it -- four of them, no cards read.  `score_trick` charges the rank as
+// a DELTA against the mask the node arrived with, so a subtree's own value is
+//
+//     primary * (rank(final) - rank(m))  +  secondary * (far tricks from here)
+//
+// and both terms have a range computable from `m` and the tricks left.  That is
+// the `target_bounds` this shape lost at patch 68 and has never had back.
+//
+// ONE REFINEMENT WORTH TAKING, and it is patch 66's `u >= d` edge again: a bid
+// dies exactly when its own seat wins a trick, and no two bids die on the same
+// trick, so at most `t` more bids can break with `t` tricks left.  It only bites
+// in the last trick or two, which is also where the tree is widest.
+void opposed_reach_bound(const Ctx& ctx, unsigned mask, int tricks_left, int& lo, int& hi) {
+    const int idx = ctx.reach_index(mask);
+    lo = ctx.reach_lo[idx] + (ctx.secondary_weight < 0 ? ctx.secondary_weight * tricks_left : 0);
+    hi = ctx.reach_hi[idx] + (ctx.secondary_weight > 0 ? ctx.secondary_weight * tricks_left : 0);
+}
+
 // What a completed trick is worth, and what it does to the broken-nil mask.
 //
 // TWO OBJECTIVES, ONE FUNCTION.  Under a single nil the primary level weights
@@ -645,6 +703,73 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
     ++ctx.nodes;    best_move = NO_CARD;
     if constexpr (TRACK) *essential = 0;
     if (st.empty()) return 0;
+
+    // Item 79's sweep.  Null unless --opposed-stats asked for it, so this is a
+    // predictable branch and nothing else.  Counted BEFORE any of the bounds
+    // below run, because the question is what the reachable-rank bound would
+    // answer, not what is left after everything else has had a turn.
+    if (ctx.opposed_stats) {
+        OpposedStats& os = *ctx.opposed_stats;
+        if (ctx.in_pv_walk) {
+            ++os.pv_walk_nodes;
+        } else {
+        ++os.nodes;
+        const unsigned near_bit = 1u << ctx.nil_seat;
+        const unsigned far_bit = 1u << ctx.far_nil_seat;
+        const bool near_down = (st.nils_broken & near_bit) != 0;
+        const bool far_down = (st.nils_broken & far_bit) != 0;
+        int lo = 0;
+        int hi = 0;
+        // The seat about to play has not played to this trick, so its card count is
+        // the number of tricks still to come INCLUDING the current one -- correct
+        // at any trick_len, where the leader's count is not.
+        opposed_reach_bound(ctx, st.nils_broken, count_cards(st.hands[st.to_play()]), lo, hi);
+        const bool answers = hi <= alpha || lo >= beta;
+        if (near_down && far_down) {
+            ++os.state_both_down;
+            if (answers) ++os.would_answer_both_down;
+        } else if (near_down) {
+            ++os.state_near_down;
+            if (answers) ++os.would_answer_near_down;
+        } else if (far_down) {
+            ++os.state_far_down;
+            if (answers) ++os.would_answer_far_down;
+        } else {
+            ++os.state_intact;
+            if (answers) ++os.would_answer_intact;
+        }
+        if (answers) ++os.would_answer;
+        }
+    }
+
+    // ---- item 79: answer the node from the mask, spending no cards ---------
+    //
+    // FAIL-SOFT AND EXACT ABOUT WHAT IT CLAIMS.  `hi` is an upper bound on this
+    // subtree's value and `lo` a lower one, so returning `hi` at or below alpha
+    // and `lo` at or above beta are both the ordinary fail-soft returns -- the
+    // node is claiming which side of the window it falls on, which is all a
+    // cutoff ever claims.
+    //
+    // NOTHING IS STORED.  Like the static bounds above, a node answered by a
+    // popcount and two comparisons is cheaper to redo than to remember, and an
+    // entry whose value came from the mask rather than the cards would be read
+    // back by a search that arrived under a different mask.
+    //
+    // INERT ALONG THE PRINCIPAL VARIATION, and by arithmetic rather than by a
+    // gate: the walk runs under the sentinels, where no finite range reaches
+    // either end.  So the line the search chose is recovered by searching, not
+    // by the bound that shortened the search.
+    if (ctx.opposed_reach && st.nils_broken != 0) {
+        const int idx = ctx.reach_index(st.nils_broken);
+        if (ctx.reach_useful[idx]) {
+            const int t = count_cards(st.hands[st.to_play()]);
+            const int span = ctx.secondary_weight * t;
+            const int lo = ctx.reach_lo[idx] + (span < 0 ? span : 0);
+            const int hi = ctx.reach_hi[idx] + (span > 0 ? span : 0);
+            if (hi <= alpha) return hi;
+            if (lo >= beta) return lo;
+        }
+    }
 
     // LAST TRICK.  Chang's `if (tricks_left == 1) return LastTrick(sp)`, which
     // this search did not have: it recursed to the bottom like any other trick
@@ -1603,6 +1728,43 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
     ctx.track_ranks = opts.track_rank_masks;
     if (ctx.track_ranks) ctx.rank_stats = &rank_mask_stats_storage();
     if (opts.track_nilset) ctx.nilset_stats = &nil_set_stats_storage();
+    if (opts.track_opposed && ctx.opposing) ctx.opposed_stats = &opposed_stats_storage();
+    ctx.opposed_reach = opts.opposed_reach && ctx.opposing;
+    if (ctx.opposing) {
+        // Four states, and for each the range of ranks still reachable from it.
+        // A bid never un-breaks, so reachability is containment on the mask.
+        const int here[4] = {
+            side_rank(true, true, ctx.far_partner_role),    // nothing broken
+            side_rank(false, true, ctx.far_partner_role),   // far bid down
+            side_rank(true, false, ctx.far_partner_role),   // near bid down
+            side_rank(false, false, ctx.far_partner_role),  // both down
+        };
+        // Which states each can still reach, as indices into `here`.
+        static const int reachable[4][4] = {
+            {0, 1, 2, 3},  // nothing broken: anything
+            {1, 3, -1, -1},  // far down: itself, or both
+            {2, 3, -1, -1},  // near down: itself, or both
+            {3, -1, -1, -1},  // both down: itself
+        };
+        for (int i = 0; i < 4; ++i) {
+            int lo_rank = here[i];
+            int hi_rank = here[i];
+            for (int j = 0; j < 4 && reachable[i][j] >= 0; ++j) {
+                const int r = here[reachable[i][j]];
+                if (r < lo_rank) lo_rank = r;
+                if (r > hi_rank) hi_rank = r;
+            }
+            ctx.reach_lo[i] = weights.primary * (lo_rank - here[i]);
+            ctx.reach_hi[i] = weights.primary * (hi_rank - here[i]);
+            // A state whose rank cannot move contributes nothing beyond the
+            // trick span, and one that spans the whole ladder contributes a
+            // range no window excludes.  Neither is worth a per-node test.
+            ctx.reach_useful[i] = ctx.reach_lo[i] != 0 || ctx.reach_hi[i] != 0 || i == 3;
+        }
+        // `here` is indexed 0=none 1=far 2=near 3=both, which is exactly
+        // reach_index's (near << 1 | far) once the two middle entries are
+        // swapped -- they are written above in reach_index's order already.
+    }
     if (opts.track_quick_tricks) ctx.quick_stats = &quick_trick_stats_storage();
 
     const std::size_t table_mb =
@@ -2127,7 +2289,9 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
     // The root's own move is the head of the line and needs the same treatment
     // as every step below it.
     if (ctx.canonicalise) {
+        ctx.in_pv_walk = true;
         const CardId c = canonical_move_for(ctx, st, value, root_alpha, root_beta);
+        ctx.in_pv_walk = false;
         if (c != NO_CARD) move = c;
     }
     const std::uint64_t search_nodes = ctx.nodes + presolve_nodes;
@@ -2141,6 +2305,7 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
     // strictly smaller subtree.  Either way the moves are the same ones the
     // search picked, so the PV matches the oracle's play for play.
     out.pv.clear();
+    ctx.in_pv_walk = true;
     const int pv_alpha = pv_open_window ? WINDOW_MIN : root_alpha;
     const int pv_beta = pv_open_window ? WINDOW_MAX : root_beta;
     if (!walk_pv(ctx, st, move, out.pv, err, pv_alpha, pv_beta)) return false;
@@ -2206,6 +2371,9 @@ const RankMaskStats& rank_mask_stats() { return rank_mask_stats_storage(); }
 void reset_rank_mask_stats() { rank_mask_stats_storage() = RankMaskStats(); }
 
 const NilSetStats& nil_set_stats() { return nil_set_stats_storage(); }
+
+const OpposedStats& opposed_stats() { return opposed_stats_storage(); }
+void reset_opposed_stats() { opposed_stats_storage() = OpposedStats(); }
 
 void reset_nil_set_stats() { nil_set_stats_storage() = NilSetStats(); }
 

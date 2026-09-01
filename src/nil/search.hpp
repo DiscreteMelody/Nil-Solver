@@ -610,6 +610,14 @@ struct SearchOptions {
     // nil_forced_ceiling in bounds.hpp for why it over-fires on purpose.
     // Off by default and free when off.
     bool track_nilset = false;
+    // Roadmap item 79's population and ceiling sweep.  Measurement only; free
+    // when off, because the counting site is behind a null pointer.
+    bool track_opposed = false;
+    // Roadmap item 79: answer an opposed node from the ranks its broken-bid mask
+    // can still reach, when that range already falls outside the window.  The
+    // `target_bounds` this shape lost at patch 68, re-derived over the thing the
+    // opposed value is actually written in.  Off is the control arm.
+    bool opposed_reach = true;
 
     // Report how often each arm's gate opens and each arm fires (items 43 and
     // 44).  Measurement only and free when off: every counter is guarded on a
@@ -828,6 +836,46 @@ void reset_rank_mask_stats();
 // Where the forced-trick proof stands at trick boundaries where the nil bidder
 // still holds a spade.  `both` fires today; `ceiling_only` is what an
 // adversarial proof could add AT MOST.
+// Roadmap item 79's population count, and its CEILING.  Measurement only --
+// nothing in the search consumes it.
+//
+// With a bid on each side the outcome RANK is a step function of which bids have
+// broken, and a bid never un-breaks, so the set of ranks a node can still reach
+// is a function of `st.nils_broken` alone: four masks, computable without
+// reading a card.  That set, plus the range of the trick term, bounds the
+// subtree -- which is the `target_bounds` this shape lost and has never had
+// back.
+//
+// Two questions, and patch 76 is the reason both are asked.  `state_*` is the
+// POPULATION: where the opposed tree actually spends its nodes, re-measured
+// after patch 77 because the band moved it.  `would_answer` is the FIRING RATE:
+// how many of those nodes the bound would have settled against the window the
+// node was actually asked about.  A cutoff being legal in 43% of the tree said
+// nothing about how often it fires, and that item was worth 1.29% where the
+// population predicted much more.
+struct OpposedStats {
+    std::uint64_t nodes = 0;          // opposed nodes reaching the count
+    std::uint64_t state_intact = 0;   // no bid broken yet
+    std::uint64_t state_near_down = 0;    // the bid on ctx.nil_seat's side is gone
+    std::uint64_t state_far_down = 0;     // the other one is
+    std::uint64_t state_both_down = 0;
+    // Of the above, how many the reachable-rank bound would have answered, and
+    // which way.  Split by state so the ceiling is attributable rather than one
+    // aggregate that hides which region pays.
+    std::uint64_t would_answer = 0;
+    std::uint64_t would_answer_near_down = 0;
+    std::uint64_t would_answer_far_down = 0;
+    std::uint64_t would_answer_both_down = 0;
+    std::uint64_t would_answer_intact = 0;
+    // Nodes spent AFTER the value was found, recovering the principal variation
+    // and re-deriving the canonical move.  Counted apart because they are not
+    // part of the search's population and because patch 77 made them expensive:
+    // it walks the line under the sentinels while the search ran under a band,
+    // so the table entries do not settle the wider window and the walk
+    // re-searches.  Not included in `nodes` or in any state row.
+    std::uint64_t pv_walk_nodes = 0;
+};
+
 struct NilSetStats {
     std::uint64_t boundaries = 0;     // trick boundaries with a spade in the nil hand
     std::uint64_t proof_fires = 0;    // nil_must_take_a_trick says forced
@@ -855,6 +903,8 @@ struct QuickTrickStats {
 const QuickTrickStats& quick_trick_stats();
 void reset_quick_trick_stats();
 
+const OpposedStats& opposed_stats();
+void reset_opposed_stats();
 const NilSetStats& nil_set_stats();
 void reset_nil_set_stats();
 

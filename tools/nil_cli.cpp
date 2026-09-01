@@ -57,6 +57,9 @@ void usage(const char* argv0) {
         << "  --no-narrow             do not narrow the window as moves come back\n"
         << "                          (same answer and same PV, many more nodes;\n"
         << "                          full mode only)\n"
+        << "  --no-opposed-reach      with a bid on each side, do not answer a node\n"
+        << "                          from the ranks its broken-bid mask can still\n"
+        << "                          reach (same answer, more nodes)\n"
         << "  --no-presolve           do not spend a fast search to bound full\n"
         << "                          mode's root window (same answer, more nodes;\n"
         << "                          full mode only)\n"
@@ -216,6 +219,8 @@ int main(int argc, char** argv) {
             opts.suit_mixed_order = false;
         } else if (arg == "--no-narrow") {
             opts.narrow_window = false;
+        } else if (arg == "--no-opposed-reach") {
+            opts.opposed_reach = false;
         } else if (arg == "--no-presolve") {
             opts.presolve_window = false;
         } else if (arg == "--no-canonical-pv") {

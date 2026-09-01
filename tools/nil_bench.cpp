@@ -430,6 +430,11 @@ void usage(const char* argv0) {
               << "  --tt-stats        also report transposition table behaviour\n"
               << "  --rank-stats      also report the winning-rank mask histogram\n"
               << "  --nilset-stats    also report forced-trick proof coverage\n"
+              << "  --no-opposed-reach  do not answer a one-bid-per-side node from the\n"
+              << "                    ranks its broken-bid mask can still reach\n"
+              << "  --opposed-stats   also report where a one-bid-per-side search\n"
+              << "                    spends its nodes, and what fraction the\n"
+              << "                    reachable-rank bound would answer (item 79)\n"
               << "  --spade-matrix    take the forced-trump floor from all four\n"
               << "                    hands rather than the top-spade hand alone\n"
               << "                    (same answer, fewer nodes, and SLOWER;\n"
@@ -527,6 +532,7 @@ int main(int argc, char** argv) {
     bool tt_stats = false;
     bool rank_stats = false;
     bool nilset_stats = false;
+    bool opposed_stats = false;
     bool quick_tricks_stats = false;
     // --mode both: solve every position in the other mode as well and require
     // the two to agree on nil_fails.
@@ -682,6 +688,11 @@ int main(int argc, char** argv) {
             check_moves = true;
         } else if (arg == "--check-pv") {
             check_pv = true;
+        } else if (arg == "--no-opposed-reach") {
+            opts.opposed_reach = false;
+        } else if (arg == "--opposed-stats") {
+            opposed_stats = true;
+            opts.track_opposed = true;
         } else if (arg == "--nilset-stats") {
             nilset_stats = true;
             opts.track_nilset = true;
@@ -846,6 +857,7 @@ int main(int argc, char** argv) {
     // it starts from zero here rather than per position.
     if (rank_stats) nil::reset_rank_mask_stats();
     if (nilset_stats) nil::reset_nil_set_stats();
+    if (opposed_stats) nil::reset_opposed_stats();
     if (quick_tricks_stats) nil::reset_quick_trick_stats();
 
     for (const Item& item : items) {
@@ -1092,6 +1104,29 @@ int main(int argc, char** argv) {
         }
     }
 
+    if (opposed_stats) {
+        const nil::OpposedStats& os = nil::opposed_stats();
+        const double n = os.nodes ? double(os.nodes) : 1.0;
+        std::cout << "\n  opposed node population and the reachable-rank ceiling\n"
+                  << "    nodes counted            " << os.nodes << "\n";
+        auto row = [&](const char* name, std::uint64_t pop, std::uint64_t fires) {
+            std::cout << "    " << std::left << std::setw(24) << name << std::right
+                      << std::setw(14) << pop
+                      << "  " << std::setw(6) << std::fixed << std::setprecision(2)
+                      << 100.0 * double(pop) / n << "%   would answer "
+                      << std::setw(13) << fires << "  "
+                      << std::setw(6) << (pop ? 100.0 * double(fires) / double(pop) : 0.0)
+                      << "%\n";
+        };
+        row("both bids intact", os.state_intact, os.would_answer_intact);
+        row("near bid down", os.state_near_down, os.would_answer_near_down);
+        row("far bid down", os.state_far_down, os.would_answer_far_down);
+        row("both bids down", os.state_both_down, os.would_answer_both_down);
+        std::cout << "    " << std::left << std::setw(24) << "TOTAL would answer"
+                  << std::right << std::setw(14) << os.would_answer << "  "
+                  << std::setw(6) << 100.0 * double(os.would_answer) / n << "% of nodes\n"
+                  << std::defaultfloat;
+    }
     if (nilset_stats) {
         const nil::NilSetStats& ns = nil::nil_set_stats();
         const auto pc = [&](std::uint64_t part) {
