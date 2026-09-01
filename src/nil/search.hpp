@@ -919,6 +919,30 @@ struct OpposedStats {
     std::uint64_t one_down_proof_safe = 0;
     std::uint64_t one_down_answered_now = 0;
     std::uint64_t one_down_answered_pinned = 0;
+
+    // ---- item 82: is there ROOM for a trick bound where the rank is settled?
+    //
+    // With every bid down the rank cannot move again, so the subtree is worth
+    // the far side's remaining tricks and nothing else -- an ordinary
+    // double-dummy trick count, which is what DDS section 3's QuickTricks and
+    // section 4's LaterTricks bound and what `disable_single_nil_machinery`
+    // switches off shape-wide.
+    //
+    // BEFORE RE-EXPRESSING EITHER BOUND FOR THIS SHAPE, which is most of the
+    // work of shipping them, ask the cheaper question: how STRONG would a bound
+    // have to be to decide anything?  A node's window admits a range of trick
+    // counts; a bound decides it only by proving one side takes at least so
+    // many.  That number is computable from the window and the tricks left with
+    // no bound written at all, and its distribution is the ceiling.
+    //
+    // `settled_need[i]` counts nodes where the weakest sufficient claim is "some
+    // side takes at least i more tricks", with 6 meaning six or more.  Index 0
+    // is a node already decided by arithmetic; a large index is a node no cheap
+    // bound will reach.
+    std::uint64_t settled_boundary = 0;
+    std::uint64_t settled_hopeless = 0;   // window admits the whole range
+    std::uint64_t settled_need[7] = {0, 0, 0, 0, 0, 0, 0};
+
     std::uint64_t pv_walk_nodes = 0;
 };
 

@@ -1149,8 +1149,21 @@ int main(int argc, char** argv) {
                   << os.one_down_answered_now << "\n"
                   << "    answered if rank PINNED  " << std::setw(14)
                   << os.one_down_answered_pinned << "  " << std::setw(6)
-                  << 100.0 * double(os.one_down_answered_pinned) / n << "% of nodes\n"
-                  << std::defaultfloat;
+                  << 100.0 * double(os.one_down_answered_pinned) / n << "% of nodes\n";
+        const double sb = os.settled_boundary ? double(os.settled_boundary) : 1.0;
+        std::cout << "\n  every bid down, at a trick boundary (item 82)\n"
+                  << "    nodes                    " << std::setw(14) << os.settled_boundary
+                  << "  " << std::setw(6) << 100.0 * os.settled_boundary / n
+                  << "% of nodes\n"
+                  << "    no bound can help        " << std::setw(14) << os.settled_hopeless
+                  << "  " << std::setw(6) << 100.0 * os.settled_hopeless / sb
+                  << "% of those\n";
+        for (int i = 0; i <= 6; ++i) {
+            std::cout << "    needs " << i << (i == 6 ? "+ tricks proven  " : "  tricks proven  ")
+                      << std::setw(14) << os.settled_need[i] << "  " << std::setw(6)
+                      << 100.0 * double(os.settled_need[i]) / sb << "% of those\n";
+        }
+        std::cout << std::defaultfloat;
     }
     if (nilset_stats) {
         const nil::NilSetStats& ns = nil::nil_set_stats();

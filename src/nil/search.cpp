@@ -786,6 +786,31 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
         }
         if (answers) ++os.would_answer;
 
+        // Item 82.  Every bid down, at a trick boundary: the rank is settled and
+        // the value is the far side's remaining tricks alone.  Measured for the
+        // default tie-break only, where that term is positive; the mirrored one
+        // is the same arithmetic with the signs turned over and is not worth a
+        // second branch to count.
+        if (near_down && far_down && st.trick_len == 0 && ctx.secondary_weight > 0) {
+            ++os.settled_boundary;
+            const int t = count_cards(st.hands[st.to_play()]);
+            const int k = ctx.secondary_weight;
+            // Failing low needs the far side held to `cap` tricks, which is a
+            // claim about the NEAR side taking the rest.  Failing high needs the
+            // far side to take `need_far`.
+            const int cap = alpha >= 0 ? alpha / k : -1;
+            const int need_far = (beta + k - 1) / k;
+            int best = -1;
+            if (cap >= 0 && cap < t) best = t - cap;
+            if (need_far > 0 && need_far <= t && (best < 0 || need_far < best)) best = need_far;
+            if (cap >= t || need_far <= 0) best = 0;   // already decided by arithmetic
+            if (best < 0) {
+                ++os.settled_hopeless;
+            } else {
+                ++os.settled_need[best > 6 ? 6 : best];
+            }
+        }
+
         // Item 81.  Only at a trick boundary, which is where the proofs' own
         // preconditions hold, and only with exactly one bid still live.
         const bool one_down = near_down != far_down;

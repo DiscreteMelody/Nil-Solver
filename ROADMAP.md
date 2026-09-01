@@ -38,6 +38,7 @@ expensive node. Read items 11 and 31 in that light.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ✅ | ~~The both-down region is a pure trick count: ceiling measured (item 82)~~ | patch 84 | **The answer to *what prunes when both bids must die* is: stop pruning on nils and prune on tricks.** The ranks a node can still reach are those of the masks containing its own, and against a *both die* answer **all four masks either straddle the band or sit exactly on it** -- so no arithmetic on the mask refutes anything. Against a *both live* answer two of the four sit entirely below and vanish on arrival, which is deal 6's 86.62% and item 79's whole yield. **Deal 5's 1.013x from item 78c is that table, not a weak probe.** The consequence: with the rank pinned at the root by items 77 and 78, every node inherits it and the entire remaining job of a 292-million-node search is the far side's TRICK COUNT -- a double-dummy trick count wearing a nil problem's clothes, solved with every trick bound switched off. **How strong would a bound have to be?** Asked before re-expressing QuickTricks or LaterTricks, because that is most of the work of shipping them; the answer falls out of the window and the tricks left with no bound written. The region is 12.37% of nodes at a trick boundary, and **71.88% of it needs at most two tricks proven, 48.05% exactly one** -- an ace, a top trump, a ruff, the first thing DDS section 3 computes. Only 0.11% is hopeless. Deal 5 alone is the same or better: 15.91% of nodes, 49.56% needing one trick. **Against item 81, rejected one patch earlier, the contrast is the argument**: 81 had a 19.08% population and a 10.8% firing rate because its proofs missed the common middle case, where here the DEMAND is a whole rank lower. **Still unmeasured, and 81 is why that is said plainly**: this bounds how strong a proof must be, NOT how often one fires, and 81 died in exactly that gap. Measurement arm shipped under `--opposed-stats`; nothing spent, nothing moved: 29/29, opposed 402,422,529, banked counts unmoved |
 | ⊘ | ~~Recover the single-nil machinery in the one-down region~~ | patch 83 | **REJECTED on ceiling. Population 19.08% of nodes, ceiling 1.24%.** The argument is sound and still is: with exactly one bid live the position IS a single-nil position, the dead bid cannot come back, and a proof pinning the survivor's fate collapses item 79's reachable set from two values to one -- tightening its bound by a whole `k*k`. Item 76 made the same argument for the BOTH-down region and it held. **It dies in the middle step**: only 10.8% of eligible nodes get a proof at all. `nil_must_take_a_trick` needs the live bidder to hold spades and be short of covers; `nil_cannot_be_forced` needs it to hold none; **a live bidder holding spades WITH adequate covers gets neither**, and that is the common case in this region. They are cheap SUFFICIENT conditions, not a decision procedure. Newly answered if the rank were pinned: 4,393,491 nodes, **1.24%**, and worst on the deal that matters -- deal 5 **1.09%** against deal 3's 2.05% and deal 6's 1.70%, with deal 5 being 73% of the remaining tree. The arm would be charged across a fifth of the search to answer one node in a hundred where it counts. **`Population is not the same as firing rate` for the third time in this file**, and this time the population looked good and the firing rate killed it -- the reverse of item 79, whose mediocre aggregate hid an excellent per-deal split. Neither was guessable from the other. **What would revive it**: a cheap proof covering the middle case. `duck_depth` (item C0) already computes that holding's shape and ships with nothing consuming it; if it can decide the survivor's fate rather than describe the holding, re-measure the FIRING RATE, not the population, which is now known to be 19.08%. The measurement shipped under `--opposed-stats` so the claim is re-checkable, not merely recorded. Nothing moved: 29/29, opposed 402,422,529, and 39,701 / 278,059 / 49,084 / 163,393,676 / 4,833,200 unmoved |
 | ✅ | ~~The conjunction probe wired into the presolve (item 78c)~~ | patch 82 | **1.024x overall, and THE PREDICTION IN 78b WAS BACKWARDS -- that is the finding.** The third probe fires only when the first two DISAGREE, so the six deals where they agree measure **1.000x, not approximately**; the probe never runs. Deal 3: 15,161,073 -> 9,316,457, **1.627x net and 3.14x gross**. Deal 5: 296,509,340 -> 292,597,961, 1.013x. **78b predicted the opposite**, reasoning from size: the probe costs 1.2% of deal 5 and 20.1% of deal 3. Both figures were right and the conclusion was still wrong, because **tree size is not what decides it -- the RANK the band closes to is.** Deal 3's conjunction is TRUE and closes on rank 0, an extreme, where item 79's mask bound refutes every node under a broken bid on arrival. Deal 5's is FALSE and closes on *both bids die*, **the one rank where a closed band buys nothing**, because from there the reachable sets straddle the answer from both sides. Item 79's own entry derived that -- *R=1 gives no arithmetic refutation* -- and 78b then failed to apply it. **The band being closed is not the point; closing it somewhere USEFUL is.** The corollary kills the gate this item was meant to design: **which rank it closes to is exactly what the probe is paid to discover**, so a gate would have to predict its own answer -- and no gate is needed, since both mixed deals come out net positive anyway. **Patch 77's only losing deal is now its best**: deal 3 was 0.87x when the presolve shipped and is 13,166,148 -> 9,316,457 against the pre-77 base. Wall 4 of 4 at 0.949 / 0.953 / 0.997 / 0.908, a wide spread and one nearly-flat rep, which is what a 1.024x node change on a workload dominated by one barely-moved deal should look like. The rank is pinned without casing out the partner leans: enumerate the four, drop those outside the existing bound, strike off the one the probe refuted, close only if exactly one survives. 29/29; all 8 deals identical on value, trick counts, `nils_set` and PV; `opposing_crosscheck` re-run with the gate forced to zero, 96/96, 96/96, 48/48; banked counts unmoved |
 | ✅ | ~~The conjunction probe in C++, measured but not yet wired in (item 78b)~~ | patch 81 | **Built, cross-checked against two oracle routes, and MEASURED BEFORE BEING WIRED IN -- the measurement says it pays on one of the two deals it was built for and probably not the other.** A question about a shape rather than a mode: `conjunction_seat` names the attacking side's bidder and `solve()` refuses it anywhere but `SHAPE_OPPOSING_NILS`. **The indicator is RANK 3 and nothing else**, under both partner leans, so it reads two bidder seats and no role; charged as a delta the way the rank already is, telescoping to the answer. **Two gates had to be excluded BY NAME rather than read off the weights**: the probe's weights are `(1, 0, 0)` exactly like MODE_FAST's and mean something else, so `value_is_nil_tricks` would have wired two sound proofs to a value they say nothing about -- `disable_single_nil_machinery`'s failure mode arriving through the back door -- and `gains_nonnegative` is false because the delta is **-1** as well as +1. **The defending side's goal is a DISJUNCTION**, its bid alive OR the attacker's dead, so it may dump a trick on the attacker's bidder and abandon its own; a search that let it only protect would report the attacker winning lines it cannot win, confidently and unrefutably by any corpus. **Checked against the oracle's independent boolean search AND the outcome rank of its exhaustive utility search**: 320 probes at 3 cards and 256 at 4 across all eight strictly opposed role sets, all three agreeing every time, 80 and 58 forceable so the run is not all one answer. **THE FLOOR MEASUREMENT IS THE DELIVERABLE.** Only the two MIXED deals ever ask -- the other six are settled by 77's plain probes. Deal 5: 3,476,421 against 296,509,340, **1.2%**. Deal 3: 3,040,879 against 15,161,073, **20.1%** -- on a deal that is already a 0.87x loss from patch 77 and whose item-79 ceiling is 2.79% against deal 5's 14.78%, so it has less to win as well as more to pay. **The probe wants a gate, and the honest gate is not obvious**: hand size does not separate these two deals and nor does anything 77 already knows. Nothing is wired in, so nothing moved: 29/29, 39,701 / 278,059 / 49,084 / 163,393,676, multinil 4,833,200 and opposed 412,178,524 all unmoved |
@@ -4010,30 +4011,70 @@ claim is re-checkable rather than merely recorded. Free when off. No node count
 moved: 29/29, 402,422,529 on the opposed deals, and 39,701 / 278,059 / 49,084 /
 163,393,676 / 4,833,200 all unmoved.
 
-### 82. The both-down region is a pure trick count — ⭐⭐⭐⭐
+### 82. The both-down region is a pure trick count — ⭐⭐⭐⭐⭐ — **ceiling measured, patch 84; build next**
 
-**Not measured yet, and it is the better-shaped version of item 81.** With EVERY
-bid down the rank is already pinned -- no proof needed, no firing rate to lose --
-and the subtree is worth `secondary * (far tricks from here)` and nothing else.
-That is an ordinary double-dummy trick count, which is exactly what DDS §3's
-`QuickTricks` and §4's `LaterTricks` bound, and exactly what
-`disable_single_nil_machinery` switches off shape-wide.
+**THE ANSWER TO "WHAT PRUNES WHEN BOTH BIDS MUST DIE" IS: STOP PRUNING ON NILS
+AND PRUNE ON TRICKS.** The question is the right one and the arithmetic answers
+it exactly.
 
-**The region is 29-39% of the opposed tree** and 39.04% of deal 5's, the deal
-that dominates what is left. Item 76's `settled_gains` already takes the static
-end-of-trick cutoff there; the trick bounds themselves are unclaimed.
+**Why a both-die answer refutes nothing by rank.** The ranks a node can still
+reach are those of the masks containing its own, and against an answer band the
+four masks give:
 
-**Why it is better shaped than item 81.** Item 81 needed two steps -- pin the
-rank, then use it -- and lost 89% of its population on the first. This needs only
-the second: the rank arrives pinned. The open question is not whether the bounds
-APPLY, it is how often they FIRE against a window that item 79 has already
-narrowed, and that is the thing to measure first. **The measurement is not free**:
-`quick_tricks` and `later_tricks` are written against the single-nil objective
-and would have to be re-expressed against the far side's trick count before they
-can even be counted, which is most of the work of shipping them. A cheaper
-first cut is to count how often the window at a both-down node is tight enough
-that ANY trick bound could decide it -- an upper bound on the ceiling, obtainable
-from the existing counters.
+| mask | reachable ranks | vs an answer of rank 2 (both live) | vs rank 1 (both die) |
+|---|---|---|---|
+| nothing broken | {0,1,2,3} | straddles | straddles |
+| near bid down | {3,1} | **straddles** | **straddles** |
+| far bid down | {0,1} | below -> refuted | **straddles** |
+| both down | {1} | below -> refuted | **equals the band** |
+
+When the answer is *both live*, two of the four sit entirely below it and go on
+arrival -- that is deal 6's 86.62% and item 79's whole yield. When the answer is
+*both die*, **every one of the four either straddles the band or sits exactly on
+it**, and no arithmetic on the mask can refute anything. Deal 5's 1.013x from
+item 78c is that table, not a weakness in the probe.
+
+**So the rank is fully settled before the search starts and contributes nothing
+more.** Item 77's two probes plus item 78's third one pin it at the root; every
+node inherits the same pinned rank; and the entire remaining job of a 292-million
+node search is the SECONDARY term -- how many tricks the far side takes. Deal 5
+is not a nil problem any more. It is a double-dummy trick count wearing a nil
+problem's clothes, and it is being solved with every trick bound switched off.
+
+**How strong would a bound have to be?** Asked before re-expressing QuickTricks
+or LaterTricks for this shape, because that is most of the work of shipping
+them. A node's window admits a range of trick counts and a bound decides it only
+by proving some side takes at least so many; that number falls out of the window
+and the tricks left with no bound written. Measured on `opposed13.txt`:
+
+| weakest sufficient claim | nodes | share of the region |
+|---|---:|---:|
+| already decided by arithmetic | 10,675,629 | 24.38% |
+| **one trick** | **21,041,982** | **48.05%** |
+| two tricks | 10,434,712 | 23.83% |
+| three | 1,383,992 | 3.16% |
+| four or more | 207,760 | 0.47% |
+| nothing can help | 48,336 | 0.11% |
+
+The region is 12.37% of all nodes at a trick boundary, and **71.88% of it needs
+at most two tricks proven, with nearly half needing exactly one.** One trick is
+the weakest claim there is -- an ace, a top trump, a ruff -- and it is the first
+thing DDS section 3 computes. On deal 5 alone the shape is the same or better:
+15.91% of nodes, 49.56% needing one trick, 24.58% needing two.
+
+**Set against item 81, which this file rejected one patch ago**, the contrast is
+the whole argument: item 81 had a 19.08% population and a 10.8% firing rate
+because its proofs missed the common middle case. Here the *demand* is 7x lower
+-- one trick rather than a whole rank -- and the claim needed is the one every
+double-dummy solver proves first.
+
+**WHAT IS STILL UNMEASURED, and item 81 is the reason to say so plainly.** This
+is a bound on how strong a proof must be, NOT a firing rate. It says a
+one-trick claim would suffice on half the region; it does not say a one-trick
+claim will be provable there. Item 81 died exactly in that gap. The honest next
+step is a QuickTricks-shaped proof for the far side's trick count, measured with
+`--opposed-stats` before it is spent, and the number to watch is how often it
+FIRES, not how often it would suffice.
 
 ### 60. Nils on OPPOSING sides — ⭐⭐⭐
 
@@ -4058,7 +4099,7 @@ whether this one is affordable at all.
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 36 ✅ → 41 ✅ → 42 ⊘ → 47 ✅ → 43 ⊘→✅ → 43b ⊘ → 44 ⏸ → 54 ✅ → 58 ✅ → 56 ✅ → 57 ✅ → 59 ✅ → 61 ✅ → 62 ✅ → N1 ⊘ → C0 ✅ → C1 ⊘ → C2 ⊘ → C3 ⊘ → C4 → C5 ⏸ → C6 → O1 → 77 ✅ → 79 ✅ → 80 ✅ → 78a ✅ → 78b ✅ → 78c ✅ → 81 ⊘ → 82 → 45 → 29b (single-suit) → 9 ⊘ → 10 ⊘ → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 36 ✅ → 41 ✅ → 42 ⊘ → 47 ✅ → 43 ⊘→✅ → 43b ⊘ → 44 ⏸ → 54 ✅ → 58 ✅ → 56 ✅ → 57 ✅ → 59 ✅ → 61 ✅ → 62 ✅ → N1 ⊘ → C0 ✅ → C1 ⊘ → C2 ⊘ → C3 ⊘ → C4 → C5 ⏸ → C6 → O1 → 77 ✅ → 79 ✅ → 80 ✅ → 78a ✅ → 78b ✅ → 78c ✅ → 81 ⊘ → 82 ✅(ceiling) → 82b → 45 → 29b (single-suit) → 9 ⊘ → 10 ⊘ → measure → 11..14
 ```
 
 **Three results off the move-ordering block, all negative, and the third one
