@@ -677,6 +677,11 @@ struct Solution {
     // Principal variation, one entry per remaining card.  Empty in MODE_FAST.
     std::vector<Play> pv;
     std::uint64_t nodes = 0;
+    // How many of `nodes` the root-window presolve spent, so the arm's cost can
+    // be read off the same run that measures its benefit rather than inferred
+    // from a second one.  Included in `nodes` rather than beside it -- the
+    // presolve is work this solve did -- and zero whenever none ran.
+    std::uint64_t presolve_nodes = 0;
     // Which mode produced this, so a caller holding a Solution can tell what is
     // in it without having kept the SearchOptions around.
     SearchMode mode = MODE_FULL;

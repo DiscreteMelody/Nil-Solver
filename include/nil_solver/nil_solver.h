@@ -224,7 +224,24 @@ extern "C" {
  * from the objective's own weights, not estimated -- so this flag is a control
  * arm and a way to pay nothing on positions where the presolve will not help.
  * Inert under NIL_FLAG_FAST_MODE, which is the presolve, and inert under
- * NIL_ROLE_NIL_SET, where the value range has no gap in it to exploit. */
+ * NIL_ROLE_NIL_SET, where the value range has no gap in it to exploit.
+ *
+ * WITH A BID ON EACH SIDE the same flag governs a second, larger presolve, and
+ * it is the same idea rather than a new one.  TWO fast searches run, one per
+ * bidder, each asking whether that bid can be broken with both opponents
+ * unconstrained -- an ordinary single-nil question.  Each answer is a GUARANTEE
+ * that survives being asked inside a deal where the attacker has a bid of its
+ * own, so each confines the outcome to two of the four and bounds the value at
+ * one end.  When both bids come back safe, or both breakable, the two bounds
+ * meet and the root window is a single band: the outcome is settled before the
+ * full search starts, and every line heading for a different one is refuted by
+ * arithmetic.  When they disagree the band is open at one end, which is the
+ * single-nil shape above.
+ *
+ * Worth 1.31x in nodes and 1.23x on the clock over the eight contested 13-card
+ * deals in tests/corpus/opposed13.txt, and roughly a wash on deals whose bids
+ * were never in doubt.  It is NOT taken by nil_solve_moves on this shape; see
+ * the note at that call site. */
 #define NIL_FLAG_NO_PRESOLVE 0x800u
 
 /* Search the final trick rather than evaluating it.  With four cards left every

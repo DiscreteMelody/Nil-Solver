@@ -38,6 +38,7 @@ expensive node. Read items 11 and 31 in that light.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ✅ | ~~A presolve-seeded root window for one bid on each side~~ | patch 77 | **1.31x in nodes and 1.23x on the clock over the eight contested 13-card deals, 4 of 4 reps.** Item 23's presolve was gated on `nil_count(roles) == 1` since it was written; the opposed shape got no root window at all and searched between sentinels. It now runs TWO fast probes, one per bidder, each an ordinary single-nil question the solver has always answered. **Each answer is a GUARANTEE, which is why they compose**: it holds against every strategy the other side has, including ones that sacrifice the other bid, so it survives being asked inside a deal where the attacker has a bid of its own. A guarantee about one bid confines the outcome to two of the four, and two of four bounds the outcome RANK -- at the top when the minimising side owns it, at the bottom when the maximiser does. **Both bids safe means both live, both breakable means both die, and neither needs a third search**; the two mixed cases get a one-sided bound only, which is item 23's shape and is why deal 3 LOSES 0.87x. Range 0.87x to 2.65x, probes 7.5% of the armed total, throughput -6.4% because the nodes the band removes are the cheap ones under a broken bid. **THE BUG THIS FOUND is worth more than the entry.** `walk_pv` re-searches each PV step under the ROOT's window, unshifted by what the line has banked -- sound against the sentinels and against item 23's loose beta, and NOT sound against a rank band, because a sub-position past a broken bid does not carry the `k*k` the root paid for and fails high on every step. Caught by the replay check on deal 5, search -70 against replay -322. **It hid on 7 of 8 deals**: when both bids live the rank never moves along its own PV, so the unshifted window contains every step by accident. A bug that hides on seven eighths of the corpus is a bug that ships. **The random-deal sample is much weaker and says so honestly** -- 0.99x to 1.30x, and a wash on the clock at 11c seed 3 -- because a hand drawn at random usually gives a bidder an ace and the search never has to work. That is patch 69's lesson for the third time. **`opposing_crosscheck` re-run with `PRESOLVE_MIN_TRICKS` forced to zero**, since the shipped gate of 8 means the 3-5 card suite cannot reach the new code: 96/96, 96/96, 48/48 across all eight strictly opposed role sets. Also shipped: `Solution::presolve_nodes` so the cost reads off the run that measures the benefit, and **`nil_bench --deals`**, because `opposed13.txt` has been in the repo since patch 76 with nothing able to read it. NOT wired into `solve_moves`, and the comment there says why. 28/28; 39,701 / 278,059 / 49,084 / 163,393,676 and multinil 4,833,200 all unmoved |
 | ✅ | ~~The static cutoff in positions where every bid is already down~~ | patch 76 | **-1.29% of nodes on the opposed corpus, sound, and it is the SMALL half of a much more useful finding.** `gains_nonnegative` guards the end-of-trick static cutoff and is refused outright for the opposed shape, on the grounds that its primary weight multiplies outcome RANK and rank falls when a side loses its own bid. True, and it goes no further than the first position where NO NIL IS LEFT TO BREAK: there the rank is fixed, what remains is the trick term, and that only rises. So the refusal is a fact about the WEIGHTS where it should be a fact about the POSITION, and it is now tested per node against `st.nils_broken == ctx.nil_mask`. All three opposed weights are already non-negative (`primary = k*k`, `secondary = +k`, `tertiary = 0`); the blanket `!ctx.opposing` was the only thing switching it off. **Every one of the eight opposed deals improves** -- -0.27% to -4.55%, 654,842,428 -> 646,389,160 -- and every answer, all 560 corpus values, all 19 `large.txt` rows and 39,701 / 278,059 / 49,084 are unmoved. Behind `--no-settled-gains` / `NIL_FLAG_NO_SETTLED_GAINS`. **THE PREDICTION WAS WRONG AND THAT IS THE VALUABLE PART.** It was built because 43% of an opposed tree sits in the all-broken state, so a cutoff restored there looked like a large win. It is worth 1.29%. A cutoff being LEGAL in 43% of the tree says nothing about how often it FIRES: the static test needs one trick's gain to carry the line to beta, and in an all-broken state the primary contribution is already banked, so the per-trick gain is small against the window and the test almost never trips. **Population is not the same as firing rate, and this project has now been caught by that twice** -- once here and once on move-ordering item C1, where a rule that ran on 8-15% of nodes changed the move on 0.2-2.9% of them. Measure the firing rate, not the eligible population. **Also banked: `tests/corpus/opposed13.txt`**, the eight deals patch 69's timings were taken on. Patch 69 recorded the timings and NOT the deals; they survived only because a session transcript happened to contain the generator, and were recovered from it here. A measurement is only valid against the tree it was taken on, and that tree was very nearly lost |
 | ⏸ | ~~Move ordering C5: the cover partner ducking the nil bidder short~~ | patch 75 | **PARKED, not rejected -- the only item in the move-ordering block with two-sided signal, and the first that is not decided by a single deal.** On lead, play the cheapest card the nil bidder can duck beneath in its SHORTEST suit: the nil bidder is safe on the trick by construction, and the suit shortens toward the void that makes every later lead a free discard. It manufactures the void C3 cashes into. **It won three of six workloads on EVERY rep -- -4.06%, -4.34% and -12.03% of nodes -- and lost two of six on every rep (+2.37%, +6.01%). Nothing came out neutral.** **Throughput is flat**, +1.3% to -1.2% with no consistent sign, so this is not C1's failure; and every workload moves by at least 2.4%, so it is not N1's or C2's either. The 13-card aggregate of +0.09% is the least informative number in the set: seed 11 is two thirds of that workload by nodes and hides two 4% wins. Unlike every earlier item here, SEVERAL deals move per workload and the sign varies WITHIN a workload -- at seed 11, `r13-0002` +50.6%, `r13-0004` -5.1%, `r13-0006` +1.5%. That is a real effect with an unidentified condition attached, not noise. **Population: 0.81-1.36% of nodes, the most consistent in the block**; fires on 59-72% of cover-lead nodes and changes the move on about half. **Named next experiment: the TIE-BREAK.** The nil bidder's shortest suit is tied on ~40% of firings and ties currently fall to rotation order -- spades first, the same accident C2 measured at 12% of nodes. A rule whose sign flips between workloads with an arbitrary choice on two fifths of its firings has an obvious first suspect. Shipped behind an OPT-IN `--cover-duck-short` / `NIL_FLAG_COVER_DUCK_SHORT` with the arm OFF, so the default build is unchanged and the next iteration is a tie-break rather than a rewrite. 28/28; 39,701 / 278,059 / 49,084 unmoved |
 | ⊘ | ~~Move ordering C3: the cover partner cashing into the nil bidder's void~~ | patch 74 | **the old four-tier lead rule is now four items, C3 to C6, and this is tier one measured alone.** Split because four tiers sharing a fallback chain are four separate bets, and one number would have recorded four arms as a single result. The rule: on lead, holding a card nobody can beat in a suit the NIL BIDDER IS VOID IN, lead it -- this side wins the trick and the nil bidder must discard, which is a free throw of its most dangerous card elsewhere. **Population: 0.07-0.74% of nodes at 13 cards**, firing on 18k-221k lead nodes of which roughly three quarters are ruff-proof. **Nodes: 36,287,899 -> 37,104,695 across the three 13-card seeds, +2.25%** -- +3.46% on seed 11, +1.05% on seed 3, -0.29% on seed 42. `r13-0002` alone goes 1,293,640 -> 2,281,815 and is the whole of seed 11. **Wall clock, four interleaved paired reps: one of six workloads clean**, and it is an 11-card one; the three 13-card seeds are 2/4, 0/4, 1/4. **Not a failure of mechanism.** 11 cards seed 42 is a real -9.56% on nodes, four reps of four -- when this rule helps it helps more than anything else in the block. The failure is VARIANCE: the same rule costs 3.86% at 11 cards seed 3, and under 1% of nodes the result is decided by the largest deal. The rule promotes a HIGH card where the incumbent promotes a low one, which is the same qualitative change C2 stumbled into with the ruff and which was worth 12% there -- so the direction is not obviously wrong, the selection is. Nothing in the population counters separates the shapes that disagree: firing rate, ruff-proof share and lead-node share are all within a factor of two across seeds that differ by 13 points of nodes. **C4, C5 and C6 are specified and unbuilt**; C6 reuses the `duck_depth` suit comparison C2 measured at +0.08%. 28/28; 39,701 / 278,059 / 49,084 unmoved |
@@ -3644,6 +3645,172 @@ becomes "this bidder's own bid survives" and settles one of the two levels
 rather than the whole value. **Exhaustive property test before wiring anything**;
 150 rows is evidence about 150 rows.
 
+### 77. ~~A presolve-seeded root window for one bid on each side~~ — ⭐⭐⭐⭐ — **done, patch 77**
+
+Item 23's presolve, gated on `nil_count(roles) == 1` since it was written, opened
+up for `SHAPE_OPPOSING_NILS`. **1.31x in nodes and 1.23x on the clock over the
+eight contested 13-card deals, four reps of four.**
+
+**What it does.** Two `MODE_FAST` probes, one per bidder, each built with
+`seat_roles_from_nil` so it is a single-nil question this solver has always
+answered: can THIS bid be broken, with both opponents unconstrained and free to
+throw their own bid away doing it? Nothing new is searched. What is new is that
+the pair of answers composes.
+
+**Why it composes.** Each probe is a GUARANTEE — it holds against every strategy
+the other side has, including ones that sacrifice the other bid — so it survives
+being asked inside a deal where the attacker has a bid of its own to protect. A
+guarantee about one bid confines the outcome to two of the four, and two of four
+is a bound on the outcome rank. Which END it bounds is decided by who owns the
+guarantee: the near side minimises the rank so its guarantees cap it, the far
+side maximises so its guarantees floor it.
+
+| near bid | far bid | rank | probes needed |
+|---|---|---|---|
+| safe | safe | both bids live | **2** |
+| breakable | breakable | both bids die | **2** |
+| safe | breakable | two of four | 3 — the third does not exist yet |
+| breakable | safe | two of four | 3 — the third does not exist yet |
+
+The rank converts to a value band because `primary` is `k*k` and the trick term
+spans at most `k*t < k*k`, so each of the four ranks owns a band of the value
+line and the bands do not touch. Pinning the rank pins the value to within one
+band, and a window on that band refutes every line heading for a different one.
+
+**Measured, `tests/corpus/opposed13.txt`.** Net includes the probes; gross is the
+main search alone. The probes are 7.5% of the armed total.
+
+| deal | off | on | net | gross | outcome |
+|---:|---:|---:|---:|---:|---|
+| 1 | 34,380,976 | 33,614,775 | 1.02x | 1.04x | both live |
+| 2 | 3,060,792 | 2,378,827 | 1.29x | 2.09x | both live |
+| 3 | 13,166,148 | 15,076,218 | **0.87x** | 1.02x | one down |
+| 4 | 29,801,843 | 22,124,249 | 1.35x | 1.62x | both live |
+| 5 | 377,597,716 | 312,420,336 | 1.21x | 1.27x | both down |
+| 6 | 79,426,335 | 29,961,443 | **2.65x** | 3.27x | both live |
+| 7 | 72,858,745 | 44,557,462 | 1.64x | 1.94x | both live |
+| 8 | 36,096,605 | 32,013,941 | 1.13x | 1.23x | both live |
+| **total** | **646,389,160** | **492,147,251** | **1.31x** | **1.42x** | |
+
+Wall clock, one binary, `--no-presolve` the only difference, OFF-then-ON inside
+each rep: **4 of 4 reps a win** at 0.814 / 0.808 / 0.814 / 0.815. Throughput
+falls 6.4% (8.69M to 8.13M nodes/sec), which is why 1.31x in nodes is 1.23x on
+the clock: the nodes the band removes are the cheap ones under a broken bid, so
+what is left is dearer per node.
+
+**Deal 3 is a real loss and it is the case the table predicts.** Mixed answers
+give only a one-sided beta, which is exactly item 23's shape, and item 23
+measures 1.00x on single nil. The probes cost 2.1M and the window saved 0.2M.
+Closing that case needs a probe MODE_FAST cannot express — *can one side break
+the other's bid WHILE KEEPING ITS OWN* — which is item 78.
+
+**A wider and much weaker second sample.** Random opposed deals via
+`--random --seats 0 0 3 2`: 11 cards 1.007x / 1.087x / 1.119x / 1.295x on seeds
+3 / 11 / 7 / 42, 9 cards 0.986x and 1.098x on seeds 3 and 42. Wall clock on the
+flattest of them (11c seed 3, +0.7% nodes) is **3 of 4 reps**, a wash. This is
+not a contradiction, it is the patch-69 lesson again: **a hand drawn at random
+usually gives a bidder an ace, so its bid is trivially breakable and the search
+never has to work.** The arm is worth what it is worth on deals where the
+outcome is in doubt, which is the only kind anyone bids nil on. `opposed13.txt`
+is the workload to read.
+
+**THE BUG THIS FOUND, and it is the part worth reading.** `walk_pv` re-searches
+each step of the line under the window the ROOT was asked about, UNSHIFTED by
+what the line has banked on the way down. That has always been sound because the
+windows it was handed were loose: the sentinels, or item 23's beta, which caps a
+value whose remaining part only gets less negative. **A rank band is not loose.**
+The root's value carries `primary * (rank - rank0)` — a whole `k*k` — and a
+sub-position reached AFTER that bid has broken does not: its value is the trick
+term alone, which sits far above a band centred on a rank the root had to pay
+for. Every such step fails high, `canonical_move_for` compares against a bound
+rather than a value, and the walk leaves the line the search chose. Caught by the
+replay check on deal 5: search -70, replay -322. **It hid on 7 of 8 deals**,
+because when both bids live the rank never moves along its own PV and the
+unshifted window contains every step by accident. The walk now runs under the
+sentinels when the band was applied, which costs nothing measured — `search_nodes`
+is snapshotted before it — and nothing on any other shape.
+
+**NOT wired into `solve_moves`, deliberately.** A two-sided band means the
+per-card re-search would have to trigger on rows falling off EITHER end rather
+than just the low one, and a row whose rank differs from the root's falls off by
+a whole `k*k` — which is most of the interesting rows. That is a second
+correctness argument on a path with a different obligation. `--moves` on an
+opposed deal keeps exactly the behaviour it has today.
+
+**Verified.** All 8 deals agree arm-on and arm-off on the value, all three trick
+counts, `nils_set` AND the full principal variation. Banked fixed points against
+a pristine clone: 39,701 / 278,059 / 49,084 / 163,393,676 unmoved, and
+`multinil.txt` full unmoved at 4,833,200. 28/28. And because the shipped
+`PRESOLVE_MIN_TRICKS = 8` gate means `opposing_crosscheck` at 3-5 cards would
+never touch the new code, it was re-run with the gate forced to zero: **96/96 at
+3 cards, 96/96 at 4, 48/48 at 5, across all eight strictly opposed role sets.** A
+test that cannot reach the change is not a test of it.
+
+**Two tool changes came with it, both because the measurement needed them.**
+`Solution::presolve_nodes`, reported through `nil_cli --compact`, so the arm's
+cost reads off the same run that measures its benefit instead of being inferred
+from a second one. And **`nil_bench --deals <file>`**: `opposed13.txt` has been
+in the repo since patch 76 with nothing able to read it — it holds cards and no
+answers, so `load_corpus` refuses it and every measurement taken on it was a
+hand-rolled loop over `nil_cli`. It now runs through the standard harness, and
+`ab_interleave.py` grows an `--workloads opposed` set so the wall-time protocol
+covers a shape the default workloads cannot reach at all.
+
+**Named next experiments, in order.** (a) Item 78, the conjunction probe, which
+closes the mixed case deal 3 sits in. (b) The reachable-rank bound INSIDE the
+tree: the rank at a node is a step function of `st.nils_broken` and the mask only
+grows, so the reachable rank set is O(1) from the mask and a node whose set is
+disjoint from the band is refutable without reading a card. This patch seeds the
+window; that one spends it at every node. (c) `PRESOLVE_MIN_TRICKS` is 8 and 9
+cards is the one size that measured a loss — the floor may want to be higher for
+this shape, but it is a tuning knob and a separate variable.
+
+### 78. The conjunction probe: break theirs while keeping ours — ⭐⭐⭐⭐
+
+**The third probe item 77 needs and MODE_FAST cannot express.** Item 77's two
+probes settle two of the four cases outright and leave the other two with a
+one-sided bound, which is worth about nothing -- `opposed13.txt` deal 3 is a
+0.87x LOSS for exactly this reason. What closes them is one more boolean
+question: *can this side force the other's bid down WHILE KEEPING ITS OWN?*
+
+**It is a two-sided objective and that is the whole hazard.** The obvious
+spelling -- constrain the attackers to keep their own bid clean, leave the
+defenders protecting theirs -- is WRONG, and wrong in the direction that returns
+a confident bad answer rather than an error. The defending side's winning
+condition is a DISJUNCTION: *our bid lives OR theirs dies*. It may deliberately
+dump a trick on the attacker's bidder, abandoning its own bid, and that is a
+legitimate refutation. A search that only lets it protect will report the
+attackers succeeding on lines they cannot actually win. Nothing in the corpus
+would catch it; the oracle has to go first, as it did for items 58 and 67.
+
+**The search stays boolean, and it degenerates helpfully.** The value is in
+{0, 1} throughout, so the `[0, 1]` window and the AND-OR structure survive. Two
+phase transitions do most of the work:
+
+* the optional bidder takes a trick — the conjunction has failed, **return 0
+  with no search**;
+* the primary bidder takes a trick — the first conjunct is banked and the
+  residual question is *can that side still keep its own bid clean*, which is
+  **literally plain MODE_FAST with the optional seat as the nil bidder**, with
+  all of its machinery and its bound proofs valid again.
+
+So only the both-intact phase is new code. Both proofs in `bounds.hpp` still fire
+there, to different consumers: the optional bid provably doomed settles the node
+at 0, and the optional bid provably safe collapses the whole query to a plain
+fast search on the primary.
+
+**What it needs before it ships.** Its own `ValueTag` — the predicate is not
+`TAG_FAST`'s, and the key already carries the broken-nil mask as of patch 59.
+Ground truth in `nil_oracle.py` first, then `opposing_crosscheck.py`. And a floor
+measurement before a driver: the both-intact phase walks into precisely the
+region that makes the opposed search expensive, so its cost is the open question
+and it should be measured on `opposed13.txt` deals 3 and 5 before anything is
+built on top of it.
+
+**Do (b) from item 77's next-experiments list first if only one gets done.** The
+reachable-rank bound inside the tree needs no new probe, no new objective and no
+oracle work, and it is what spends the window this patch seeds.
+
 ### 60. Nils on OPPOSING sides — ⭐⭐⭐
 
 `0 3 0 3` was chosen first because it is the easy one: the two bidders are
@@ -3667,7 +3834,7 @@ whether this one is affordable at all.
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 36 ✅ → 41 ✅ → 42 ⊘ → 47 ✅ → 43 ⊘→✅ → 43b ⊘ → 44 ⏸ → 54 ✅ → 58 ✅ → 56 ✅ → 57 ✅ → 59 ✅ → 61 ✅ → 62 ✅ → N1 ⊘ → C0 ✅ → C1 ⊘ → C2 ⊘ → C3 ⊘ → C4 → C5 ⏸ → C6 → O1 → 45 → 29b (single-suit) → 9 ⊘ → 10 ⊘ → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 36 ✅ → 41 ✅ → 42 ⊘ → 47 ✅ → 43 ⊘→✅ → 43b ⊘ → 44 ⏸ → 54 ✅ → 58 ✅ → 56 ✅ → 57 ✅ → 59 ✅ → 61 ✅ → 62 ✅ → N1 ⊘ → C0 ✅ → C1 ⊘ → C2 ⊘ → C3 ⊘ → C4 → C5 ⏸ → C6 → O1 → 77 ✅ → 78 → 45 → 29b (single-suit) → 9 ⊘ → 10 ⊘ → measure → 11..14
 ```
 
 **Three results off the move-ordering block, all negative, and the third one

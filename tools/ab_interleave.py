@@ -45,6 +45,28 @@ WORKLOADS = [
     ("corpus, 560", ["--corpus", "tests/corpus/positions.txt"]),
 ]
 
+# A bid on EACH side.  A separate list rather than extra entries above, because
+# nothing in the default set exercises the shape at all -- `--random` draws a
+# single nil unless told otherwise -- and an arm that only touches the opposed
+# path would otherwise be measured entirely on workloads it cannot move.
+#
+# The contested corpus comes FIRST and is the one to read.  Random opposed deals
+# are a neutral second sample and not a representative one: a hand drawn at
+# random usually gives a bidder an ace, so its bid is trivially breakable and the
+# search never has to work.  Real nil bids are the deals where the outcome is in
+# doubt, which is what `opposed13.txt` holds and what patch 69 learned the hard
+# way when its first generator produced six deals that all answered instantly.
+OPPOSED = ["--seats", "0", "0", "3", "2"]
+OPPOSED_WORKLOADS = [
+    ("13 cards, 8 contested, opposed13.txt", ["--deals", "tests/corpus/opposed13.txt", "--leader", "N"] + OPPOSED),
+    ("11 cards, 8 random opposed, seed 3",
+     ["--random", "--cards", "11", "--count", "8", "--seed", "3"] + OPPOSED),
+    ("11 cards, 8 random opposed, seed 42",
+     ["--random", "--cards", "11", "--count", "8", "--seed", "42"] + OPPOSED),
+    ("9 cards, 8 random opposed, seed 3",
+     ["--random", "--cards", "9", "--count", "8", "--seed", "3"] + OPPOSED),
+]
+
 
 def run(bench, args):
     start = time.perf_counter()
@@ -97,13 +119,22 @@ def main():
     parser.add_argument("--mode", default="fast", choices=("fast", "full"))
     parser.add_argument("--reps", type=int, default=4,
                         help="paired reps per workload; four is the protocol minimum")
+    parser.add_argument("--workloads", default="default", choices=("default", "opposed"),
+                        help="'default' is the single-nil set; 'opposed' is the "
+                             "one-bid-per-side set, for arms that only touch that shape")
+    parser.add_argument("--only", type=int, default=None, metavar="N",
+                        help="run workload N only (1-based), so a long set can be "
+                             "taken one workload per invocation and still be one protocol")
     args = parser.parse_args()
 
     print(f"arm {args.arm}   mode {args.mode}   reps {args.reps}")
     print("'off' is the arm disabled; 'on' is the default build.")
 
+    chosen = OPPOSED_WORKLOADS if args.workloads == "opposed" else WORKLOADS
+    if args.only is not None:
+        chosen = [chosen[args.only - 1]]
     results = [(label, measure(args.bench, label, workload, args.arm, args.mode, args.reps))
-               for label, workload in WORKLOADS]
+               for label, workload in chosen]
 
     print("\n=== summary ===")
     clean = True

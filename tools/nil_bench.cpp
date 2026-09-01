@@ -367,6 +367,11 @@ void usage(const char* argv0) {
               << "\n"
               << "  --corpus <file>   corpus to verify and time\n"
               << "  --random          time random deals instead (no answers to check)\n"
+              << "  --deals <file>    time a plain list of PBN deals, one per line, '#'\n"
+              << "                    for comments (no answers to check).  Uses --seats\n"
+              << "                    and --leader for every deal, so the file holds the\n"
+              << "                    cards and the command line holds the question\n"
+              << "  --leader <N|E|S|W>  leader for --deals runs                    [N]\n"
               << "  --cards <n>       cards per hand for --random           [6]\n"
               << "  --count <n>       positions for --random                [10]\n"
               << "  --seed <n>        seed for --random                     [1]\n"
@@ -505,6 +510,11 @@ std::string memo_label(const nil::SearchOptions& opts) {
 
 int main(int argc, char** argv) {
     std::string corpus_path;
+    std::string deals_path;
+    // The raw --seats argument, kept because --deals re-anchors it onto each
+    // deal's own PBN seat the way nil_cli does, where --random anchors on North.
+    std::string seats_text = "0 3 2 3";
+    int deals_leader = nil::SEAT_NORTH;
     std::string csv_path;
     std::string baseline_path;
     std::string history_path;
@@ -541,6 +551,15 @@ int main(int argc, char** argv) {
             return 0;
         } else if (arg == "--corpus" && has_next) {
             corpus_path = argv[++i];
+        } else if (arg == "--deals" && i + 1 < argc) {
+            deals_path = argv[++i];
+        } else if (arg == "--leader" && i + 1 < argc) {
+            const std::string text = argv[++i];
+            deals_leader = nil::parse_seat(text);
+            if (deals_leader < 0) {
+                std::cerr << "error: bad --leader '" << text << "'\n";
+                return 2;
+            }
         } else if (arg == "--csv" && has_next) {
             csv_path = argv[++i];
         } else if (arg == "--baseline" && has_next) {
@@ -653,6 +672,7 @@ int main(int argc, char** argv) {
             }
             // Read against North, then re-anchored per deal onto whichever seat
             // the generator drew.  Only the SHAPE of the list matters here.
+            seats_text = text;
             if (!nil::parse_seat_roles(text, nil::SEAT_NORTH, random_roles, err_text) ||
                 !nil::validate_seat_roles(random_roles, err_text)) {
                 std::cerr << "error: --seats: " << err_text << "\n";
@@ -686,8 +706,8 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (corpus_path.empty() && !random_mode) {
-        std::cerr << "error: give either --corpus <file> or --random\n";
+    if (corpus_path.empty() && deals_path.empty() && !random_mode) {
+        std::cerr << "error: give either --corpus <file>, --deals <file> or --random\n";
         usage(argv[0]);
         return 2;
     }
@@ -734,6 +754,48 @@ int main(int argc, char** argv) {
         }
         if (items.empty()) {
             std::cerr << "error: corpus has no positions matching the filter\n";
+            return 2;
+        }
+    } else if (!deals_path.empty()) {
+        // A PLAIN LIST OF DEALS, one PBN per line.  `opposed13.txt` has been in
+        // the repo since patch 76 and nothing could read it: it holds the cards
+        // and nothing else, so `load_corpus` refuses it and every measurement
+        // taken on it so far was a hand-rolled loop over nil_cli.  The roles and
+        // the leader come from the command line, which is the whole difference
+        // from a corpus -- there are no recorded answers to check, exactly as
+        // with --random, so this times and does not verify.
+        std::ifstream in(deals_path);
+        if (!in) {
+            std::cerr << "error: cannot open " << deals_path << "\n";
+            return 2;
+        }
+        std::string line;
+        int index = 0;
+        while (std::getline(in, line)) {
+            const std::size_t start = line.find_first_not_of(" \t\r\n");
+            if (start == std::string::npos || line[start] == '#') continue;
+            const std::size_t stop = line.find_last_not_of(" \t\r\n");
+            const std::string pbn = line.substr(start, stop - start + 1);
+            nil::Position pos;
+            if (!nil::parse_pbn(pbn, pos.hands, err)) {
+                std::cerr << "error: " << deals_path << ": " << err << "\n";
+                return 2;
+            }
+            pos.leader = deals_leader;
+            nil::SeatRoles roles;
+            if (!nil::parse_seat_roles(seats_text, nil::pbn_anchor(pbn), roles, err) ||
+                !nil::validate_seat_roles(roles, err)) {
+                std::cerr << "error: --seats: " << err << "\n";
+                return 2;
+            }
+            std::ostringstream name;
+            name << "d" << pos.cards_per_hand() << "-" << std::setw(4) << std::setfill('0')
+                 << index++;
+            items.push_back(Item{name.str(), pos, roles, opts.minimise_own_tricks, -1, -1, -1,
+                                 "", ""});
+        }
+        if (items.empty()) {
+            std::cerr << "error: " << deals_path << " holds no deals\n";
             return 2;
         }
     } else {

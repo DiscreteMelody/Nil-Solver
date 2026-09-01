@@ -304,6 +304,7 @@ int main(int argc, char** argv) {
                   << "opponent_tricks=" << sol.opponent_tricks << "\n"
                   << "nils_set=" << sol.nils_set << "\n"
                   << "nodes=" << sol.nodes << "\n"
+                  << "presolve_nodes=" << sol.presolve_nodes << "\n"
                   << "pv=" << nil::format_pv_compact(sol) << "\n";
         // Extra keys, and only on request: the scripts that parse this build a
         // dictionary and would not mind them, but a diagnostic that appears

@@ -1810,6 +1810,39 @@ int max_value_if_nil_safe(int tricks_remaining, const ObjectiveWeights& w) {
     return cover_only > 0 ? cover_only : 0;
 }
 
+// ---- item 77: the same presolve, for one bid on EACH side -------------------
+//
+// The shape alone, for the callers that have already validated the roles and do
+// not want the message that comes with them.
+SeatShape seat_shape_of(const SeatRoles& roles) {
+    std::string ignored;
+    return seat_shape(roles, ignored);
+}
+
+// The rank the opposed objective is written in, without a Ctx to read it off.
+// configure() has not run when the presolve does, so this takes the far
+// partner's role directly; it is the same call score_trick() charges its
+// primary weight against.
+int opposed_rank(bool near_survives, bool far_survives, int far_partner_role) {
+    return side_rank(far_survives, near_survives, far_partner_role);
+}
+
+// The value band a KNOWN outcome rank confines the opposed objective to.
+//
+// A line's value is primary * (rank(final) - rank(nothing broken)) plus the far
+// side's own tricks at `secondary` apiece, and that trick term spans at most
+// k*t against a primary of k*k -- so each of the four ranks owns a band of the
+// value line and the bands do not touch.  Pinning the rank therefore pins the
+// value to within one band, and a window on that band refutes every line
+// heading for a different one.
+void opposed_rank_band(int rank, int rank0, int tricks_remaining, const ObjectiveWeights& w,
+                       int& lo, int& hi) {
+    const int span = w.secondary * tricks_remaining;
+    const int base = w.primary * (rank - rank0);
+    lo = base + (span < 0 ? span : 0);
+    hi = base + (span > 0 ? span : 0);
+}
+
 bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opts,
            Solution& out, std::string& err) {
     if (!validate_seat_roles(roles, err)) return false;
@@ -1914,8 +1947,13 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
     int root_beta = WINDOW_MAX;
     std::uint64_t presolve_nodes = 0;
     TTStats presolve_stats;
-    if (opts.presolve_window && !roles.nil_already_set() && nil_count(roles) == 1 &&
-        pos.tricks_remaining() >= PRESOLVE_MIN_TRICKS) {
+    // Set when the root window is a rank BAND rather than a loose cap, which is
+    // tight enough that the principal-variation walk must not reuse it.  See
+    // the note where it is set.
+    bool pv_open_window = false;
+    const bool presolve_eligible = opts.presolve_window && !roles.nil_already_set() &&
+                                   pos.tricks_remaining() >= PRESOLVE_MIN_TRICKS;
+    if (presolve_eligible && nil_count(roles) == 1) {
         SearchOptions probe_opts = opts;
         probe_opts.mode = MODE_FAST;
         // The nested solve inherits the parent's size, which is what
@@ -1939,6 +1977,141 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
         presolve_stats.partial = probe.tt_partial;
         presolve_stats.stores = probe.tt_stores;
         presolve_stats.evictions = probe.tt_evictions;
+    } else if (presolve_eligible && seat_shape_of(roles) == SHAPE_OPPOSING_NILS) {
+        // ---- item 77: the presolve, for one bid on EACH side ---------------
+        //
+        // TWO PROBES, EACH A SINGLE-NIL QUESTION THIS SOLVER ALREADY ANSWERS.
+        // Ask of each bidder in turn: can that bid be broken, with BOTH
+        // opponents unconstrained and free to throw their own bid away doing
+        // it?  That is exactly SHAPE_SINGLE_NIL, so `seat_roles_from_nil` builds
+        // the roles and MODE_FAST answers over its [0, 1] window.  Nothing new
+        // is searched; what is new is what the pair of answers means.
+        //
+        // WHY THE ANSWERS COMPOSE.  Each probe is a GUARANTEE -- it holds
+        // against every strategy the other side has, including ones that
+        // sacrifice the other bid -- so it survives being asked inside a deal
+        // where the attacker has a bid of its own to protect.  A guarantee
+        // about one bid confines the outcome to two of the four, and two of
+        // four is a bound on the rank:
+        //
+        //   near bid SAFE      the near side (which minimises) can hold the
+        //                      outcome to one where the near bid lives, so the
+        //                      rank is AT MOST the higher of those two
+        //   near bid BREAKABLE the far side (which maximises) can hold it to
+        //                      one where the near bid dies, so the rank is AT
+        //                      LEAST the lower of those two
+        //
+        // and the mirror for the far bid, where a safe answer is the MAXIMISER's
+        // guarantee and so floors the rank instead of capping it.  Each probe
+        // therefore contributes exactly one bound, to whichever end belongs to
+        // the side that owns the guarantee.
+        //
+        // WHEN THE TWO PROBES AGREE the bounds land on opposite ends and close
+        // to a single rank: both bids safe means both bids live, both bids
+        // breakable means both bids die, and neither needs anything further.
+        // WHEN THEY DISAGREE both bounds land on the same end and the band stays
+        // open at the other, which is item 23's one-sided shape.  Closing that
+        // case needs a probe this mode cannot express -- "can one side break the
+        // other's bid WHILE KEEPING ITS OWN" -- and that is a separate item.
+        const int near_seat = roles.nil_seat();
+        int far_seat = near_seat;
+        int far_partner_role = ROLE_OPPONENT;
+        for (int seat = 0; seat < 4; ++seat) {
+            if (roles.is_nil(seat) && ((seat ^ near_seat) & 1) != 0) {
+                far_seat = seat;
+                far_partner_role = roles.role[(seat + 2) & 3];
+            }
+        }
+
+        SearchOptions probe_opts = opts;
+        probe_opts.mode = MODE_FAST;
+
+        int rank_lo = 0;
+        int rank_hi = 3;
+        bool have_lo = false;
+        bool have_hi = false;
+
+        for (int which = 0; which < 2; ++which) {
+            const bool probing_near = which == 0;
+            Solution probe;
+            std::string probe_err;
+            // A failed probe is not a failed solve, exactly as above: the
+            // search below is complete without either bound.
+            const bool ok = solve(pos, seat_roles_from_nil(probing_near ? near_seat : far_seat,
+                                                           false),
+                                  probe_opts, probe, probe_err);
+            presolve_nodes += probe.nodes;
+            presolve_stats.probes += probe.tt_probes;
+            presolve_stats.hits += probe.tt_hits;
+            presolve_stats.partial += probe.tt_partial;
+            presolve_stats.stores += probe.tt_stores;
+            presolve_stats.evictions += probe.tt_evictions;
+            if (!ok) continue;
+
+            const bool safe = probe.nils_set == 0;
+            // The two outcomes the guarantee leaves standing.  Whichever bid the
+            // probe was about is pinned; the other is still free.
+            const bool near_lives = probing_near ? safe : true;
+            const bool far_lives = probing_near ? true : safe;
+            const int a = opposed_rank(probing_near ? near_lives : true,
+                                       probing_near ? true : far_lives, far_partner_role);
+            const int b = opposed_rank(probing_near ? near_lives : false,
+                                       probing_near ? false : far_lives, far_partner_role);
+            // Who owns the guarantee decides which end it bounds.  The far side
+            // maximises the rank, so its guarantees floor it; the near side
+            // minimises, so its guarantees cap it.
+            const bool owned_by_far = probing_near ? !safe : safe;
+            if (owned_by_far) {
+                const int floor_rank = a < b ? a : b;
+                if (!have_lo || floor_rank > rank_lo) rank_lo = floor_rank;
+                have_lo = true;
+            } else {
+                const int ceil_rank = a > b ? a : b;
+                if (!have_hi || ceil_rank < rank_hi) rank_hi = ceil_rank;
+                have_hi = true;
+            }
+        }
+
+        const int rank0 = opposed_rank(true, true, far_partner_role);
+        if (have_hi) {
+            int lo = 0;
+            int hi = 0;
+            opposed_rank_band(rank_hi, rank0, pos.tricks_remaining(), weights, lo, hi);
+            root_beta = hi + 1;  // strictly inside, so the root still comes back exact
+        }
+        if (have_lo) {
+            int lo = 0;
+            int hi = 0;
+            opposed_rank_band(rank_lo, rank0, pos.tricks_remaining(), weights, lo, hi);
+            root_alpha = lo - 1;
+        }
+        // THE PV WALK MUST NOT REUSE THIS WINDOW, and the reason is the one
+        // thing about it that is genuinely new.
+        //
+        // `walk_pv` re-searches each step of the line under the window the ROOT
+        // was asked about, UNSHIFTED by what the line has banked on the way
+        // down.  That has always been sound because the windows it was handed
+        // were loose: the sentinels, or item 23's beta, which caps a value whose
+        // remaining part only ever gets less negative.  A rank band is not
+        // loose.  The root's value carries `primary * (rank - rank0)` -- a whole
+        // k*k -- and a sub-position reached AFTER the bid in question has broken
+        // does not: its value is the trick term alone, which sits far above a
+        // band centred on a rank the root had to pay for.  Every such step then
+        // fails high, `canonical_move_for` compares against a bound rather than
+        // a value, and the walk leaves the line the search actually chose.
+        //
+        // Caught by the replay check on `opposed13.txt` deal 5, which is the
+        // only deal in that file whose optimal line breaks a bid: search -70,
+        // replay -322.  The four-fifths of the corpus where both bids live never
+        // moves the rank along its own PV, so the unshifted window contains
+        // every step by accident and the fault does not show.  A bug that hides
+        // on 7 of 8 deals is a bug that ships.
+        //
+        // The walk goes back to the sentinels, where every step comes back
+        // exact.  It costs nothing that is measured -- `search_nodes` is
+        // snapshotted before the walk -- and nothing on any other shape, whose
+        // windows are untouched.
+        if (have_lo || have_hi) pv_open_window = true;
     }
 
     Ctx ctx;
@@ -1958,6 +2131,7 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
         if (c != NO_CARD) move = c;
     }
     const std::uint64_t search_nodes = ctx.nodes + presolve_nodes;
+    out.presolve_nodes = presolve_nodes;
     // Snapshot before the PV walk below, which probes the table again and would
     // otherwise inflate the hit count with lookups that did no search work.
     const TTStats table_stats = ctx.tt ? ctx.tt->stats() : TTStats();
@@ -1967,7 +2141,9 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
     // strictly smaller subtree.  Either way the moves are the same ones the
     // search picked, so the PV matches the oracle's play for play.
     out.pv.clear();
-    if (!walk_pv(ctx, st, move, out.pv, err, root_alpha, root_beta)) return false;
+    const int pv_alpha = pv_open_window ? WINDOW_MIN : root_alpha;
+    const int pv_beta = pv_open_window ? WINDOW_MAX : root_beta;
+    if (!walk_pv(ctx, st, move, out.pv, err, pv_alpha, pv_beta)) return false;
 
     // A solver that lies is worse than no solver.  Replaying recovers the trick
     // counts independently; re-packing them must land back on the search value.
@@ -2118,6 +2294,15 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
     // that loses the nil scores on the far side of the threshold, so the tight
     // window would hand back a bound for exactly the rows a caller most wants
     // a number on.  Those rows -- and only those -- are re-searched wide below.
+    //
+    // ITEM 77 IS DELIBERATELY NOT WIRED IN HERE.  The opposed shape's band is
+    // two-sided, so the re-search below would have to trigger on rows that fall
+    // off EITHER end rather than just the low one, and a row whose rank differs
+    // from the root's falls off by a whole k*k -- which is most of the
+    // interesting rows.  That is a second correctness argument on a path with a
+    // different obligation, so it is a separate item rather than a second half
+    // of this one.  `--moves` on an opposed deal keeps exactly the behaviour it
+    // has today: correct, and without the new window.
     int tight_beta = beta;
     if (!fast && opts.presolve_window && !roles.nil_already_set() && nil_count(roles) == 1 &&
         pos.tricks_remaining() >= PRESOLVE_MIN_TRICKS) {
