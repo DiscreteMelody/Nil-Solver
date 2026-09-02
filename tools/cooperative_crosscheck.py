@@ -130,6 +130,28 @@ def main():
                     f"{pos.to_pbn()} roles {roles}, but the probe calls "
                     f"that outcome unreachable")
 
+        # Route 4: the general probe subsumes this one, so where they overlap
+        # -- the "no bid down" outcome -- they must agree, and the outcome the
+        # game actually reaches must be among those the cards permit.
+        reach = oracle.solve_reachable_outcomes(pos, roles)
+        if (0 in reach.reachable) != got.reachable:
+            failures.append(
+                f"the general reachability probe and the cooperative one "
+                f"disagree about (make, make) on {pos.to_pbn()} roles {roles}")
+        actual = sum(
+            1 << sol.nil_of_side[k] for k in range(2) if not sol.nil_makes[k])
+        if actual not in reach.reachable:
+            failures.append(
+                f"the game value's outcome is not among the reachable ones on "
+                f"{pos.to_pbn()} roles {roles}: value {actual}, "
+                f"reachable {reach.reachable}")
+        # A budget may only ever widen the answer.
+        capped = oracle.solve_reachable_outcomes(pos, roles, budget=25)
+        if not set(reach.reachable) <= set(capped.reachable):
+            failures.append(
+                f"a budgeted run narrowed MORE than an unbounded one on "
+                f"{pos.to_pbn()} roles {roles}")
+
         # Route 3: protecting fewer bids is easier.
         for one in bids:
             mono_checked += 1
@@ -152,6 +174,8 @@ def main():
     print(f"  monotonic in the protected set: "
           f"{mono_checked - mono_broken} of {mono_checked}")
     print(f"  reachable on {reachable} of {checked}")
+    print(f"  general probe agrees, game value always reachable, "
+          f"budget only ever widens")
     if count_true and count_false:
         print(f"  cost: reachable mean {nodes_true / count_true:,.0f} nodes, "
               f"unreachable mean {nodes_false / count_false:,.0f} "

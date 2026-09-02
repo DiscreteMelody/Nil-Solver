@@ -1211,6 +1211,269 @@ def solve_cooperative(
     )
 
 
+# ---------------------------------------------------------------------------
+# WHICH OUTCOMES THE CARDS PERMIT AT ALL
+#
+# `solve_cooperative` above asks whether ONE outcome -- every bid surviving --
+# is reachable.  The general question is which of the four outcomes are, and it
+# is worth more, because the answer is a BAND on the rank rather than a single
+# guard.
+#
+# This is patch 79's bound made deal-specific.  That bound is structural: the
+# rank is a step function of the broken-bid mask and a bid never un-breaks, so
+# from mask m the reachable ranks are those of the masks containing m -- four of
+# them, no cards read.  True of every deal, and therefore blind to the deal.
+# Asking the cards narrows it: an outcome no line of play reaches cannot be the
+# game value, whoever is trying to steer toward it.
+#
+# COMPLEMENTARY TO THE PROBES ABOVE, and in the direction they cannot see.
+# A, B and the conjunctions are adversarial GUARANTEES -- they bound the value
+# by what a side can force.  This bounds it by what the cards permit.  Neither
+# implies the other: a side may be unable to force an outcome that is perfectly
+# reachable, which is the entire hazard cell, and an outcome may be unreachable
+# without any side having a guarantee to show for it.
+# ---------------------------------------------------------------------------
+
+
+class _Exhausted(Exception):
+    """The probe hit its node budget before deciding."""
+
+
+@dataclass
+class _ReachCtx:
+    required_mask: int            # bids that must ALL be down at the end
+    forbidden_mask: int           # bids that must never go down
+    memo: Optional[Dict] = None
+    nodes: int = 0
+    budget: int = 0               # 0 = unlimited
+
+
+def _search_reachable(
+    hands: Tuple[Tuple[Card, ...], ...],
+    leader: int,
+    trick: Tuple[Card, ...],
+    spades_broken: bool,
+    down: int,
+    ctx: _ReachCtx,
+) -> bool:
+    """Is there ANY line ending with exactly `required` down and `forbidden` up?
+
+    The generalisation of `_search_cooperative`, which is the `required = 0`
+    case.  Both are kept: the special case is the one the item-60 guard calls
+    and it carries a cheaper state, and having two implementations of an
+    overlapping question is worth more than having one -- `selftest` makes them
+    agree where they overlap.
+
+    `down` TRACKS ONLY THE REQUIRED BIDS, and that asymmetry is the point.  A
+    forbidden bid going down ends the line, so it never has to be remembered; a
+    required bid going down is progress toward the goal, so it does.  The memo
+    key carries `down` for exactly that reason, where `_search_cooperative`'s
+    does not need to carry anything.
+    """
+    ctx.nodes += 1
+    if ctx.budget and ctx.nodes > ctx.budget:
+        raise _Exhausted
+
+    if not any(hands):
+        return down == ctx.required_mask
+
+    key = None
+    if ctx.memo is not None:
+        key = (hands, leader, trick, spades_broken, down)
+        cached = ctx.memo.get(key)
+        if cached is not None:
+            return cached
+
+    seat = (leader + len(trick)) % 4
+    result = False
+
+    for card in legal_moves(hands[seat], trick, spades_broken):
+        next_hands = tuple(
+            tuple(c for c in hand if c != card) if s == seat else hand
+            for s, hand in enumerate(hands)
+        )
+        next_spades = spades_broken_after(spades_broken, trick, card)
+        played = trick + (card,)
+
+        if len(played) == 4:
+            winner = trick_winner(leader, played)
+            if ctx.forbidden_mask & (1 << winner):
+                continue                      # a bid that had to survive just died
+            next_down = down | (ctx.required_mask & (1 << winner))
+            found = _search_reachable(
+                next_hands, winner, (), next_spades, next_down, ctx
+            )
+        else:
+            found = _search_reachable(next_hands, leader, played, next_spades, down, ctx)
+
+        if found:
+            result = True
+            break
+
+    if ctx.memo is not None:
+        ctx.memo[key] = result
+    return result
+
+
+def _brute_force_reachable(hands, leader, trick, spades_broken, down, required, forbidden):
+    """The definition, enumerated: no memo, and nothing remembered but the goal."""
+    if not any(hands):
+        return down == required
+    seat = (leader + len(trick)) % 4
+    for card in legal_moves(hands[seat], trick, spades_broken):
+        next_hands = tuple(
+            tuple(c for c in hand if c != card) if s == seat else hand
+            for s, hand in enumerate(hands)
+        )
+        next_spades = spades_broken_after(spades_broken, trick, card)
+        played = trick + (card,)
+        if len(played) == 4:
+            winner = trick_winner(leader, played)
+            if forbidden & (1 << winner):
+                continue
+            if _brute_force_reachable(next_hands, winner, (), next_spades,
+                                      down | (required & (1 << winner)),
+                                      required, forbidden):
+                return True
+        else:
+            if _brute_force_reachable(next_hands, leader, played, next_spades,
+                                      down, required, forbidden):
+                return True
+    return False
+
+
+@dataclass
+class ReachableOutcomes:
+    """Which of the outcomes the cards permit, and the rank band that implies."""
+
+    roles: List[int]
+    bidders: List[int]            # bidder seats, ascending
+    reachable: List[int]          # outcome masks a line of play can reach
+    nodes: int
+    position: Position
+    undecided: List[int] = field(default_factory=list)
+    # Masks whose probe hit the budget and were admitted rather than decided.
+    # A band with any of these is still sound but is no longer TIGHT, and a
+    # caller measuring how much narrowing the probe achieves has to know the
+    # difference between "reachable" and "not shown otherwise".
+
+    def name(self, mask: int) -> str:
+        return "(" + ", ".join(
+            "fail" if mask & (1 << s) else "make" for s in self.bidders
+        ) + ")"
+
+    def rank_band(self, side: int = 0) -> Tuple[int, int]:
+        """Lowest and highest rank `side` can end on, over reachable outcomes.
+
+        A minimax outcome is a reachable outcome, so the true value's rank lies
+        in this band whatever either side is trying to do.  Sound as a search
+        window for that reason and no other.
+        """
+        nil_of_side = [
+            next(x for x in (t, t + 2) if self.roles[x] in (ROLE_NIL, ROLE_NIL_SET))
+            for t in range(2)
+        ]
+        partner_role = [self.roles[(nil_of_side[t] + 2) % 4] for t in range(2)]
+        ranks = [
+            side_rank(
+                (m & (1 << nil_of_side[side])) == 0,
+                (m & (1 << nil_of_side[1 - side])) == 0,
+                partner_role[side],
+            )
+            for m in self.reachable
+        ]
+        return (min(ranks), max(ranks)) if ranks else (0, 0)
+
+    def describe(self) -> str:
+        lo, hi = self.rank_band(0)
+        lines = [f"Bidders         {''.join(SEAT_CHARS[s] for s in self.bidders)}"]
+        for m in sorted(self.reachable):
+            lines.append(f"  reachable     {self.name(m)}")
+        blocked = [m for m in self._all_masks() if m not in self.reachable]
+        for m in sorted(blocked):
+            lines.append(f"  BLOCKED       {self.name(m)}")
+        lines.append(f"Rank band       [{lo}, {hi}]"
+                     f"{'   (collapsed to one outcome)' if lo == hi else ''}")
+        lines.append(f"Nodes           {self.nodes}")
+        return "\n".join(lines)
+
+    def _all_masks(self) -> List[int]:
+        out = [0]
+        for s in self.bidders:
+            out += [m | (1 << s) for m in out]
+        return out
+
+
+def solve_reachable_outcomes(
+    position: Position,
+    roles: Sequence[int],
+    use_memo: bool = True,
+    budget: int = 0,
+) -> ReachableOutcomes:
+    """Which outcome masks a line of play can reach, and the rank band implied.
+
+    One existence probe per outcome -- four with a bid on each side.  The band
+    is sound as a search window because a minimax outcome is a reachable one; it
+    is not tight, because reachability ignores who is steering.  Its value is
+    that it sees a direction the adversarial probes cannot: an outcome the CARDS
+    forbid is out whether or not any side could have forced it.
+    """
+    position.validate()
+    bidders = [s for s in range(4) if roles[s] in (ROLE_NIL, ROLE_NIL_SET)]
+    told_down = sum(1 << s for s in range(4) if roles[s] == ROLE_NIL_SET)
+
+    masks = [0]
+    for s in bidders:
+        masks += [m | (1 << s) for m in masks]
+
+    reachable = []
+    undecided = []
+    nodes = 0
+    full = sum(1 << s for s in bidders)
+    for m in masks:
+        # A bid the caller declared down is down on every line, so an outcome
+        # that has it surviving is not reachable and is not worth a search.
+        if told_down & ~m:
+            continue
+        ctx = _ReachCtx(
+            required_mask=m & ~told_down,
+            forbidden_mask=full & ~m,
+            memo={} if use_memo else None,
+            budget=budget,
+        )
+        # A PROBE THAT GIVES UP IS COUNTED AS REACHABLE.  The band only has to
+        # CONTAIN the true outcome, so admitting an outcome that may not be
+        # available widens it and keeps it sound; dropping one that is available
+        # would not.  The whole cost profile turns on this: deciding an outcome
+        # is UNREACHABLE means exhausting every line that reaches it, while
+        # deciding it is reachable stops at the first, so a budget converts an
+        # unbounded search into a bounded one that tightens opportunistically.
+        try:
+            found = _search_reachable(
+                position.hands,
+                position.leader,
+                position.current_trick,
+                position.spades_broken,
+                0,
+                ctx,
+            )
+        except _Exhausted:
+            found = True
+            undecided.append(m)
+        if found:
+            reachable.append(m)
+        nodes += ctx.nodes
+
+    return ReachableOutcomes(
+        roles=list(roles),
+        bidders=bidders,
+        reachable=reachable,
+        undecided=undecided,
+        nodes=nodes,
+        position=position,
+    )
+
+
 @dataclass
 class OpposingNilSolution:
     """The answer to a deal with one nil on each side."""
@@ -2660,6 +2923,36 @@ def selftest(verbose: bool = True) -> int:
     check("...confirmed by brute force",
           _brute_force_cooperative(joint.hands, 0, (), False, 0b11), False)
 
+    # ---- reachable OUTCOMES, the generalisation ------------------------
+    # The two searches overlap at "no bid down", and where they overlap they
+    # must agree -- two implementations of one question, which is worth more
+    # than one implementation passing.
+    hazard_reach = solve_reachable_outcomes(hazard, hazard_roles)
+    check("the general probe agrees with the cooperative one on (make, make)",
+          0 in hazard_reach.reachable,
+          solve_cooperative(hazard, hazard_roles).reachable)
+    # On the hazard deal both bids are doomed individually, so the ONLY outcome
+    # the cards permit is both failing -- and the rank band collapses to a
+    # point, which is the strongest form of the bound.
+    check("the hazard deal permits exactly one outcome",
+          sorted(hazard_reach.reachable), [0b11])
+    check("...so its rank band is a single value",
+          hazard_reach.rank_band(0)[0] == hazard_reach.rank_band(0)[1], True)
+    check("...confirmed by brute force for each blocked outcome",
+          [m for m in (0b00, 0b01, 0b10)
+           if _brute_force_reachable(hazard.hands, 0, (), False, 0, m, 0b11 & ~m)],
+          [])
+
+    # A BUDGETED RUN MUST STAY SOUND.  Giving up admits an outcome, so the
+    # bounded answer is a SUPERSET of the true one; it may be looser and must
+    # never be tighter, because a band that has dropped the true outcome would
+    # cut the real answer out of the search window.
+    budgeted = solve_reachable_outcomes(hazard, hazard_roles, budget=5)
+    check("a budgeted run never narrows more than an unbounded one",
+          set(hazard_reach.reachable) <= set(budgeted.reachable), True)
+    check("...and says which outcomes it failed to decide",
+          len(budgeted.undecided) > 0, True)
+
     # A bid the caller declared down cannot be protected: it is down on every
     # line by assertion, so the ask is a contradiction and should be refused
     # rather than quietly answered False.
@@ -2762,6 +3055,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         help="seats whose bids --cooperative must keep alive, e.g. 'NE'; "
              "defaults to every live bidder",
     )
+    p.add_argument(
+        "--reachable-outcomes",
+        action="store_true",
+        help="which outcomes the CARDS permit, and the rank band that implies",
+    )
+    p.add_argument(
+        "--reach-budget",
+        type=int,
+        default=0,
+        help="node budget per outcome probe; an exhausted probe is admitted as "
+             "reachable, which widens the band and keeps it sound (0 = no cap)",
+    )
     p.add_argument("--selftest", action="store_true", help="run the built-in checks")
     args = p.parse_args(argv)
 
@@ -2810,6 +3115,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             file=sys.stderr,
         )
         return 2
+
+    if args.reachable_outcomes:
+        reach = solve_reachable_outcomes(
+            position, roles, use_memo=args.memo, budget=args.reach_budget)
+        lo, hi = reach.rank_band(0)
+        if args.compact:
+            print("reachable=" + ",".join(str(m) for m in sorted(reach.reachable)))
+            print(f"rank_lo={lo}")
+            print(f"rank_hi={hi}")
+            print(f"undecided={len(reach.undecided)}")
+            print(f"nodes={reach.nodes}")
+        else:
+            print(reach.describe())
+        return 0
 
     if args.cooperative:
         # ITEM 2'S PROBE.  Not a guarantee and not about sides: it asks whether
