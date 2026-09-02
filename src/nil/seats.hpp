@@ -152,6 +152,54 @@ int nil_set_count(const SeatRoles& roles);
 // freely, its tricks still counting for the pair's secondary total.
 unsigned live_nil_mask(const SeatRoles& roles);
 
+// Bit `s` set for each seat the CALLER declared already down with
+// ROLE_NIL_SET.  The mask counterpart of nil_set_count: those bids are down
+// whatever the search finds, so they belong in a reported broken-bid mask on
+// every line, including the lines where nothing else breaks.
+unsigned nil_set_mask(const SeatRoles& roles);
+
+// DOES THE OBJECTIVE PIN *WHICH* BIDS GO DOWN, or only how many?
+//
+// A reported broken-bid mask is an answer column, and patch 57 established
+// what an answer column may hold: only what the objective pins.  Two equally
+// optimal lines must not be able to disagree about it, or the field reports
+// move ordering rather than the answer.
+//
+// The three shapes differ, and the difference is in the primary level:
+//
+//   SHAPE_SINGLE_NIL     one bidder, so the mask has two values and the
+//                        reported count already distinguishes them.  Pinned.
+//   SHAPE_OPPOSING_NILS  the primary is far_side_rank(mask), and under strict
+//                        opposition -- the only opposed arrangement accepted --
+//                        rank and mask are in bijection, so the value names the
+//                        mask exactly.  Pinned.
+//   SHAPE_PARTNER_NILS   the primary is a COUNT of bids down.  With one of two
+//                        down the value cannot say WHICH, and measurement says
+//                        it genuinely does not: tools/mask_determinacy.py finds
+//                        11.67-20.00% of positions where two optimal lines
+//                        break different bids for the same value.  NOT pinned.
+//
+// A property of the ROLES alone, so it costs nothing to answer and is the same
+// for every row of a move list.  It is deliberately conservative on the twin
+// shape: about five positions in six there are determined too, but saying so
+// would need a second search to enumerate the optimal lines, and a field that
+// occasionally overstates is worse than one that uniformly understates.
+bool mask_determined_by_objective(const SeatRoles& roles);
+
+// The same question asked of a position rather than of a shape, which is
+// strictly tighter and still free.
+//
+// Even where the shape does not pin the mask, the COUNT may: the mask is a
+// subset of the live bidders whose size is the number of live bids down, so
+// when only ONE subset has that size there is nothing left to disagree about.
+// With two partners bidding that leaves exactly one ambiguous case, count 1 --
+// which is precisely where tools/mask_determinacy.py finds the disagreement,
+// always as {N} against {S}.  Both down and neither down are determined.
+//
+// Prefer this to the shape predicate wherever a count is in hand.  It reads no
+// cards and runs no search, so the tightening costs nothing.
+bool mask_determined(const SeatRoles& roles, int nils_set);
+
 // Text form, ANCHORED: four values running clockwise from `anchor`, matching
 // the hand order of a PBN string named for the same seat.  Accepts them
 // separated by whitespace or commas, or run together as four digits.

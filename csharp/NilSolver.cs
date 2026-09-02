@@ -91,6 +91,29 @@ namespace NilSolver
         /// </summary>
         public bool IsBest { get; init; }
 
+        /// <summary>
+        /// WHICH bids are broken after this card, as a seat bitmask: bit 0
+        /// North, 1 East, 2 South, 3 West.
+        /// <para>
+        /// This is the field to colour a card list with. <see cref="NilsSet"/>
+        /// says only that SOMEBODY's bid dies, and with a bid on each side that
+        /// is the same answer for the card that throws yours away and the card
+        /// that sets theirs — opposite advice under one flag. Test
+        /// <c>(NilsSetMask &amp; (1 &lt;&lt; mySeat)) != 0</c> for "this card
+        /// costs me my nil".
+        /// </para>
+        /// <para>
+        /// Check <see cref="NilSolution.NilsSetMaskDetermined"/> before relying
+        /// on it: on a deal where a PAIR both bid, the mask names one optimal
+        /// line's answer rather than the position's.
+        /// </para>
+        /// </summary>
+        public int NilsSetMask { get; init; }
+
+        /// <summary>True when this card sets the bid at <paramref name="seat"/>
+        /// (0 North, 1 East, 2 South, 3 West).</summary>
+        public bool SetsNilAt(int seat) => (NilsSetMask & (1 << (seat & 3))) != 0;
+
         /// <summary>Every rank this row stands for, this card's own included, ascending.</summary>
         public IEnumerable<int> Expand() => new[] { Rank }.Concat(EqualRanks).OrderBy(r => r);
 
@@ -112,7 +135,8 @@ namespace NilSolver
             NilTricks = NilTricks,
             NilSideTricks = NilSideTricks,
             OpponentTricks = OpponentTricks,
-            IsBest = IsBest
+            IsBest = IsBest,
+            NilsSetMask = NilsSetMask
         };
 
         /// <summary>"K♠", "T♥", "2♣" — for display. <see cref="ToString"/> is the
@@ -149,7 +173,8 @@ namespace NilSolver
                 NilTricks = m.NilTricks,
                 NilSideTricks = m.NilSideTricks,
                 OpponentTricks = m.OpponentTricks,
-                IsBest = m.IsBest != 0
+                IsBest = m.IsBest != 0,
+                NilsSetMask = m.NilsSetMask
             };
         }
 
@@ -202,6 +227,36 @@ namespace NilSolver
 
         /// <summary>Tricks left to play in the position. Always meaningful.</summary>
         public int TricksRemaining { get; init; }
+
+        /// <summary>
+        /// WHICH bids are broken, as a seat bitmask: bit 0 North, 1 East,
+        /// 2 South, 3 West.
+        /// <para>
+        /// <see cref="NilsSet"/> says only that somebody's bid dies. On a deal
+        /// with a bid on each side that single flag cannot distinguish "mine
+        /// died" from "theirs died", which is the distinction the whole deal
+        /// turns on. Use <see cref="SetsNilAt"/> to ask about one seat.
+        /// </para>
+        /// </summary>
+        public int NilsSetMask { get; init; }
+
+        /// <summary>
+        /// True when <see cref="NilsSetMask"/> is pinned by the objective —
+        /// every optimal line agrees on it, so it is a property of the position.
+        /// <para>
+        /// False on a deal where a PAIR both bid nil: there the objective counts
+        /// bids down rather than naming them, so either bid may be the one that
+        /// breaks for the same game value, and the mask reports the line this
+        /// search happened to take. It is still true of that line, and its
+        /// popcount still matches the count — but do not persist it, diff
+        /// against it, or show it as the answer.
+        /// </para>
+        /// </summary>
+        public bool NilsSetMaskDetermined { get; init; } = true;
+
+        /// <summary>True when the bid at <paramref name="seat"/> (0 North,
+        /// 1 East, 2 South, 3 West) is down.</summary>
+        public bool SetsNilAt(int seat) => (NilsSetMask & (1 << (seat & 3))) != 0;
 
         /// <summary>Nodes the search visited. Deterministic at a fixed table size.</summary>
         public ulong Nodes { get; init; }
@@ -288,6 +343,8 @@ namespace NilSolver
             {
                 Status = NilStatus.Ok,
                 NilsSet = r.NilsSet != 0,
+                NilsSetMask = r.NilsSetMask,
+                NilsSetMaskDetermined = r.NilsSetMaskDetermined != 0,
                 NilTricks = r.NilTricks,
                 NilSideTricks = r.NilSideTricks,
                 OpponentTricks = r.OpponentTricks,
@@ -304,6 +361,8 @@ namespace NilSolver
             {
                 Status = NilStatus.Ok,
                 NilsSet = r.NilsSet != 0,
+                NilsSetMask = r.NilsSetMask,
+                NilsSetMaskDetermined = r.NilsSetMaskDetermined != 0,
                 NilTricks = r.NilTricks,
                 NilSideTricks = r.NilSideTricks,
                 OpponentTricks = r.OpponentTricks,

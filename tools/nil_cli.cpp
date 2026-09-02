@@ -356,6 +356,9 @@ int main(int argc, char** argv) {
                   << "side_tricks=" << sol.nil_side_tricks << "\n"
                   << "opponent_tricks=" << sol.opponent_tricks << "\n"
                   << "nils_set=" << sol.nils_set << "\n"
+                  << "nils_set_mask=" << sol.nils_set_mask << "\n"
+                  << "nils_set_mask_determined=" << (sol.nils_set_mask_determined ? 1 : 0)
+                  << "\n"
                   << "nodes=" << sol.nodes << "\n"
                   << "presolve_nodes=" << sol.presolve_nodes << "\n"
                   << "pv=" << nil::format_pv_compact(sol) << "\n";
@@ -364,11 +367,14 @@ int main(int argc, char** argv) {
         // unasked in a machine-readable stream is how a parser starts depending
         // on it.
         // One `move=` line per card, in canonical order, fields separated by
-        // colons: card, whether the nil fails after it, the three trick counts,
-        // whether it is one of the best, and the equal cards it stands for.
+        // colons: card, how many bids fail after it, WHICH bids fail as a seat
+        // bitmask, the three trick counts, whether it is one of the best, and
+        // the equal cards it stands for.  The mask sits beside the count it
+        // refines rather than at the end, because the equals list is variable
+        // length and has to stay last.
         for (const nil::MoveScore& m : scored) {
             std::cout << "move=" << nil::card_to_string(m.card) << ':'
-                      << m.nils_set << ':' << m.nil_tricks << ':'
+                      << m.nils_set << ':' << m.nils_set_mask << ':' << m.nil_tricks << ':'
                       << m.nil_side_tricks << ':' << m.opponent_tricks << ':'
                       << (m.is_best ? 1 : 0) << ':';
             bool first = true;

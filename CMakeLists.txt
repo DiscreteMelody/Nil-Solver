@@ -413,6 +413,19 @@ if(NIL_SOLVER_BUILD_TESTS)
               --cases 14 --cards 3 --seed 17)
     set_tests_properties(conjunction_crosscheck PROPERTIES TIMEOUT 600)
 
+    # THE CLAIM `nils_set_mask_determined` IS DERIVED FROM.  The field says the
+    # broken-bid mask is pinned by the objective on the single-nil and opposed
+    # shapes and not on the twin one; this asserts both halves.  The second half
+    # matters as much as the first: if the twin shape ever measured NO ambiguity,
+    # the honest reading is that this suite stopped reaching the case, not that
+    # the shape became determined -- so a run that sees none is a failure rather
+    # than a pass.
+    add_test(NAME mask_determinacy
+      COMMAND ${Python3_EXECUTABLE}
+              "${CMAKE_CURRENT_SOURCE_DIR}/tools/mask_determinacy.py"
+              --assert-claim --cards 4 --cases 24 --seed 17)
+    set_tests_properties(mask_determinacy PROPERTIES TIMEOUT 600)
+
     add_test(NAME subgame_consistency
       COMMAND ${Python3_EXECUTABLE}
               "${CMAKE_CURRENT_SOURCE_DIR}/tools/subgame_consistency.py"

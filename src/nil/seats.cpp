@@ -99,6 +99,52 @@ unsigned live_nil_mask(const SeatRoles& roles) {
     return mask;
 }
 
+unsigned nil_set_mask(const SeatRoles& roles) {
+    unsigned mask = 0;
+    for (int s = 0; s < 4; ++s) {
+        if (roles.role[s] == ROLE_NIL_SET) mask |= 1u << s;
+    }
+    return mask;
+}
+
+bool mask_determined_by_objective(const SeatRoles& roles) {
+    // Read the SHAPE rather than re-deriving the condition here, so the two
+    // cannot drift apart, and so an arrangement this function has never heard
+    // of is not assumed pinned.
+    std::string ignored;
+    switch (seat_shape(roles, ignored)) {
+        case SHAPE_SINGLE_NIL:
+            // One bidder.  The mask is 0 or {bidder}, which the count names.
+            return true;
+        case SHAPE_OPPOSING_NILS:
+            // The primary is the outcome rank, and rank <-> mask is a bijection
+            // on a strictly opposed arrangement -- the only opposed arrangement
+            // seat_shape accepts.
+            return true;
+        case SHAPE_PARTNER_NILS:
+            // The primary counts bids down and cannot say which one went.
+            return false;
+        case SHAPE_UNSUPPORTED:
+        default:
+            return false;
+    }
+}
+
+bool mask_determined(const SeatRoles& roles, int nils_set) {
+    if (mask_determined_by_objective(roles)) return true;
+    // How many bids could still have gone either way, and how many of them did.
+    // A bid the caller declared down is in the mask on every line and so is not
+    // a degree of freedom; the live ones are.
+    int live = 0;
+    for (int s = 0; s < 4; ++s) {
+        if (roles.role[s] == ROLE_NIL) ++live;
+    }
+    const int live_down = nils_set - nil_set_count(roles);
+    // C(live, live_down) == 1 exactly at the ends, and the ends are the only
+    // place a count names a unique subset.
+    return live_down <= 0 || live_down >= live;
+}
+
 bool validate_seat_roles(const SeatRoles& roles, std::string& err) {
     return seat_shape(roles, err) != SHAPE_UNSUPPORTED;
 }

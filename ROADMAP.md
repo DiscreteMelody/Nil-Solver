@@ -38,6 +38,7 @@ expensive node. Read items 11 and 31 in that light.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ✅ | ~~A per-row broken-bid MASK through the API (item 1)~~ | patch 89 | **The count `nils_set` cannot answer the question the site is asking, and a worked deal is the argument: `N:.A..A4 .2.K9. .Q.7.J J..8.K` opposed, where HA and C4 BOTH report `nils_set=1` and mean opposite things** -- HA sets North's own bid (mask `0x1`), C4 sets East's (`0x2`). Under the old interface those two cards are indistinguishable, and one of them is the play. `Solution`, `MoveScore`, `Tally`, `nil_result`, `nil_move` and both C# layers now carry `nils_set_mask`, a seat bitmask whose popcount is always `nils_set`, so a caller wanting the count keeps reading the count. **THE MEASUREMENT CAME FIRST AND CHANGED THE DELIVERABLE.** Patch 57 withdrew a proposed per-seat answer column on the rule that *an answer column may only hold what the OBJECTIVE pins*; a mask is an answer column and had to face the same question, so `tools/mask_determinacy.py` walks the oracle carrying, beside the value, the SET of final masks reachable when every seat plays optimally -- `M(node) = union of M(child)` over children achieving `value(node)`. **Single nil 0.00%, opposed nil 0.00%, twin nil 11.67-20.00% ambiguous**, stable across 3/4/5 cards and both tie-break directions. So the mask is pinned on exactly the two shapes the site needs, and on a pair that both bid it is a move-ordering artifact about one position in six. **The count is pinned everywhere -- 0 of 180 twin positions moved it** -- which locates the crossing precisely: `nils_set` was safe and the widening is the step that is not. Hence `nils_set_mask_determined`, shipped beside the mask rather than a bare field that lies quietly on one shape. **A free tightening the first cut missed**: ambiguity needs the count to leave more than one candidate subset, and `C(live, live_down) == 1` at both ends, so *both down* and *neither down* are determined whatever the shape and twin nil is ambiguous at exactly count 1 -- which is where the measurement finds it, always `{N}` against `{S}`. `mask_determined(roles, nils_set)` reads no cards and runs no search. **TWO BUGS, BOTH FOUND BY `popcount(mask) == nils_set`, a relation the count alone had nothing to check it against.** (1) `solve_moves` on an exhausted position used `nil_already_set() ? 1 : 0` -- a PREDICATE widened to a count, which reads correctly with one bidder and reports 1 where two bids are down, while `solve()` reaches the same position through `replay_pv` and says 2. The two entry points had disagreed by one on `3 1 3 1` with no cards left. (2) `format_solution`'s single `Nil FAILS/MAKES` line collapsed a two-bid answer into one boolean, which is patch 85's `Tricks for N` ambiguity in the other field; each bid is now named. **Both tests mutation-checked** -- reintroducing either failure fails the suite. **Free by construction, not by measurement**: every hunk in `search.cpp` lands in `solve`, `solve_moves`, `replay_pv` or `format_solution` and none in `search`, `advance` or `score_trick`, so the mask costs one OR per SOLVE rather than per node -- and all six banked counts come back bit-identical. `mask_determinacy --assert-claim` is ctest #30 and asserts BOTH directions: that the pinned shapes never disagree, and that the twin shape DOES, because a run measuring no ambiguity would mean the suite had stopped reaching the case rather than that the shape had become determined. 30/30 (29 + the new one); `--check-pv --check-moves` on all three corpora; `opposing_crosscheck` 48/48, `conjunction_crosscheck` 320/320, oracle selftest clean; 39,701 / 278,059 / 49,084 / 163,393,676 / 4,833,200 and opposed13 368,219,325 plus the settled deal 55,488,773 all unmoved |
 | ✅ | ~~The both-down region is a pure trick count: spent (item 82)~~ | patch 88 | **4 of 4 reps a win on both workloads, and patch 87's pessimism was wrong.** `opposed13.txt` 402,422,529 -> 368,219,325 (1.093x nodes) at 0.919 / 0.933 / 0.944 / 0.941, **~1.07x on the clock**; the settled deal 62,331,424 -> 55,488,773 (1.123x) at 0.952 / 0.963 / 0.995 / 0.994. With every bid down the rank cannot move again, so the subtree is worth the far side's remaining tricks alone; `forced_spade_tricks` summed side-wide holds down every line, and `cash_tricks` speaks for one side but that is enough both ways, since the far side maximises its own tricks and the near side minimises them. **Patch 87 predicted this would give its node win back on throughput** by analogy with item 79's first spelling. **The gate is why it did not**: the size of the claim needed falls out of the window with no proof run at all, so proofs are attempted only where they could succeed and the 28% of the region that is unreachable never pays -- an option item 79's first spelling did not have. **SEVEN OF EIGHT DEALS MEASURE EXACTLY 1.000x, and that is the point**: only deal 5 answers *both bids die*, and everywhere else item 79 has already refuted the settled region by arithmetic. This is the item that answers the case T raised -- what prunes when neither bid can survive -- and it fires on exactly that case and nowhere else. **Conversion is WORST where the region is densest**: the settled deal is 35.87% settled boundaries against 12.37%, has the bigger node win, and converts it least, because the proofs are charged in proportion to the region and paid in proportion to what they answer. **THE CORPUS CAUGHT A REAL BUG**: the first gate was `nils_broken == nil_mask` alone, which reads as *every bid is down* and is -- **including on a single-nil deal the moment its one bid breaks**, where the value is `primary * nil_tricks + ...` and both floors bound the wrong quantity. 80 of 560 positions failed and the banked count moved 278,059 -> 270,562. Fix is one clause, `ctx.opposing &&`. The lesson is not *test your changes*, which the banked counts did on the first run -- it is that **a shape test reading as boilerplate is the one to check**. Behind `--no-settled-tricks`; 29/29; all 8 deals identical arm-on/off incl. PV; 39,701 / 278,059 / 49,084 / 163,393,676 / 4,833,200 unmoved |
 | ✅ | ~~The settled region: stronger trick proofs measured (item 82)~~ | patch 87 | **Roughly double the firing rate, and still probably not enough -- said before anyone builds it.** Two upgrades the file was most of the way to. `forced_spade_tricks` summed side-wide replaces `top_spade_run`: strictly stronger, since the run function reads ONE hand and only its top run while the forced function prices in spoilers and speaks about all four, and its own comment already established that two hands' floors may be added. And **DDS section 3's can-cash count, which this file had SPECIFIED AND NEVER WRITTEN** -- the comment describing it sat above an unrelated function with nothing implementing it; `cash_tricks()` is that comment, written. It bounds a node from one side only, which at a settled node is enough both ways: the far side maximises its own tricks so cashing floors the value, the near side minimises them so cashing caps it. `best` is used and never `sum`, because a measurement that overstates its own ceiling is worse than none. **Firing rate 12.97% -> 23.65% (opposed13) and 8.10% -> 16.14% (settled deal)**, the two proofs overlapping on under a fifth of what they cover, which is **2.93% and 5.79% of ALL nodes**. **THAT IS THE PROBLEM**: item 79's ceiling was 24.86% and returned 1.20x; this is 3% and 6%, charged at every settled trick boundary (12.37% and 35.87% of nodes) to fire on a sixth to a quarter of them. **That is the profile item 79's FIRST spelling had when it measured 1.20x on nodes and 0.971 on the clock**, and 79 escaped only because its rank term collapsed to a four-entry table -- neither of these does, because both read the cards. **Recommendation: gate before spending.** The gate is free, since the required claim is already computed from the window with no proof run: 71.88% of the region needs at most two tricks and 0.47% needs four or more, so the proofs need only be attempted where they could possibly succeed. Measurement only: 29/29, opposed 402,422,529, banked counts unmoved |
 | ✅ | ~~The settled region: firing rate of the cheapest trick proof (item 82)~~ | patch 86 | **The sufficiency ceiling said a one-trick claim would do on half the region; this asks whether one is PROVABLE there, because item 81 died in exactly that gap.** Proof used is the cheapest sound one in the file, `top_spade_run` -- the holder of the top outstanding spades and how many it holds consecutively, which are trump and so win the tricks they are played on. Deliberately weak: no side-suit winners, no ruffs, no bound from the other end. **Spade run proves the claim on 12.97% of the region (opposed13) and 8.10% (settled deal), which is 1.61% and 2.90% of ALL nodes** -- real but thin. **THE FINDING IS THE NEXT ROW: 45.83% and 61.38% are cases where the top-spade holder IS the side that must prove something and the run is simply too short.** The proof is being asked the right question and falling short on STRENGTH, which is the opposite of item 81, where the proofs missed the case entirely and there was nowhere to go. Only 16-17% is out of reach of a spade-flavoured proof at all. **So the case for writing full QuickTricks is the 45.83% / 61.38%, not the 12.97% / 8.10%**: side-suit winners and ruffs would address up to 58.8% and 69.5% of the region, or 7.3% and 21% of all nodes on the two workloads. Lesson one level up: a sufficiency bound is not a firing rate, and a firing rate for a WEAK proof is not one for a strong proof. Measurement only, nothing spent: 29/29, opposed 402,422,529, banked counts unmoved |
@@ -4233,6 +4234,130 @@ nil_mask` looks like a statement about this shape and is a statement about every
 shape, and nothing in the opposed measurements could have revealed it. The lesson holds one level up: a sufficiency bound is not
 a firing rate, and a firing rate for a WEAK proof is not one for a strong proof. The next step is a gated consumer and a paired-rep run.
 
+### 89. ~~A per-row broken-bid mask through the API~~ — ⭐⭐⭐⭐ — **done, patch 89**
+
+`nils_set` is a COUNT. The site is being built on the opposed shape, where a
+count is not merely coarse but actively misleading: `nils_set == 1` is the
+answer both when your own bid dies and when the other side's does, and those
+are opposite advice about the same card.
+
+A real deal, three cards, three outcomes the count blurs into two:
+
+```
+--pbn 'N:.Q.J4. ..K9.7 8.5.T. .A..A3' --leader N --seats 0 0 3 2 --moves
+  HQ   nils_set=0   mask=0x0   both bids survive
+  D4   nils_set=1   mask=0x1   NORTH's own bid dies
+  DJ   nils_set=2   mask=0x3   both die
+```
+
+and the discriminating case, where the count is the same and the meaning is not:
+
+```
+--pbn 'N:.A..A4 .2.K9. .Q.7.J J..8.K' --leader N --seats 0 0 3 2 --moves
+  HA   nils_set=1   mask=0x1   North's bid dies
+  C4   nils_set=1   mask=0x2   EAST's bid dies
+```
+
+#### The measurement that came first
+
+Patch 57 set the rule this item had to clear: **an answer column may only hold
+what the objective pins.** It withdrew per-seat trick counts after re-searching
+140 rows with a different preference among equally-good cards moved them on 43.
+A broken-bid mask is an answer column, so the same question had to be answered
+before any plumbing was written — and the answer is not uniform across shapes.
+
+`tools/mask_determinacy.py` walks the oracle's own backward induction carrying,
+beside the value, the SET of final masks reachable when every seat plays
+optimally:
+
+    M(node) = union of M(child) over the children achieving value(node)
+
+`|M(root)| > 1` means two optimal lines disagree about which bid dies while
+agreeing on the value, so no search can be asked to prefer one.
+
+| shape | ambiguous | `nils_set` count also moved |
+|---|---:|---:|
+| single nil | **0.00%** | 0 |
+| twin nil | **11.67 – 20.00%** | 0 |
+| opposed nil | **0.00%** | 0 |
+
+Stable across 3, 4 and 5 cards and both tie-break directions, 180 positions per
+shape. The two derivations it confirms:
+
+- **Opposed** — the primary level IS `far_side_rank(mask)`, and under strict
+  opposition (the only opposed arrangement `seat_shape` accepts) rank and mask
+  are in bijection, so the value names the mask exactly.
+- **Twin** — the primary is a COUNT of bids down. `gained += primary_weight`
+  fires for either bidder, so "one of two down, pair took five" is one value
+  reachable by breaking either bid.
+
+**The count is pinned on every shape — 0 of 180 twin positions moved it.** That
+locates the crossing exactly: the field that already shipped was safe, and the
+widening is the step that is not. So the mask ships beside
+`nils_set_mask_determined` rather than as a bare field that is quietly an
+artifact on one shape.
+
+#### The tightening the first cut missed
+
+Ambiguity needs the count to leave more than one candidate subset of the live
+bidders. `C(live, live_down) == 1` at both ends, so **both down and neither down
+are determined whatever the shape**, and twin nil is ambiguous at exactly one
+count — which is where the measurement finds it, always `{N}` against `{S}`.
+`mask_determined(roles, nils_set)` is that; it reads no cards and runs no
+search, and it is strictly tighter than the shape predicate it falls back on.
+
+It is still conservative on the twin shape at count 1: about five positions in
+six there are determined too, but proving it per position needs a second search
+to enumerate the optimal lines. A field that occasionally overstates is worse
+than one that uniformly understates, so it understates.
+
+#### Two bugs, both found by one relation
+
+`popcount(mask) == nils_set` is a relation the count alone had nothing to check
+it against, and it caught two things on arrival:
+
+1. **`solve_moves` and `solve` disagreed by one.** On an exhausted position
+   `solve_moves` used `nil_already_set() ? 1 : 0` — a PREDICATE widened to a
+   count, which reads correctly with one bidder and reports 1 where two bids are
+   down. `solve()` reaches the same position through `replay_pv`, whose empty
+   line gives `0 + nil_set_count`, and says 2. Fixed to `nil_set_count(roles)`.
+2. **`format_solution` collapsed a two-bid answer into one `Nil FAILS/MAKES`
+   line** — patch 85's `Tricks for N` ambiguity wearing the other field's
+   clothes. Each bid is now named, with the determinacy caveat printed only when
+   it can actually bite.
+
+Both are pinned by tests, and both tests were **mutation-checked**: reintroducing
+either failure fails the suite.
+
+#### Cost
+
+Free by construction rather than by measurement. Every hunk in `search.cpp`
+lands in `solve`, `solve_moves`, `replay_pv` or `format_solution`, and none in
+`search`, `advance` or `score_trick` — the mask costs one OR per SOLVE, not per
+node. All six banked counts come back bit-identical, which is what that claim
+predicts.
+
+#### What is checked, and in both directions
+
+`mask_determinacy --assert-claim` is ctest #30. It asserts that the pinned
+shapes never disagree AND that the twin shape does. The second half is not
+decoration: if the twin measurement ever came back at zero, the honest reading
+is that the suite had stopped reaching the case, not that the shape had become
+determined — so a run seeing no ambiguity fails rather than passes. That is
+patch 80's lesson, where a check that only ever saw `False` would have passed
+while measuring nothing.
+
+#### Found and deliberately NOT fixed
+
+`NilSolution.NilsSet` in `csharp/NilSolver.cs` is still a **`bool`**, mapped
+with `r.NilsSet != 0`. Patch 56 widened the ABI from a flag to a count and the
+managed wrapper still narrows it back, so a two-bid deal reports "one down" and
+"both down" identically — patch 56's own entry says the real C# work was still
+pending, and this is it. Not folded in here because it changes a surface
+callers depend on and is a second independent variable. It should land before
+the C# layer is built against the new shape; the mask is unaffected either way,
+since it comes across as an int.
+
 ### 60. Nils on OPPOSING sides — ⭐⭐⭐
 
 `0 3 0 3` was chosen first because it is the easy one: the two bidders are
@@ -4256,7 +4381,7 @@ whether this one is affordable at all.
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 36 ✅ → 41 ✅ → 42 ⊘ → 47 ✅ → 43 ⊘→✅ → 43b ⊘ → 44 ⏸ → 54 ✅ → 58 ✅ → 56 ✅ → 57 ✅ → 59 ✅ → 61 ✅ → 62 ✅ → N1 ⊘ → C0 ✅ → C1 ⊘ → C2 ⊘ → C3 ⊘ → C4 → C5 ⏸ → C6 → O1 → 77 ✅ → 79 ✅ → 80 ✅ → 78a ✅ → 78b ✅ → 78c ✅ → 81 ⊘ → 82 ✅ → 45 → 29b (single-suit) → 9 ⊘ → 10 ⊘ → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 36 ✅ → 41 ✅ → 42 ⊘ → 47 ✅ → 43 ⊘→✅ → 43b ⊘ → 44 ⏸ → 54 ✅ → 58 ✅ → 56 ✅ → 57 ✅ → 59 ✅ → 61 ✅ → 62 ✅ → N1 ⊘ → C0 ✅ → C1 ⊘ → C2 ⊘ → C3 ⊘ → C4 → C5 ⏸ → C6 → O1 → 77 ✅ → 79 ✅ → 80 ✅ → 78a ✅ → 78b ✅ → 78c ✅ → 81 ⊘ → 82 ✅ → 89 ✅ → 45 → 29b (single-suit) → 9 ⊘ → 10 ⊘ → measure → 11..14
 ```
 
 **Three results off the move-ordering block, all negative, and the third one

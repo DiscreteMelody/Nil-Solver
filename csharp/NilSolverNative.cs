@@ -438,6 +438,37 @@ namespace NilSolver
 
         /// <summary>Nodes visited by the search, for benchmarking.</summary>
         public ulong Nodes;
+
+        /// <summary>
+        /// WHICH bids are broken, as a seat bitmask: bit 0 North, 1 East,
+        /// 2 South, 3 West. Its popcount is always exactly <see cref="NilsSet"/>.
+        /// <para>
+        /// A count answers "does a nil go down". A mask answers "does MINE go
+        /// down", which with a bid on each side a count cannot reach:
+        /// <c>NilsSet == 1</c> is the answer both when your bid dies and when
+        /// theirs does.
+        /// </para>
+        /// </summary>
+        public int NilsSetMask;
+
+        /// <summary>
+        /// 1 when <see cref="NilsSetMask"/> is pinned by the objective, 0 when
+        /// it is one optimal line's answer among several.
+        /// <para>
+        /// 1 for a single nil and for one bid per side — there any correct
+        /// solver must produce the same mask. 0 when a PAIR both bid, where the
+        /// objective counts bids down rather than naming them, so either bid
+        /// may be the one that breaks for the same game value.
+        /// </para>
+        /// <para>
+        /// 0 does not mean the mask is wrong; it is a true account of the line
+        /// reported, and its popcount is <see cref="NilsSet"/> either way. It
+        /// means a differently-ordered search may name a different bid, so do
+        /// not persist it, diff against it, or show it as the answer — show the
+        /// count, which is pinned on every shape.
+        /// </para>
+        /// </summary>
+        public int NilsSetMaskDetermined;
     }
 
     /// <summary>
@@ -471,6 +502,21 @@ namespace NilSolver
 
         /// <summary>1 if this card achieves the position's own value.</summary>
         public int IsBest;
+
+        /// <summary>
+        /// WHICH bids are broken after this card, as a seat bitmask; popcount is
+        /// <see cref="NilsSet"/>. This is the field to colour a card list with:
+        /// <see cref="NilsSet"/> alone cannot tell "this card throws MY nil
+        /// away" from "this card sets THEIRS", since both read 1 and they are
+        /// opposite advice.
+        /// <para>
+        /// Whether the mask is pinned is a property of the roles, the same for
+        /// every row, so it is reported once as
+        /// <see cref="NilResult.NilsSetMaskDetermined"/> rather than repeated
+        /// here.
+        /// </para>
+        /// </summary>
+        public int NilsSetMask;
     }
 
     /// <summary>

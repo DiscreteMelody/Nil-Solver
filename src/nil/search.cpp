@@ -2410,6 +2410,8 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
         // trick counts.  Ask in full mode if you want those numbers.
         if (roles.nil_already_set()) {
             out.nils_set = 1;
+            out.nils_set_mask = nil_set_mask(roles);
+            out.nils_set_mask_determined = mask_determined(roles, out.nils_set);
             return true;
         }
 
@@ -2447,6 +2449,12 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
         }
 
         out.nils_set = fast_value > 0 ? 1 : 0;
+        // Exact, not a witness: fast mode refuses every shape with more than
+        // one bidder, so there is exactly one bid that can be down and naming it
+        // is naming the only candidate.  `nil_seat()` is that bidder, and the
+        // already-set case returned above.
+        out.nils_set_mask = out.nils_set ? (1u << roles.nil_seat()) : 0u;
+        out.nils_set_mask_determined = mask_determined(roles, out.nils_set);
         out.value = fast_value;
         out.nodes = fast_ctx.nodes;
         out.tt_probes = fast_stats.probes;
@@ -2794,6 +2802,11 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
     // The replay already folds in bids the caller declared down, so this is
     // one expression for both shapes rather than a special case for each.
     out.nils_set = tally.nils_set;
+    // Straight off the replay, which is the same place the count comes from --
+    // so the two cannot disagree, and the PV the caller is handed is the very
+    // line this mask describes.
+    out.nils_set_mask = tally.nils_set_mask;
+    out.nils_set_mask_determined = mask_determined(roles, out.nils_set);
     out.value = value;
     out.roles = roles;
     out.mode = MODE_FULL;
@@ -2854,7 +2867,17 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
         out.nil_tricks = fast ? TRICKS_NOT_COMPUTED : 0;
         out.nil_side_tricks = fast ? TRICKS_NOT_COMPUTED : 0;
         out.opponent_tricks = fast ? TRICKS_NOT_COMPUTED : 0;
-        out.nils_set = roles.nil_already_set() ? 1 : 0;
+        // `nil_set_count`, not `nil_already_set()`.  The latter is a PREDICATE
+        // -- true if ANY bid was declared down -- and widening it to a count
+        // reads correctly with one bidder and reports 1 where two bids are
+        // down.  solve() reaches the same position through replay_pv, whose
+        // empty line gives 0 + nil_set_count, so the two entry points disagreed
+        // by one on `3 1 3 1` with no cards left.  Found by requiring the mask's
+        // popcount to equal the count, which is a relation the count alone had
+        // nothing to check it against.
+        out.nils_set = nil_set_count(roles);
+        out.nils_set_mask = nil_set_mask(roles);
+        out.nils_set_mask_determined = mask_determined(roles, out.nils_set);
         return true;
     }
 
@@ -2878,6 +2901,8 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
     // answer about the cards.
     if (fast && roles.nil_already_set()) {
         out.nils_set = 1;
+        out.nils_set_mask = nil_set_mask(roles);
+        out.nils_set_mask_determined = mask_determined(roles, out.nils_set);
         out.nil_tricks = TRICKS_NOT_COMPUTED;
         out.nil_side_tricks = TRICKS_NOT_COMPUTED;
         out.opponent_tricks = TRICKS_NOT_COMPUTED;
@@ -2888,6 +2913,8 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
             ms.equals = opts.collapse_equivalents ? equivalent_moves(card, legal, relevant)
                                                   : card_bit(card);
             ms.nils_set = 1;
+            // The same bid, down before a card is played, so every row names it.
+            ms.nils_set_mask = out.nils_set_mask;
             ms.is_best = true;
             moves_out.push_back(ms);
         }
@@ -3003,6 +3030,9 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
         ms.is_best = ms.value == best_value;
         if (fast) {
             ms.nils_set = ms.value > 0 ? 1 : 0;
+            // One bidder, so the only bid that can be down is named by its
+            // seat.  Shapes with two are refused before this point.
+            ms.nils_set_mask = ms.nils_set ? (1u << roles.nil_seat()) : 0u;
             continue;
         }
         // MODE_FULL owes each move its trick counts, and they are recovered the
@@ -3057,6 +3087,9 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
         ms.nil_side_tricks = tally.nil_side_tricks;
         ms.opponent_tricks = tally.opponent_tricks;
         ms.nils_set = tally.nils_set;
+        // Off the same replay as the counts, so a row's mask describes the very
+        // line whose trick counts sit beside it.
+        ms.nils_set_mask = tally.nils_set_mask;
 
         // The first best move in canonical order is the one solve() would have
         // picked -- it enumerates from the bottom and replaces the incumbent
@@ -3076,6 +3109,11 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
     }
     out.value = fast ? root_value : best_value;
     out.nils_set = fast ? (root_value > 0 ? 1 : 0) : best->nils_set;
+    // Taken from the same best row as the counts above rather than recomputed,
+    // so solve_moves' position answer and its move list cannot disagree.
+    out.nils_set_mask = fast ? (out.nils_set ? (1u << roles.nil_seat()) : 0u)
+                             : best->nils_set_mask;
+    out.nils_set_mask_determined = mask_determined(roles, out.nils_set);
     out.nil_tricks = best->nil_tricks;
     out.nil_side_tricks = best->nil_side_tricks;
     out.opponent_tricks = best->opponent_tricks;
@@ -3169,6 +3207,12 @@ bool replay_pv(const Position& pos, const std::vector<Play>& pv, const SeatRoles
         if (broken_seats & (1u << seat)) ++tally_out.live_nils_broken;
     }
     tally_out.nils_set = tally_out.live_nils_broken + nil_set_count(roles);
+    // The same widening the line above performs on the count: a bid the caller
+    // declared down is down on every line, including the ones where the search
+    // broke nothing, so it belongs in the reported mask.  Keeping this beside
+    // the count is deliberate -- the two must stay consistent, and popcount is
+    // asserted against it in the tests.
+    tally_out.nils_set_mask = broken_seats | nil_set_mask(roles);
     if (hands[0] | hands[1] | hands[2] | hands[3]) {
         err = "PV does not play out every card";
         return false;
@@ -3278,13 +3322,34 @@ std::string format_solution(const Position& pos, const Solution& sol,
            << "Side tricks    " << side << '=' << sol.nil_side_tricks << "  " << other << '='
            << sol.opponent_tricks << '\n';
     }
-    if (sol.roles.nil_already_set()) {
+    if (sol.roles.nil_already_set() && nil_count(sol.roles) == 1) {
         os << "Nil            ALREADY SET (told, not computed)\n";
-    } else {
+    } else if (nil_count(sol.roles) == 1) {
         os << "Nil            "
            << (sol.nils_set ? "FAILS  (can be forced to take a trick)"
                              : "MAKES  (cannot be forced to take a trick)")
            << '\n';
+    } else {
+        // With two bids on the table, one FAILS/MAKES line is the same
+        // ambiguity patch 85 fixed on the trick label: `nils_set=1` is the
+        // answer both when this side's bid dies and when the other's does, and
+        // a reader has no way to tell which.  Name them.
+        for (int seat = 0; seat < 4; ++seat) {
+            if (!sol.roles.is_nil(seat)) continue;
+            const bool down = (sol.nils_set_mask & (1u << seat)) != 0;
+            os << "Nil " << SEAT_CHARS[seat] << "          "
+               << (down ? "FAILS" : "MAKES");
+            if (sol.roles.role[seat] == ROLE_NIL_SET) os << "  (told, not computed)";
+            os << '\n';
+        }
+        if (!sol.nils_set_mask_determined) {
+            os << "               (both bidders are partners, so the objective "
+                  "counts bids down\n"
+                  "                rather than naming them: another optimal line "
+                  "may set the other\n"
+                  "                bid instead.  The COUNT, "
+               << sol.nils_set << ", is the pinned answer.)\n";
+        }
     }
     os << "Nodes          " << with_commas(sol.nodes) << '\n';
     if (fast) {

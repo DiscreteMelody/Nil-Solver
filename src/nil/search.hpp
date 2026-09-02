@@ -684,6 +684,12 @@ struct Tally {
     // already broken.  This is what gets reported, because the question is how
     // many are down and not how many the search knocked down.
     int nils_set = 0;
+    // WHICH bids are down in total, on the same reading as `nils_set` and with
+    // the same popcount: `broken_mask` plus the seats the caller declared down.
+    // `broken_mask` alone is what the primary level is charged against and is
+    // the wrong thing to report, for exactly the reason the two count fields
+    // are already kept apart.
+    unsigned nils_set_mask = 0;
     int nil_tricks = 0;       // the nil bidder alone
     int nil_side_tricks = 0;  // the nil bidder and its covering partner
     int opponent_tricks = 0;  // the other pair
@@ -700,6 +706,31 @@ struct Solution {
     // The one field both modes fill in, and the one they must agree on.
     // How many of the bids are broken.  0 or 1 with a single nil.
     int nils_set = 0;
+    // WHICH bids are broken, as a seat bitmask, where `nils_set` is how many.
+    // Bit s is set when the bidder at seat s ends the deal having taken a
+    // trick, or was declared down by the caller with ROLE_NIL_SET.  Its popcount
+    // is always exactly `nils_set`; a caller that only wants the count can keep
+    // reading that field and ignore this one.
+    //
+    // A count answers "does a nil go down"; a mask answers "does MINE go down",
+    // which is the question a player at the table is actually asking and the one
+    // a count with two bidders cannot reach.
+    //
+    // WHETHER THIS IS A PROMISE OR A WITNESS depends on the shape, and
+    // `nils_set_mask_determined` is what says which.  See
+    // mask_determined_by_objective in nil/seats.hpp.
+    unsigned nils_set_mask = 0;
+    // Is `nils_set_mask` pinned by the objective, or is it one optimal line's
+    // answer among several?  True on every shape where two equally-optimal
+    // lines must agree about which bids go down -- one nil, and one bid per
+    // side.  False on a pair that both bid, where the primary level counts bids
+    // rather than naming them and measurement finds real disagreement.
+    //
+    // False does NOT mean the mask is wrong: it is a true account of the line
+    // this search reported, and its popcount is `nils_set` either way.  It means
+    // a differently-ordered search of the same position may name a different
+    // bid, so nothing may be pinned to it.
+    bool nils_set_mask_determined = true;
     // The scalar the search minimised: the packed lexicographic value in
     // MODE_FULL, the nil bidder's trick count in MODE_FAST.
     int value = 0;
@@ -811,6 +842,16 @@ struct MoveScore {
     // two, because a double-dummy answer does not depend on who asked.
     // How many of the bids are broken.  0 or 1 with a single nil.
     int nils_set = 0;
+
+    // WHICH bids are broken after this card, as a seat bitmask; its popcount is
+    // `nils_set`.  This is the field a caller needs to colour a card list by
+    // "safe for me" rather than by "somebody's nil dies": with a bid on each
+    // side the COUNT is 1 both on the card that kills mine and on the card that
+    // kills theirs, and those are opposite advice.
+    //
+    // Determinacy is a property of the shape rather than of the row, so it is
+    // reported once on Solution rather than repeated on all thirteen of these.
+    unsigned nils_set_mask = 0;
 
     // As Solution's, but for the position after this card, and INCLUDING the
     // trick this card completes if it completes one.  TRICKS_NOT_COMPUTED in

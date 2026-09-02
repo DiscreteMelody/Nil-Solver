@@ -147,6 +147,8 @@ void fill_result(nil_result* out, const nil::Solution& sol, int tricks_remaining
     out->opponent_tricks = sol.opponent_tricks;
     out->tricks_remaining = tricks_remaining;
     out->nodes = sol.nodes;
+    out->nils_set_mask = static_cast<std::int32_t>(sol.nils_set_mask);
+    out->nils_set_mask_determined = sol.nils_set_mask_determined ? 1 : 0;
 }
 
 // Shared body for nil_solve / nil_solve_pv.
@@ -304,6 +306,7 @@ NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve_moves(
         dst.equal_ranks = equal_ranks;
 
         dst.nils_set = src.nils_set;
+        dst.nils_set_mask = static_cast<std::int32_t>(src.nils_set_mask);
         dst.nil_tricks = src.nil_tricks;
         dst.nil_side_tricks = src.nil_side_tricks;
         dst.opponent_tricks = src.opponent_tricks;

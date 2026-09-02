@@ -538,6 +538,44 @@ typedef struct nil_result {
     int32_t tricks_remaining;
     /* Nodes visited by the search, for benchmarking. */
     uint64_t nodes;
+    /* WHICH bids are broken, as a seat bitmask: bit NIL_SEAT_NORTH for North
+     * and so on.  Its popcount is always exactly `nils_set`, so a caller that
+     * only wants the count keeps reading that field and ignores this one.
+     *
+     * A count answers "does a nil go down".  A mask answers "does MINE go
+     * down", which is the question a player at the table is asking, and with a
+     * bid on each side a count cannot reach it: `nils_set == 1` is the answer
+     * both when your bid dies and when theirs does.
+     *
+     * A bid declared down by the caller with NIL_ROLE_NIL_SET is in the mask on
+     * every line, exactly as it is counted in `nils_set`. */
+    int32_t nils_set_mask;
+    /* Is `nils_set_mask` PINNED BY THE OBJECTIVE (1) or is it one optimal
+     * line's answer among several (0)?
+     *
+     * 1 on every shape where two equally-optimal lines must agree about which
+     * bids go down: one nil, and one bid per side.  In those cases the mask is
+     * a property of the position and any correct solver must produce it.
+     *
+     * 0 when a PAIR both bid nil.  There the objective's primary level counts
+     * bids down rather than naming them, so "one of the two is down, and the
+     * pair took five tricks" is one value reachable by breaking either bid;
+     * measurement finds two optimal lines naming different bids on 11.67-20.00%
+     * of positions (tools/mask_determinacy.py).
+     *
+     * 0 does NOT mean the mask is wrong.  It is a true account of the line this
+     * search reported, and its popcount is `nils_set` either way.  It means a
+     * differently-ordered search of the same position may name a different bid,
+     * so a caller must not persist it, diff against it, or show it as the
+     * answer -- show the count, which is pinned on every shape.
+     *
+     * This is derived from the roles alone and is therefore the same for every
+     * row of a move list, which is why nil_move does not repeat it.  It is
+     * conservative on the pair shape: about five positions in six there are
+     * determined too, but proving it per position needs a second search, and a
+     * field that occasionally overstates is worse than one that uniformly
+     * understates. */
+    int32_t nils_set_mask_determined;
 } nil_result;
 
 /* Solve a position.
@@ -646,6 +684,16 @@ typedef struct nil_move {
      * the solver would have been content to pick.  There is usually more than
      * one, and among cards that tie, any of them is as good as any other. */
     int32_t is_best;
+    /* WHICH bids are broken after this card, as a seat bitmask; popcount is
+     * `nils_set`.  This is the field to colour a card list with, because
+     * `nils_set` alone cannot tell "this card throws MY nil away" from "this
+     * card sets THEIRS" -- both read 1, and they are opposite advice.
+     *
+     * Whether the mask is pinned by the objective or is one optimal line's
+     * answer is a property of the roles, the same for every row, and so it is
+     * reported once as nil_result::nils_set_mask_determined rather than
+     * repeated on all thirteen of these. */
+    int32_t nils_set_mask;
 } nil_move;
 
 /* Solve a position and report EVERY legal card rather than just the answer.

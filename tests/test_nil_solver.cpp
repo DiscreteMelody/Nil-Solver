@@ -2387,6 +2387,207 @@ int main(int argc, char** argv) {
               static_cast<long long>(NIL_TRICKS_UNKNOWN));
     }
 
+    // ---------------------------------------------------------------------
+    // The per-row broken-bid mask (item 1 of the handoff).
+    //
+    // The mask's whole claim is that it REFINES the count without contradicting
+    // it, so popcount(mask) == nils_set is the relation to pin -- it is what
+    // caught solve_moves reporting a predicate where a count belonged.
+    // ---------------------------------------------------------------------
+    std::cout << "\nBroken-bid mask\n";
+    {
+        auto popcount = [](unsigned m) {
+            int n = 0;
+            for (int i = 0; i < 4; ++i) {
+                if (m & (1u << i)) ++n;
+            }
+            return n;
+        };
+
+        // Single nil: the mask names the one bidder, or nobody.
+        {
+            const Position pos = make_position("N:A... 2... 3... 4...", "N", true);
+            const Solution fails = must_solve(pos, "N");
+            check("single nil: count says the bid dies", fails.nils_set, 1);
+            check("single nil: mask names North", static_cast<long long>(fails.nils_set_mask),
+                  1LL << nil::SEAT_NORTH);
+            check("single nil: popcount matches the count", popcount(fails.nils_set_mask),
+                  fails.nils_set);
+            check("single nil: one bidder is always determined",
+                  fails.nils_set_mask_determined, true);
+
+            const Solution makes = must_solve(pos, "E");
+            check("single nil: a surviving bid has an empty mask",
+                  static_cast<long long>(makes.nils_set_mask), 0LL);
+            check("single nil: and an empty mask is a zero count", makes.nils_set, 0);
+        }
+
+        // A bid the CALLER declared down is in the mask on every line, exactly
+        // as it is in the count.  Both modes, because the two reach it by
+        // different paths and the fast one never searches.
+        {
+            const Position pos = make_position("N:A... 2... 3... 4...", "N", true);
+            const Solution told = must_solve(pos, "N", SearchOptions(), true);
+            check("declared down: mask names the declared seat",
+                  static_cast<long long>(told.nils_set_mask), 1LL << nil::SEAT_NORTH);
+            check("declared down: popcount matches", popcount(told.nils_set_mask),
+                  told.nils_set);
+            SearchOptions fast_opts;
+            fast_opts.mode = nil::MODE_FAST;
+            const Solution fast_told = must_solve(pos, "N", fast_opts, true);
+            check("declared down, fast mode: same mask",
+                  static_cast<long long>(fast_told.nils_set_mask),
+                  static_cast<long long>(told.nils_set_mask));
+        }
+
+        // Fast and full must agree on the mask for the same reason they must
+        // agree on the count: they are two searches of one question, and the
+        // agreement is what stands in for fast mode having no PV to replay.
+        {
+            const Position pos =
+                make_position("N:KQ2.A.. 543.2.. A76.3.. J98.4..", "N", true);
+            SearchOptions fast_opts;
+            fast_opts.mode = nil::MODE_FAST;
+            for (const char* seat : {"N", "E", "S", "W"}) {
+                const Solution full = must_solve(pos, seat);
+                const Solution fast = must_solve(pos, seat, fast_opts);
+                check(std::string("modes agree on the mask, nil ") + seat,
+                      static_cast<long long>(fast.nils_set_mask),
+                      static_cast<long long>(full.nils_set_mask));
+                check(std::string("full mode popcount, nil ") + seat,
+                      popcount(full.nils_set_mask), full.nils_set);
+                check(std::string("fast mode popcount, nil ") + seat,
+                      popcount(fast.nils_set_mask), fast.nils_set);
+            }
+        }
+
+        // ONE BID ON EACH SIDE -- the shape the site is being built for, and the
+        // one a count cannot serve: nils_set == 1 is the answer both when this
+        // side's bid dies and when the other's does.  The mask separates them,
+        // and the objective pins it, because the primary level IS the outcome
+        // rank and rank <-> mask is a bijection under strict opposition.
+        {
+            nil::SeatRoles opposed;
+            std::string err;
+            check("opposed roles parse",
+                  nil::parse_seat_roles("0 0 3 2", nil::SEAT_NORTH, opposed, err), true);
+            check("opposed: the mask is pinned by the objective",
+                  nil::mask_determined_by_objective(opposed), true);
+            // Pinned at every count, so the position-level test cannot be
+            // weaker than the shape-level one.
+            for (int n = 0; n <= 2; ++n) {
+                check("opposed: pinned at every count", nil::mask_determined(opposed, n), true);
+            }
+
+            const Position pos =
+                make_position("N:A2... 43... Q5... J6...", "N", true);
+            Solution sol;
+            if (!nil::solve(pos, opposed, SearchOptions(), sol, err)) {
+                std::cerr << "test bug: opposed solve failed: " << err << "\n";
+                std::exit(70);
+            }
+            check("opposed: popcount matches the count", popcount(sol.nils_set_mask),
+                  sol.nils_set);
+            check("opposed: only bidder seats appear in the mask",
+                  static_cast<long long>(sol.nils_set_mask & ~0x3u), 0LL);
+            check("opposed: reported determined", sol.nils_set_mask_determined, true);
+        }
+
+        // A PAIR that both bid is the one shape where the objective counts bids
+        // down rather than naming them.  Ambiguity needs the count to leave more
+        // than one candidate subset, so it is possible at exactly one count.
+        {
+            nil::SeatRoles twin;
+            std::string err;
+            check("twin roles parse",
+                  nil::parse_seat_roles("0 3 0 3", nil::SEAT_NORTH, twin, err), true);
+            check("twin: the shape does not pin the mask",
+                  nil::mask_determined_by_objective(twin), false);
+            check("twin: neither down leaves one subset", nil::mask_determined(twin, 0), true);
+            check("twin: ONE down is the ambiguous count",
+                  nil::mask_determined(twin, 1), false);
+            check("twin: both down leaves one subset", nil::mask_determined(twin, 2), true);
+
+            const Position pos = make_position("N:A2... 43... Q5... J6...", "N", true);
+            Solution sol;
+            if (!nil::solve(pos, twin, SearchOptions(), sol, err)) {
+                std::cerr << "test bug: twin solve failed: " << err << "\n";
+                std::exit(70);
+            }
+            check("twin: popcount matches the count", popcount(sol.nils_set_mask),
+                  sol.nils_set);
+            check("twin: only bidder seats appear in the mask",
+                  static_cast<long long>(sol.nils_set_mask & ~0x5u), 0LL);
+        }
+
+        // solve_moves: every row's popcount matches its own count, and the
+        // position's answer matches the row it was taken from.  This is the
+        // path where the two used to be able to disagree.
+        {
+            const Position pos =
+                make_position("N:KQ2.A.. 543.2.. A76.3.. J98.4..", "N", true);
+            for (const char* mode_name : {"full", "fast"}) {
+                SearchOptions opts;
+                opts.mode = std::strcmp(mode_name, "fast") == 0 ? nil::MODE_FAST : nil::MODE_FULL;
+                Solution sol;
+                std::vector<nil::MoveScore> rows;
+                std::string err;
+                const nil::SeatRoles roles =
+                    nil::seat_roles_from_nil(nil::SEAT_NORTH, false);
+                if (!nil::solve_moves(pos, roles, opts, sol, rows, err)) {
+                    std::cerr << "test bug: solve_moves failed: " << err << "\n";
+                    std::exit(70);
+                }
+                bool rows_consistent = !rows.empty();
+                bool best_matches = false;
+                for (const nil::MoveScore& ms : rows) {
+                    if (popcount(ms.nils_set_mask) != ms.nils_set) rows_consistent = false;
+                    // A row may only ever name the bidder.
+                    if (ms.nils_set_mask & ~(1u << nil::SEAT_NORTH)) rows_consistent = false;
+                    if (ms.is_best && ms.nils_set_mask == sol.nils_set_mask) best_matches = true;
+                }
+                check(std::string("solve_moves rows are self-consistent, ") + mode_name,
+                      rows_consistent, true);
+                check(std::string("solve_moves answer comes from a best row, ") + mode_name,
+                      best_matches, true);
+            }
+        }
+
+        // The exhausted position, both entry points.  solve() reaches it through
+        // replay_pv and solve_moves through its own early return, and the two
+        // disagreed by one until the popcount relation above went looking:
+        // `nil_already_set()` is a PREDICATE, and widening it to a count reports
+        // 1 where two bids are down.
+        {
+            const Position pos = make_position("N:... ... ... ...", "N", true);
+            nil::SeatRoles both_down;
+            std::string err;
+            check("both-down roles parse",
+                  nil::parse_seat_roles("3 1 3 1", nil::SEAT_NORTH, both_down, err), true);
+
+            Solution via_solve;
+            if (!nil::solve(pos, both_down, SearchOptions(), via_solve, err)) {
+                std::cerr << "test bug: exhausted solve failed: " << err << "\n";
+                std::exit(70);
+            }
+            Solution via_moves;
+            std::vector<nil::MoveScore> rows;
+            if (!nil::solve_moves(pos, both_down, SearchOptions(), via_moves, rows, err)) {
+                std::cerr << "test bug: exhausted solve_moves failed: " << err << "\n";
+                std::exit(70);
+            }
+            check("exhausted: solve counts both declared bids", via_solve.nils_set, 2);
+            check("exhausted: solve_moves agrees with solve", via_moves.nils_set,
+                  via_solve.nils_set);
+            check("exhausted: and on the mask",
+                  static_cast<long long>(via_moves.nils_set_mask),
+                  static_cast<long long>(via_solve.nils_set_mask));
+            check("exhausted: popcount matches", popcount(via_moves.nils_set_mask),
+                  via_moves.nils_set);
+            check("exhausted: no move rows", static_cast<long long>(rows.size()), 0LL);
+        }
+    }
+
     std::cout << "\n";
     if (g_failures) {
         std::cout << "FAILURES: " << g_failures << "\n";
