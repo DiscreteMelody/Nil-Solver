@@ -38,6 +38,7 @@ expensive node. Read items 11 and 31 in that light.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ✅ | ~~Cooperative reachability probe, oracle first (item 2a)~~ | patch 90 | **A new KIND of probe: the four existing ones are adversarial guarantees, this one asks whether an outcome is REACHABLE AT ALL** with every seat helping. Item 60's 2/2 rule names `(make, make)` in the cell where neither side can force anything, and that is a policy rather than a derivation. **THE MEASUREMENT SAYS THE POLICY IS WRONG ON THE MAJORITY OF ITS OWN CELL.** The neither-conjunction cell is not rare — 52–62% of random opposed deals — and inside it `(make, make)` is UNREACHABLE on **55% / 61% / 57% / 85%** at 4 / 5 / 6 / 7 cards. The handoff carried one counterexample and called it a hazard; it is the common case, so the probe is mandatory rather than a guard rail. **THE COST PREDICTION WAS BACKWARDS IN THE HALF THAT MATTERS.** "Pure existence, OR at every node, stops at the first success, so it should be very cheap" is true only when the answer is YES: an OR-only search has no adversary and therefore no cutoff on a NO, and must exhaust every line keeping both bids alive. Measured means — reachable 399 / 1,265 / 67,218 nodes against unreachable 12,411 / 87,538 / 857,951 at 5 / 6 / 7 cards, i.e. **31x, 69x, 13x** — and the answer is NO most of the time, so the probe is expensive exactly where it is needed. That reshapes item 2b: the C++ side needs real cutoff work, not a transcription. **VERIFIED BY THREE INDEPENDENT ROUTES** because nothing existing answers this question to compare against: brute-force enumeration of the definition (no memo, no early abandonment) 48/48; the one-way implication that a minimax outcome IS a reachable outcome, through the utility search's separate machinery, 14/14; and monotonicity in the protected set, 96/96. Population asserted in both directions, and the failure paths mutation-checked by disabling line abandonment — which fired all three routes and the population guard. The state carries **no broken-bid mask**, which is a consequence rather than an omission: a protected bid survives exactly when its seat wins no trick, so a dead line is abandoned before recursion and every memoed node shares the only history that matters. Reproduces the handoff's counterexample `N:A.2.2. KQ...2 2.3.3. .4.4.3` at 39 nodes, and pins a deal proving the question is genuinely JOINT rather than two independent single-bid questions — `N:4.A.T. .4.A.T .J5.5. J..2.4`, where each bid survives alone and no line carries both. `cooperative_crosscheck` is ctest #31; 31/31; oracle selftest clean; no C++ touched, so all banked counts hold by construction and were re-checked anyway |
 | ✅ | ~~A per-row broken-bid MASK through the API (item 1)~~ | patch 89 | **The count `nils_set` cannot answer the question the site is asking, and a worked deal is the argument: `N:.A..A4 .2.K9. .Q.7.J J..8.K` opposed, where HA and C4 BOTH report `nils_set=1` and mean opposite things** -- HA sets North's own bid (mask `0x1`), C4 sets East's (`0x2`). Under the old interface those two cards are indistinguishable, and one of them is the play. `Solution`, `MoveScore`, `Tally`, `nil_result`, `nil_move` and both C# layers now carry `nils_set_mask`, a seat bitmask whose popcount is always `nils_set`, so a caller wanting the count keeps reading the count. **THE MEASUREMENT CAME FIRST AND CHANGED THE DELIVERABLE.** Patch 57 withdrew a proposed per-seat answer column on the rule that *an answer column may only hold what the OBJECTIVE pins*; a mask is an answer column and had to face the same question, so `tools/mask_determinacy.py` walks the oracle carrying, beside the value, the SET of final masks reachable when every seat plays optimally -- `M(node) = union of M(child)` over children achieving `value(node)`. **Single nil 0.00%, opposed nil 0.00%, twin nil 11.67-20.00% ambiguous**, stable across 3/4/5 cards and both tie-break directions. So the mask is pinned on exactly the two shapes the site needs, and on a pair that both bid it is a move-ordering artifact about one position in six. **The count is pinned everywhere -- 0 of 180 twin positions moved it** -- which locates the crossing precisely: `nils_set` was safe and the widening is the step that is not. Hence `nils_set_mask_determined`, shipped beside the mask rather than a bare field that lies quietly on one shape. **A free tightening the first cut missed**: ambiguity needs the count to leave more than one candidate subset, and `C(live, live_down) == 1` at both ends, so *both down* and *neither down* are determined whatever the shape and twin nil is ambiguous at exactly count 1 -- which is where the measurement finds it, always `{N}` against `{S}`. `mask_determined(roles, nils_set)` reads no cards and runs no search. **TWO BUGS, BOTH FOUND BY `popcount(mask) == nils_set`, a relation the count alone had nothing to check it against.** (1) `solve_moves` on an exhausted position used `nil_already_set() ? 1 : 0` -- a PREDICATE widened to a count, which reads correctly with one bidder and reports 1 where two bids are down, while `solve()` reaches the same position through `replay_pv` and says 2. The two entry points had disagreed by one on `3 1 3 1` with no cards left. (2) `format_solution`'s single `Nil FAILS/MAKES` line collapsed a two-bid answer into one boolean, which is patch 85's `Tricks for N` ambiguity in the other field; each bid is now named. **Both tests mutation-checked** -- reintroducing either failure fails the suite. **Free by construction, not by measurement**: every hunk in `search.cpp` lands in `solve`, `solve_moves`, `replay_pv` or `format_solution` and none in `search`, `advance` or `score_trick`, so the mask costs one OR per SOLVE rather than per node -- and all six banked counts come back bit-identical. `mask_determinacy --assert-claim` is ctest #30 and asserts BOTH directions: that the pinned shapes never disagree, and that the twin shape DOES, because a run measuring no ambiguity would mean the suite had stopped reaching the case rather than that the shape had become determined. 30/30 (29 + the new one); `--check-pv --check-moves` on all three corpora; `opposing_crosscheck` 48/48, `conjunction_crosscheck` 320/320, oracle selftest clean; 39,701 / 278,059 / 49,084 / 163,393,676 / 4,833,200 and opposed13 368,219,325 plus the settled deal 55,488,773 all unmoved |
 | ✅ | ~~The both-down region is a pure trick count: spent (item 82)~~ | patch 88 | **4 of 4 reps a win on both workloads, and patch 87's pessimism was wrong.** `opposed13.txt` 402,422,529 -> 368,219,325 (1.093x nodes) at 0.919 / 0.933 / 0.944 / 0.941, **~1.07x on the clock**; the settled deal 62,331,424 -> 55,488,773 (1.123x) at 0.952 / 0.963 / 0.995 / 0.994. With every bid down the rank cannot move again, so the subtree is worth the far side's remaining tricks alone; `forced_spade_tricks` summed side-wide holds down every line, and `cash_tricks` speaks for one side but that is enough both ways, since the far side maximises its own tricks and the near side minimises them. **Patch 87 predicted this would give its node win back on throughput** by analogy with item 79's first spelling. **The gate is why it did not**: the size of the claim needed falls out of the window with no proof run at all, so proofs are attempted only where they could succeed and the 28% of the region that is unreachable never pays -- an option item 79's first spelling did not have. **SEVEN OF EIGHT DEALS MEASURE EXACTLY 1.000x, and that is the point**: only deal 5 answers *both bids die*, and everywhere else item 79 has already refuted the settled region by arithmetic. This is the item that answers the case T raised -- what prunes when neither bid can survive -- and it fires on exactly that case and nowhere else. **Conversion is WORST where the region is densest**: the settled deal is 35.87% settled boundaries against 12.37%, has the bigger node win, and converts it least, because the proofs are charged in proportion to the region and paid in proportion to what they answer. **THE CORPUS CAUGHT A REAL BUG**: the first gate was `nils_broken == nil_mask` alone, which reads as *every bid is down* and is -- **including on a single-nil deal the moment its one bid breaks**, where the value is `primary * nil_tricks + ...` and both floors bound the wrong quantity. 80 of 560 positions failed and the banked count moved 278,059 -> 270,562. Fix is one clause, `ctx.opposing &&`. The lesson is not *test your changes*, which the banked counts did on the first run -- it is that **a shape test reading as boilerplate is the one to check**. Behind `--no-settled-tricks`; 29/29; all 8 deals identical arm-on/off incl. PV; 39,701 / 278,059 / 49,084 / 163,393,676 / 4,833,200 unmoved |
 | ✅ | ~~The settled region: stronger trick proofs measured (item 82)~~ | patch 87 | **Roughly double the firing rate, and still probably not enough -- said before anyone builds it.** Two upgrades the file was most of the way to. `forced_spade_tricks` summed side-wide replaces `top_spade_run`: strictly stronger, since the run function reads ONE hand and only its top run while the forced function prices in spoilers and speaks about all four, and its own comment already established that two hands' floors may be added. And **DDS section 3's can-cash count, which this file had SPECIFIED AND NEVER WRITTEN** -- the comment describing it sat above an unrelated function with nothing implementing it; `cash_tricks()` is that comment, written. It bounds a node from one side only, which at a settled node is enough both ways: the far side maximises its own tricks so cashing floors the value, the near side minimises them so cashing caps it. `best` is used and never `sum`, because a measurement that overstates its own ceiling is worse than none. **Firing rate 12.97% -> 23.65% (opposed13) and 8.10% -> 16.14% (settled deal)**, the two proofs overlapping on under a fifth of what they cover, which is **2.93% and 5.79% of ALL nodes**. **THAT IS THE PROBLEM**: item 79's ceiling was 24.86% and returned 1.20x; this is 3% and 6%, charged at every settled trick boundary (12.37% and 35.87% of nodes) to fire on a sixth to a quarter of them. **That is the profile item 79's FIRST spelling had when it measured 1.20x on nodes and 0.971 on the clock**, and 79 escaped only because its rank term collapsed to a four-entry table -- neither of these does, because both read the cards. **Recommendation: gate before spending.** The gate is free, since the required claim is already computed from the window with no proof run: 71.88% of the region needs at most two tricks and 0.47% needs four or more, so the proofs need only be attempted where they could possibly succeed. Measurement only: 29/29, opposed 402,422,529, banked counts unmoved |
@@ -4358,6 +4359,98 @@ callers depend on and is a second independent variable. It should land before
 the C# layer is built against the new shape; the mask is unaffected either way,
 since it comes across as an int.
 
+### 90. ~~Cooperative reachability probe — the oracle half~~ — ⭐⭐⭐⭐⭐ — **done, patch 90**
+
+Every probe before this one asks *can this side force something against every
+defence*. This one asks something structurally different: **does a line exist at
+all**, with all four seats helping rather than any of them opposing? Nothing
+above answers it, and a guarantee that a side *cannot* force an outcome says
+nothing about whether that outcome is available when nobody is opposing it.
+
+Item 60's case table needs it. The 2/2 rule reaches a cell where neither side
+can force anything cleanly and both would rather have both bids live, and names
+`(make, make)`. That is a policy, not a derivation.
+
+#### The policy is wrong on the majority of its own cell
+
+| cards | neither-conjunction cell | `(make, make)` UNREACHABLE inside it |
+|---:|---:|---:|
+| 4 | — | **55%** |
+| 5 | 52% | **61%** |
+| 6 | 62% | **57%** |
+| 7 | 57% | **85%** |
+
+The cell is common, and inside it the comfortable outcome usually does not
+exist. The handoff carried one counterexample and framed this as a hazard to
+guard against; the measurement says the guard is the load-bearing part. Any 2/2
+answer produced without this probe is wrong more often than right in the cell
+where the rule actually fires.
+
+#### The cost prediction was backwards in the half that matters
+
+The prediction was *"pure existence question — no adversary, OR at every node,
+stops at the first success, so it should be very cheap."* True, and only when
+the answer is **yes**:
+
+| cards | reachable (mean nodes) | unreachable (mean nodes) | ratio |
+|---:|---:|---:|---:|
+| 5 | 399 | 12,411 | **31x** |
+| 6 | 1,265 | 87,538 | **69x** |
+| 7 | 67,218 | 857,951 | **13x** |
+
+An OR-only search has no adversary and therefore no cutoff on a negative answer:
+it must exhaust *every* line that keeps both bids alive before it can say none
+does. First-success termination is worth a great deal on `True` and exactly
+nothing on `False` — and `False` is the answer most of the time in the cell the
+probe exists for. **The probe is expensive precisely where it is needed.** The
+memo split confirms the mechanism: it is worth 2.46x on reachable and 10.13x on
+unreachable, because the exhaustive half is where transpositions recur.
+
+This reshapes item 2b. The C++ side is not a transcription of a cheap probe; it
+needs its own cutoff work, and it should be measured before it is trusted.
+
+#### Why the state carries no broken-bid mask
+
+A protected bid survives exactly when its seat wins no trick, so the moment one
+does the line is dead and is abandoned *before* recursion. Every node that
+reaches the memo therefore shares the same history in the only respect that
+matters — no protected bid down — and the key does not have to say so.
+`_search_conjunction` needs the mask in its key because a broken bid there
+changes a subtree's *value*; here it ends the line. This reads like an omission
+and is not, which is why it is the thing brute force is pointed at.
+
+#### Three routes, because there is nothing to compare against
+
+| route | catches | result |
+|---|---|---|
+| brute-force enumeration | the memo key and the line abandonment above | 48/48 |
+| minimax ⟹ reachable | a shared misreading of the question | 14/14 |
+| monotonicity in the protected set | holds on every deal, needs no known answer | 96/96 |
+
+Population is asserted in both directions — a run where the probe never sees
+both answers fails rather than passes, and so does one where the implication's
+premise never arises. Mutation-checked by disabling line abandonment, which
+fired all three routes and the population guard.
+
+#### Two fixtures worth keeping
+
+- `N:A.2.2. KQ...2 2.3.3. .4.4.3` — the handoff's counterexample, answered
+  UNREACHABLE in 39 nodes. On this deal each bid is doomed even *alone*, which
+  is recorded because it is easy to misread it as the joint case.
+- `N:4.A.T. .4.A.T .J5.5. J..2.4` — each bid survives alone, **no line carries
+  both**. This is the deal proving the question is genuinely joint and does not
+  decompose into two single-bid questions; without it the probe could be
+  suspected of being redundant against probes A and B.
+
+#### Follow-on, not folded in
+
+The expensive branch wants a cheap sufficient condition for UNREACHABLE.
+Monotonicity gives one shape of it — if either bid alone is unreachable then
+both together are — but the single-bid question is the same search with a
+*smaller* protect mask, so it prunes less and may not be cheaper. Worth
+measuring before it is built; it is a separate variable and does not belong in
+this patch.
+
 ### 60. Nils on OPPOSING sides — ⭐⭐⭐
 
 `0 3 0 3` was chosen first because it is the easy one: the two bidders are
@@ -4381,7 +4474,7 @@ whether this one is affordable at all.
 ## Suggested sequence
 
 ```
-1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 36 ✅ → 41 ✅ → 42 ⊘ → 47 ✅ → 43 ⊘→✅ → 43b ⊘ → 44 ⏸ → 54 ✅ → 58 ✅ → 56 ✅ → 57 ✅ → 59 ✅ → 61 ✅ → 62 ✅ → N1 ⊘ → C0 ✅ → C1 ⊘ → C2 ⊘ → C3 ⊘ → C4 → C5 ⏸ → C6 → O1 → 77 ✅ → 79 ✅ → 80 ✅ → 78a ✅ → 78b ✅ → 78c ✅ → 81 ⊘ → 82 ✅ → 89 ✅ → 45 → 29b (single-suit) → 9 ⊘ → 10 ⊘ → measure → 11..14
+1 ✅ → 2 ✅ → 3 ✅ → 4 ✅ → 5 ⊘ → 7 ✅ → 6a ✅ → 6b ✅ → 6c ⊘ → 6d ✅ → 15 ⊘ → 21 ✅ → 22 ✅ → 23 ✅ → 24 ✅ → 22b ✅ → 25 ✅ → 5 ⊘⊘ → 27 ✅ → 28 ⊘ → 28b ✅ → 29 ✅ → 30 ✅ → 33 ✅ → 28c ✅ → 34 ⊘ → 35 ✅ → 31a ✅ → 31b ⊘ → 32 ⊘ → 36 ✅ → 41 ✅ → 42 ⊘ → 47 ✅ → 43 ⊘→✅ → 43b ⊘ → 44 ⏸ → 54 ✅ → 58 ✅ → 56 ✅ → 57 ✅ → 59 ✅ → 61 ✅ → 62 ✅ → N1 ⊘ → C0 ✅ → C1 ⊘ → C2 ⊘ → C3 ⊘ → C4 → C5 ⏸ → C6 → O1 → 77 ✅ → 79 ✅ → 80 ✅ → 78a ✅ → 78b ✅ → 78c ✅ → 81 ⊘ → 82 ✅ → 89 ✅ → 90 ✅ → 45 → 29b (single-suit) → 9 ⊘ → 10 ⊘ → measure → 11..14
 ```
 
 **Three results off the move-ordering block, all negative, and the third one

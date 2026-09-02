@@ -420,6 +420,19 @@ if(NIL_SOLVER_BUILD_TESTS)
     # the honest reading is that this suite stopped reaching the case, not that
     # the shape became determined -- so a run that sees none is a failure rather
     # than a pass.
+    # ITEM 2'S PROBE: is a mutual outcome REACHABLE AT ALL?  Every other probe
+    # here is an adversarial guarantee, so there is nothing to compare this one
+    # against directly and the checking comes from three routes instead --
+    # enumeration of the definition, the one-way implication that a minimax
+    # outcome is a reachable one, and monotonicity in the protected set.  The
+    # tool fails a run in which the probe never sees both answers, since such a
+    # run would pass while checking only one branch.
+    add_test(NAME cooperative_crosscheck
+      COMMAND ${Python3_EXECUTABLE}
+              "${CMAKE_CURRENT_SOURCE_DIR}/tools/cooperative_crosscheck.py"
+              --cards 3 --cases 48 --seed 17)
+    set_tests_properties(cooperative_crosscheck PROPERTIES TIMEOUT 600)
+
     add_test(NAME mask_determinacy
       COMMAND ${Python3_EXECUTABLE}
               "${CMAKE_CURRENT_SOURCE_DIR}/tools/mask_determinacy.py"

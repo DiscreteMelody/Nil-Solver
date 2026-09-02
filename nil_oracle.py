@@ -989,6 +989,228 @@ def solve_conjunction(
     )
 
 
+# ---------------------------------------------------------------------------
+# COOPERATIVE REACHABILITY
+#
+# Every probe above this one is an ADVERSARIAL GUARANTEE: can this side force
+# something against every defence.  This one is not a guarantee and not about
+# sides at all.  It asks whether an outcome EXISTS -- is there any line of play,
+# with all four seats helping, in which the named bids all survive?
+#
+# WHY IT IS NEEDED, and it is a correctness question rather than a speed one.
+# With a bid on each side and BOTH partners leaning the same way, the rule
+# "each side picks its most-preferred outcome among those it can force" reaches
+# a cell where neither side can force anything cleanly and both would rather
+# have both bids live than trade.  The rule then names (make, make).  That is a
+# POLICY, not a derivation, and it is not always reachable:
+#
+#     N:A.2.2. KQ...2 2.3.3. .4.4.3   leader N
+#     bid 0 breakable, bid 1 breakable, neither conjunction forceable
+#     ... and yet no line exists in which both survive.
+#
+# Asserting an unreachable outcome is worse than answering slowly, so the rule
+# needs a guard, and the guard is this probe.  Nothing above answers it: a
+# guarantee that a side CANNOT force an outcome says nothing about whether the
+# outcome is reachable when nobody is opposing it.
+#
+# WHY IT IS CHEAP, structurally.  There is no adversary, so there is no AND
+# level -- it is OR at every node, and the first line that survives ends the
+# whole search.  It is a reachability question wearing a game's clothes.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _CoopCtx:
+    protect_mask: int             # seats whose bids must all survive
+    memo: Optional[Dict] = None
+    nodes: int = 0
+
+
+def _search_cooperative(
+    hands: Tuple[Tuple[Card, ...], ...],
+    leader: int,
+    trick: Tuple[Card, ...],
+    spades_broken: bool,
+    ctx: _CoopCtx,
+) -> bool:
+    """Is there ANY line from here in which no protected bidder takes a trick?
+
+    Pure existence.  Every seat is free to play whatever helps, including the
+    opponents of both bids, because the question is what the CARDS permit and
+    not what anyone can be made to do.
+
+    THE STATE CARRIES NO BROKEN-BID MASK, and that is a consequence rather than
+    an oversight.  A protected bid survives exactly when its seat wins no trick,
+    so the moment one does, this line is dead and is abandoned -- the recursion
+    is never entered.  Every node that reaches the memo therefore has the same
+    history in the only respect that matters, no protected bid down, and the
+    key does not have to say so.  `_search_conjunction` needs the mask in its
+    key because a broken bid there changes the VALUE of a subtree; here it ends
+    the line.
+    """
+    ctx.nodes += 1
+
+    if not any(hands):
+        # Every card played and no protected bidder ever won a trick.
+        return True
+
+    key = None
+    if ctx.memo is not None:
+        key = (hands, leader, trick, spades_broken)
+        cached = ctx.memo.get(key)
+        if cached is not None:
+            return cached
+
+    seat = (leader + len(trick)) % 4
+
+    result = False
+    for card in legal_moves(hands[seat], trick, spades_broken):
+        next_hands = tuple(
+            tuple(c for c in hand if c != card) if s == seat else hand
+            for s, hand in enumerate(hands)
+        )
+        next_spades = spades_broken_after(spades_broken, trick, card)
+        played = trick + (card,)
+
+        if len(played) == 4:
+            winner = trick_winner(leader, played)
+            if ctx.protect_mask & (1 << winner):
+                # A protected bid just died.  A bid never un-breaks, so nothing
+                # downstream can repair this line; drop it without recursing.
+                continue
+            found = _search_cooperative(next_hands, winner, (), next_spades, ctx)
+        else:
+            found = _search_cooperative(next_hands, leader, played, next_spades, ctx)
+
+        if found:
+            # OR at every node: one surviving line is the whole answer.
+            result = True
+            break
+
+    if ctx.memo is not None:
+        ctx.memo[key] = result
+    return result
+
+
+def _brute_force_cooperative(
+    hands: Tuple[Tuple[Card, ...], ...],
+    leader: int,
+    trick: Tuple[Card, ...],
+    spades_broken: bool,
+    protect_mask: int,
+) -> bool:
+    """The same question by enumeration: no memo, no early abandonment.
+
+    Deliberately the dumbest possible reading of the definition -- play out
+    every complete line and ask whether any of them leaves the protected seats
+    without a trick.  It exists to check `_search_cooperative`, whose two
+    optimisations (a memo key that omits the broken-bid mask, and dropping a
+    line the moment a protected seat wins) are exactly the kind of reasoning
+    that is easy to get wrong and impossible to notice.
+    """
+    if not any(hands):
+        return True
+
+    seat = (leader + len(trick)) % 4
+    for card in legal_moves(hands[seat], trick, spades_broken):
+        next_hands = tuple(
+            tuple(c for c in hand if c != card) if s == seat else hand
+            for s, hand in enumerate(hands)
+        )
+        next_spades = spades_broken_after(spades_broken, trick, card)
+        played = trick + (card,)
+        if len(played) == 4:
+            winner = trick_winner(leader, played)
+            if protect_mask & (1 << winner):
+                continue
+            if _brute_force_cooperative(next_hands, winner, (), next_spades, protect_mask):
+                return True
+        else:
+            if _brute_force_cooperative(next_hands, leader, played, next_spades, protect_mask):
+                return True
+    return False
+
+
+@dataclass
+class CooperativeSolution:
+    """Is an outcome reachable at all, with every seat helping?"""
+
+    roles: List[int]
+    protect: List[int]            # bidder seats required to survive
+    reachable: bool
+    nodes: int
+    position: Position
+
+    def describe(self) -> str:
+        who = "".join(SEAT_CHARS[s] for s in self.protect) or "nobody"
+        verdict = "REACHABLE" if self.reachable else "UNREACHABLE"
+        return (
+            f"Protecting      {who}\n"
+            f"Mutual outcome  {verdict}\n"
+            f"Nodes           {self.nodes}"
+        )
+
+
+def solve_cooperative(
+    position: Position,
+    roles: Sequence[int],
+    protect: Optional[Sequence[int]] = None,
+    use_memo: bool = True,
+) -> CooperativeSolution:
+    """Can the named bids ALL survive on some line, with nobody opposing?
+
+    `protect` defaults to every seat holding a bid, which is the question item
+    60 needs: is (make, make) reachable.  A subset asks the weaker question, and
+    weaker is the word -- protecting fewer bids can only ever be easier, which
+    is a monotonicity the selftest checks rather than assumes.
+
+    A bid the caller already declared down with ROLE_NIL_SET is NOT protectable:
+    it is down on every line by assertion, so requiring it to survive is a
+    contradiction rather than a hard question.  Asking for one is an error, not
+    an automatic False, because a caller that asks has misunderstood the state
+    and should be told so.
+    """
+    position.validate()
+
+    if protect is None:
+        protect = [s for s in range(4) if roles[s] == ROLE_NIL]
+    protect = list(protect)
+
+    for seat in protect:
+        if seat not in range(4):
+            raise ValueError(f"protect seat {seat} is not a seat")
+        if roles[seat] == ROLE_NIL_SET:
+            raise ValueError(
+                f"seat {SEAT_CHARS[seat]} was declared already down, so its bid cannot "
+                f"be protected; drop it from --protect or change its role"
+            )
+        if roles[seat] != ROLE_NIL:
+            raise ValueError(
+                f"seat {SEAT_CHARS[seat]} did not bid nil (role {roles[seat]}), so there "
+                f"is nothing there to protect"
+            )
+
+    mask = 0
+    for seat in protect:
+        mask |= 1 << seat
+
+    ctx = _CoopCtx(protect_mask=mask, memo={} if use_memo else None)
+    reachable = _search_cooperative(
+        position.hands,
+        position.leader,
+        position.current_trick,
+        position.spades_broken,
+        ctx,
+    )
+    return CooperativeSolution(
+        roles=list(roles),
+        protect=protect,
+        reachable=reachable,
+        nodes=ctx.nodes,
+        position=position,
+    )
+
+
 @dataclass
 class OpposingNilSolution:
     """The answer to a deal with one nil on each side."""
@@ -2392,6 +2614,63 @@ def selftest(verbose: bool = True) -> int:
           _search_conjunction((), 0, (), False, 0b11,
                               _ConjCtx(nil_of_side=(0, 1), attacker=0)),
           False)
+    # ---- item 2: cooperative reachability ------------------------------
+    # Degenerate ends first, because they pin the shape of the answer rather
+    # than any particular deal.
+    check("protecting nobody is trivially reachable",
+          _search_cooperative((), 0, (), False, _CoopCtx(protect_mask=0)), True)
+    check("an exhausted deal protects everyone vacuously",
+          _search_cooperative((), 0, (), False, _CoopCtx(protect_mask=0b11)), True)
+
+    # THE COUNTEREXAMPLE THE PROBE EXISTS FOR.  Both bids breakable and neither
+    # conjunction forceable, so the 2/2 rule "neither side can force, so both
+    # make" fires -- and names an outcome no line of play reaches.  If this ever
+    # returns True, the guard has stopped guarding.
+    hazard = Position(hands=parse_pbn("N:A.2.2. KQ...2 2.3.3. .4.4.3"), leader=0)
+    hazard_roles = [ROLE_NIL, ROLE_NIL, ROLE_OPPONENT, ROLE_COVER]
+    check("the 2/2 hazard deal: neither side can force its conjunction",
+          (solve_conjunction(hazard, hazard_roles, 0).can_force,
+           solve_conjunction(hazard, hazard_roles, 1).can_force),
+          (False, False))
+    check("...and (make, make) is NOT reachable on it",
+          solve_cooperative(hazard, hazard_roles).reachable, False)
+    check("...which the brute-force reading agrees with",
+          _brute_force_cooperative(hazard.hands, 0, (), False, 0b11), False)
+    # On THIS deal the two bids are not merely jointly doomed but individually
+    # so -- North holds the top trump and must eventually play it.  Recorded
+    # because it is easy to read the counterexample as "each is fine alone, the
+    # pair is not", and that is a different deal.
+    check("...and on this one neither bid survives even alone",
+          (solve_cooperative(hazard, hazard_roles, [0]).reachable,
+           solve_cooperative(hazard, hazard_roles, [1]).reachable),
+          (False, False))
+
+    # THE QUESTION IS GENUINELY JOINT, and this is the deal that proves it: each
+    # bid has a line on which it survives, and no line carries both.  Without
+    # this the probe could be suspected of decomposing into two independent
+    # single-bid questions, which would make it redundant against probes A and
+    # B -- it does not, so it is not.
+    joint = Position(hands=parse_pbn("N:4.A.T. .4.A.T .J5.5. J..2.4"), leader=0)
+    check("a deal where each bid survives alone",
+          (solve_cooperative(joint, hazard_roles, [0]).reachable,
+           solve_cooperative(joint, hazard_roles, [1]).reachable),
+          (True, True))
+    check("...but no line carries both",
+          solve_cooperative(joint, hazard_roles).reachable, False)
+    check("...confirmed by brute force",
+          _brute_force_cooperative(joint.hands, 0, (), False, 0b11), False)
+
+    # A bid the caller declared down cannot be protected: it is down on every
+    # line by assertion, so the ask is a contradiction and should be refused
+    # rather than quietly answered False.
+    told_down = [ROLE_NIL_SET, ROLE_NIL, ROLE_OPPONENT, ROLE_COVER]
+    refused = False
+    try:
+        solve_cooperative(hazard, told_down, [0])
+    except ValueError:
+        refused = True
+    check("protecting an already-broken bid is refused", refused, True)
+
     check("only the defender's bid down, on an empty deal, is True",
           _search_conjunction((), 0, (), False, 1 << 1,
                               _ConjCtx(nil_of_side=(0, 1), attacker=0)),
@@ -2471,6 +2750,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
              "can force ITS bid to survive while the other's dies (item 78's "
              "probe). SEAT is N/E/S/W and must be one of the two bidders",
     )
+    p.add_argument(
+        "--cooperative",
+        action="store_true",
+        help="ask whether the bids can ALL survive on some line, with every "
+             "seat helping -- a reachability question, not a guarantee",
+    )
+    p.add_argument(
+        "--protect",
+        default=None,
+        help="seats whose bids --cooperative must keep alive, e.g. 'NE'; "
+             "defaults to every live bidder",
+    )
     p.add_argument("--selftest", action="store_true", help="run the built-in checks")
     args = p.parse_args(argv)
 
@@ -2519,6 +2810,33 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             file=sys.stderr,
         )
         return 2
+
+    if args.cooperative:
+        # ITEM 2'S PROBE.  Not a guarantee and not about sides: it asks whether
+        # an outcome EXISTS.  Every rule in the 2/2 and 3/3 case tables that
+        # names a MUTUAL outcome needs this, because "neither side can force
+        # anything" does not imply the comfortable outcome is available.
+        protect = None
+        if args.protect is not None:
+            protect = []
+            for ch in args.protect.strip().upper():
+                if ch in ", ":
+                    continue
+                if ch not in SEAT_CHARS:
+                    print(f"error: bad --protect seat '{ch}'", file=sys.stderr)
+                    return 2
+                protect.append(SEAT_CHARS.index(ch))
+        try:
+            coop = solve_cooperative(position, roles, protect, use_memo=args.memo)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+        if args.compact:
+            print(f"cooperative={1 if coop.reachable else 0}")
+            print(f"nodes={coop.nodes}")
+        else:
+            print(coop.describe())
+        return 0
 
     if args.conjunction is not None:
         # ITEM 78'S PROBE, ASKED ON ITS OWN.  Answered by the boolean search
