@@ -1,0 +1,49 @@
+# Thirteen-card deals with a bid on each side that a PLAYER WOULD ACTUALLY MAKE.
+# Contributed by T from the table, not generated.
+#
+# WHY THIS FILE EXISTS SEPARATELY FROM opposed13.txt.  That corpus is eight
+# CONTESTED deals, selected because both bids are live and the search is hard.
+# Selecting for difficulty selects against structure, and several measurements
+# have now come back empty on it for that reason alone -- patch 89's static
+# doom check fired on 0 of 8, and patch 91's reachability bound narrowed the
+# rank band on 0 of 8.  Neither result says the idea is worthless; both say the
+# corpus cannot see it.
+#
+# It also does not exercise the OUTCOMES.  Every deal in opposed13.txt ends
+# (fail, fail).  A presolve whose whole job is to bound the outcome rank was
+# being measured against a corpus that only ever reaches one rung of the ladder.
+# The two rows here are the other outcomes:
+#
+#   r13-0000   (fail, make)   one bid set while the other survives -- rank 3 for
+#                             the surviving side, the conjunction outcome that
+#                             item 78's probe exists to detect
+#   r13-0001   (make, make)   both bids survive -- the outcome item 60's 2/2
+#                             rule names and patch 90's probe guards
+#
+# Format is the shared corpus one, so leader and seats travel WITH each row
+# rather than as command-line flags:
+#
+#   name | pbn | leader | seats | broken | trick | secondary |
+#   nils_set | nil_tricks | side_tricks | pv | provenance
+#
+# `nil_tricks` is the two bidders' COMBINED trick count and `side_tricks` is
+# the first-named side's, which is the reading the CLI's compact output uses.
+# Both columns name "the nil bidder" in their titles and cannot really describe
+# a deal with two; multinil.txt records the same complaint.  Left as-is here so
+# one reader serves every corpus.
+#
+# Provenance is `solver`: these are pinned from this solver, which is a weaker
+# claim than an oracle row -- it says the answer has not CHANGED, not that it is
+# right.  At thirteen cards the oracle cannot check them in reasonable time.
+# What raises them above a bare pin is that T stated each deal's outcome BEFORE
+# it was run and the solver agreed, so the outcome column has an independent
+# witness even though the trick counts do not.
+#
+# Run:
+#   nil_bench --corpus tests/corpus/opposed13_real.txt --mode full
+#
+# These are slow -- roughly 159M and 13M nodes -- so they are a bench anchor and
+# not a ctest fixture.
+
+r13-0000 | N:A97.J.KJT9543.JT J5.AQ863.8.A9843 K64.T754.Q76.Q62 QT832.K92.A2.K75 | S | 3 0 0 2 | 0 |  | max | 1 | 4 | 5 | S:H4 W:H9 N:HJ E:H6 N:D3 E:D8 S:D6 W:DA W:D2 N:D4 E:H8 S:D7 S:H5 W:H2 N:D5 E:H3 S:H7 W:HK N:S7 E:HQ N:S9 E:S5 S:S4 W:ST W:S2 N:SA E:SJ S:S6 N:D9 E:HA S:DQ W:S3 W:S8 N:DT E:C3 S:SK S:HT W:C5 N:DJ E:C4 S:C2 W:C7 N:CT E:C8 N:DK E:CA S:C6 W:SQ W:CK N:CJ E:C9 S:CQ | solver
+r13-0001 | N:J8732.9.AJ975.85 AKQ65.AJ64.KT.KQ T4.T32.Q6.AT6432 9.KQ875.8432.J97 | W | 3 2 0 0 | 0 |  | max | 0 | 0 | 4 | W:C7 N:C5 E:CQ S:C2 E:CK S:C3 W:C9 N:C8 E:H4 S:H2 W:H7 N:H9 N:D5 E:DT S:D6 W:D2 E:H6 S:H3 W:H5 N:S2 N:S3 E:SQ S:S4 W:S9 E:S5 S:ST W:H8 N:SJ N:S7 E:SK S:HT W:HQ E:SA S:DQ W:HK N:S8 E:S6 S:C4 W:D3 N:D7 E:HJ S:C6 W:D4 N:D9 E:HA S:CT W:D8 N:DJ E:DK S:CA W:CJ N:DA | solver

@@ -907,6 +907,25 @@ int main(int argc, char** argv) {
                 }
             }
         } else {
+            // THE OUTCOME, which full mode computes and never checked.
+            //
+            // With ONE bidder the trick columns covered this implicitly, since
+            // `nil_tricks > 0` and `nils_set == 1` say the same thing.  With a
+            // bid on each side they do not: `nil_tricks` is the two bidders'
+            // COMBINED count, so "four tricks between them, one bid down" and
+            // "four tricks between them, both down" are different answers that
+            // the trick columns cannot tell apart.
+            //
+            // And fast mode, which is where this column WAS checked, refuses
+            // every shape with more than one bidder.  So on an opposed row the
+            // recorded outcome was verified in neither mode -- the column that
+            // carries the most information was the one carrying none.
+            if (item.expected_nils_set >= 0 && sol.nils_set != item.expected_nils_set) {
+                std::cout << "FAIL " << item.name << ": expected nils_set="
+                          << item.expected_nils_set << ", got " << sol.nils_set << "\n  "
+                          << item.repro << "\n";
+                ++failures;
+            }
             if (item.expected >= 0 && sol.nil_tricks != item.expected) {
                 std::cout << "FAIL " << item.name << ": expected " << item.expected
                           << " nil trick(s), got " << sol.nil_tricks << "\n  " << item.repro
