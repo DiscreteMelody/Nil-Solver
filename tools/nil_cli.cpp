@@ -14,6 +14,7 @@
 #include <string>
 #include <vector>
 
+#include "nil/cooperative.hpp"
 #include "nil/position.hpp"
 #include "nil/search.hpp"
 #include "nil/seats.hpp"
@@ -98,6 +99,19 @@ void usage(const char* argv0) {
         << "                          the side holding <seat> can force ITS bid to\n"
         << "                          survive while the other's dies.  Implies fast\n"
         << "                          mode; reports one boolean and no trick counts\n"
+        << "  --cooperative <seats>   ROADMAP item 2b: with every seat cooperating\n"
+        << "                          rather than two sides opposing, is there ANY\n"
+        << "                          line of play on which every named seat's nil\n"
+        << "                          bid survives?  <seats> is one or more of\n"
+        << "                          N/E/S/W run together, e.g. 'NE'; each must\n"
+        << "                          hold a live bid (role 0).  Standalone: does\n"
+        << "                          not call solve() and answers no other\n"
+        << "                          question.  --no-memo and --no-collapse apply\n"
+        << "                          to this search too.  --seats need not name a\n"
+        << "                          shape solve() accepts -- e.g. two live bids\n"
+        << "                          whose partners lean the same way (0 0 2 2 or\n"
+        << "                          0 0 3 3) -- since this probe reads no role\n"
+        << "                          but the ones it is asked to protect\n"
         << "  --compact               print only the machine-readable result\n"
         << "  --help                  this message\n";
 }
@@ -108,6 +122,28 @@ bool need_value(int argc, char** argv, int& i, const char* name, std::string& ou
         return false;
     }
     out = argv[++i];
+    return true;
+}
+
+// "NE" -> bit N | bit E.  One or more seat letters, run together as
+// --seats' digit lists are; no separator required since there are only four
+// possible letters and none is a prefix of another.
+bool parse_seat_list(const std::string& text, unsigned& mask_out, std::string& err) {
+    unsigned mask = 0;
+    for (char ch : text) {
+        if (std::isspace(static_cast<unsigned char>(ch)) || ch == ',') continue;
+        const int seat = nil::parse_seat(std::string(1, ch));
+        if (seat < 0) {
+            err = std::string("bad seat letter '") + ch + "' in '" + text + "'";
+            return false;
+        }
+        mask |= 1u << seat;
+    }
+    if (mask == 0) {
+        err = "no seats given";
+        return false;
+    }
+    mask_out = mask;
     return true;
 }
 
@@ -123,6 +159,7 @@ int main(int argc, char** argv) {
     bool spades_broken = false;
     bool compact = false;
     std::string conjunction_text;
+    std::string cooperative_text;
     bool list_moves = false;
     bool tt_stats = false;
     nil::SearchOptions opts;
@@ -229,6 +266,8 @@ int main(int argc, char** argv) {
             opts.narrow_window = false;
         } else if (arg == "--conjunction" && i + 1 < argc) {
             conjunction_text = argv[++i];
+        } else if (arg == "--cooperative" && i + 1 < argc) {
+            cooperative_text = argv[++i];
         } else if (arg == "--no-settled-tricks") {
             opts.settled_tricks = false;
         } else if (arg == "--no-conjunction-presolve") {
@@ -282,8 +321,17 @@ int main(int argc, char** argv) {
         return 2;
     }
     nil::SeatRoles roles;
-    if (!nil::parse_seat_roles(seats_text, nil::pbn_anchor(pbn), roles, err) ||
-        !nil::validate_seat_roles(roles, err)) {
+    if (!nil::parse_seat_roles(seats_text, nil::pbn_anchor(pbn), roles, err)) {
+        std::cerr << "error: --seats: " << err << "\n";
+        return 2;
+    }
+    // The cooperative probe (item 2b) reads no seat's role except the ones it
+    // is asked to protect, and does not need `roles` to name a shape solve()
+    // accepts -- helping answer positions solve() currently refuses (T's 2/2
+    // and 3/3 cells) is the reason it exists.  Every other mode goes through
+    // solve() or its Ctx and does need an accepted shape, so the general gate
+    // stays for them.
+    if (cooperative_text.empty() && !nil::validate_seat_roles(roles, err)) {
         std::cerr << "error: --seats: " << err << "\n";
         return 2;
     }
@@ -313,6 +361,34 @@ int main(int argc, char** argv) {
         std::cerr << "error: " << err << "\n";
         return 2;
     }
+
+    if (!cooperative_text.empty()) {
+        // Standalone: item 2b's probe calls solve() for nothing, so it is
+        // answered and printed here rather than folded into the block below.
+        unsigned mask = 0;
+        if (!parse_seat_list(cooperative_text, mask, err)) {
+            std::cerr << "error: --cooperative: " << err << "\n";
+            return 2;
+        }
+        nil::CooperativeSolution coop;
+        if (!nil::solve_cooperative(pos, roles, mask, opts.use_memo, opts.collapse_equivalents,
+                                     coop, err)) {
+            std::cerr << "error: --cooperative: " << err << "\n";
+            return 3;
+        }
+        if (compact) {
+            std::cout << "cooperative=" << (coop.reachable ? 1 : 0) << "\n"
+                      << "protect=" << cooperative_text << "\n"
+                      << "nodes=" << coop.nodes << "\n";
+        } else {
+            std::cout << "Protecting      " << cooperative_text << "\n"
+                      << "Mutual outcome  " << (coop.reachable ? "REACHABLE" : "UNREACHABLE")
+                      << "\n"
+                      << "Nodes           " << coop.nodes << "\n";
+        }
+        return 0;
+    }
+
     nil::Solution sol;
     std::vector<nil::MoveScore> scored;
     if (list_moves) {

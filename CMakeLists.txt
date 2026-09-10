@@ -34,6 +34,7 @@ endforeach()
 # ---------------------------------------------------------------------------
 add_library(nil_solver_core STATIC
   src/nil/cards.cpp
+  src/nil/cooperative.cpp
   src/nil/corpus.cpp
   src/nil/position.cpp
   src/nil/search.cpp
@@ -412,6 +413,22 @@ if(NIL_SOLVER_BUILD_TESTS)
               "${CMAKE_CURRENT_SOURCE_DIR}/tools/conjunction_crosscheck.py"
               --cases 14 --cards 3 --seed 17)
     set_tests_properties(conjunction_crosscheck PROPERTIES TIMEOUT 600)
+
+    # ITEM 2B'S PORT, checked against the oracle's solve_cooperative (patch 90)
+    # rather than against itself -- cooperative_crosscheck.py below checks the
+    # oracle against three routes of its OWN; this is the oracle against the
+    # new C++.  Every strictly-opposed-per-pair role set is exercised in both
+    # partner leans, INCLUDING the same-lean (2/2, 3/3) cells solve() itself
+    # still refuses -- this probe reads no role but the one it protects, so it
+    # answers those cells too, and they are exactly the ones item 60 needs it
+    # for.  Also checks that collapsing rank-equivalent moves and the memo are
+    # both answer-neutral, and fails a run that never sees both a reachable and
+    # an unreachable answer.
+    add_test(NAME cooperative_cpp_crosscheck
+      COMMAND ${Python3_EXECUTABLE}
+              "${CMAKE_CURRENT_SOURCE_DIR}/tools/cooperative_cpp_crosscheck.py"
+              --cases 12 --cards 4 --seed 17)
+    set_tests_properties(cooperative_cpp_crosscheck PROPERTIES TIMEOUT 600)
 
     # THE CLAIM `nils_set_mask_determined` IS DERIVED FROM.  The field says the
     # broken-bid mask is pinned by the objective on the single-nil and opposed
