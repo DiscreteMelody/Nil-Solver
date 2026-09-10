@@ -396,7 +396,7 @@ void usage(const char* argv0) {
               << "  --note <text>     free-text label for the history row\n"
               << "  --commit <sha>    override the commit git reports\n"
               << "  --slowest <n>     list the n slowest positions            [5]\n"
-              << "  --tt-mb <n>       transposition table size in MiB        [256]\n"
+              << "  --tt-mb <n>       transposition table size in MiB        [512]\n"
               << "  --no-memo         no transposition table at all\n"
               << "  --no-collapse     generate every legal card rather than one per class\n"
               << "  --no-static       do not settle positions by proof (fast mode only)\n"

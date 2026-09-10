@@ -165,18 +165,31 @@ constexpr std::size_t TT_AUTO = static_cast<std::size_t>(-1);
 // 51 ms per hand, charged against solves that are under a millisecond at the
 // small end.  One size makes every resize after the first the free branch.
 //
-// 256 MiB is the full-mode number from patch 32, and fast mode is happy to take
-// it: more table never costs a fast search nodes -- 13 cards on seed 11 holds
-// 3,492,640 nodes at 128 MiB and 3,485,739 at 256 -- and what it used to cost
-// was the allocation, which is now paid once per thread rather than per size
-// change.
+// 512 MiB since patch 95, raised from patch 32's 256.  The two-nil shape was
+// evicting: 2,226,872 evictions against 12,856,780 stores at 256 MiB on the
+// hard opposed deal, 17% of stores displacing a live position.  Doubling the
+// table is 6.6% of the nodes on that deal (258,394,757 -> 241,340,102) and won
+// on wall clock in every one of three interleaved pairs.
+//
+// DO NOT READ THIS AS "BIGGER IS BETTER".  Throughput falls monotonically as
+// the table grows -- 11.3M nodes/sec at 16 MiB down to 7.6M at 2048 -- so the
+// node saving and the cache cost run against each other and the curve has a
+// floor rather than a slope.  Measured on that deal: 256 MiB 28.8s, 512 27.9s,
+// 1024 28.8s, 2048 31.6s.  512 is the bottom, and it is bottom for THIS machine
+// -- the optimum tracks L3 size, so a deployment on very different hardware
+// should re-measure rather than inherit this number.
+//
+// Fast mode is happy to take it: more table never costs a fast search nodes --
+// 13 cards on seed 11 holds 3,492,640 nodes at 128 MiB and 3,485,739 at 256 --
+// and what it used to cost was the allocation, which is now paid once per
+// thread rather than per size change.
 //
 // WHAT THIS COSTS.  A process that solves ONE small position and exits now
 // spends 133 ms on a table it barely uses, where the schedule would have spent
 // about twelve.  That is the trade: a fixed footprint and no churn for a
 // long-lived worker, against a worse one-shot.  A caller on the wrong side of it
 // should set the size explicitly, which still overrides this.
-constexpr std::size_t TT_DEFAULT_MEGABYTES = 256;
+constexpr std::size_t TT_DEFAULT_MEGABYTES = 512;
 struct SearchOptions {
     // MODE_FULL by default: the caller who has not thought about it wants the
     // answer that carries its own evidence.
