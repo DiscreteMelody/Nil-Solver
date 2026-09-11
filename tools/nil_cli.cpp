@@ -127,6 +127,10 @@ void usage(const char* argv0) {
         << "                          seat takes any, and report whether such a line\n"
         << "                          exists.  The FILTER alone: no trick counts, no\n"
         << "                          optimisation inside it\n"
+        << "  --pinned-tricks         with the two flags above, also report the trick\n"
+        << "                          split each seat takes: own cover hand up, the\n"
+        << "                          other side's cover hand down, the other side's\n"
+        << "                          nil up\n"
         << "  --compact               print only the machine-readable result\n"
         << "  --help                  this message\n";
 }
@@ -178,6 +182,7 @@ int main(int argc, char** argv) {
     std::string cooperative_fail_text;
     std::string require_live_text;
     std::string require_set_text;
+    bool pinned_tricks = false;
     bool list_moves = false;
     bool tt_stats = false;
     nil::SearchOptions opts;
@@ -292,6 +297,8 @@ int main(int argc, char** argv) {
             require_live_text = argv[++i];
         } else if (arg == "--require-set" && i + 1 < argc) {
             require_set_text = argv[++i];
+        } else if (arg == "--pinned-tricks") {
+            pinned_tricks = true;
         } else if (arg == "--no-settled-tricks") {
             opts.settled_tricks = false;
         } else if (arg == "--no-conjunction-presolve") {
@@ -457,6 +464,37 @@ int main(int argc, char** argv) {
             std::cerr << "error: --require-set: " << err << "\n";
             return 2;
         }
+        if (pinned_tricks) {
+            // Step 4: the same constraint, reporting the trick split chosen
+            // under T's priority rather than just whether a line exists.
+            nil::ConstrainedTricksSolution ct;
+            if (!nil::solve_constrained_tricks(pos, roles, live_mask, set_mask, opts.use_memo,
+                                                opts.collapse_equivalents, ct, err)) {
+                std::cerr << "error: --pinned-tricks: " << err << "\n";
+                return 3;
+            }
+            if (compact) {
+                std::cout << "constrained=" << (ct.satisfiable ? 1 : 0) << "\n";
+                for (int s = 0; s < 4; ++s) {
+                    std::cout << "tricks_" << nil::SEAT_CHARS[s] << "=" << ct.seat_tricks[s]
+                              << "\n";
+                }
+                std::cout << "nodes=" << ct.nodes << "\n";
+            } else {
+                std::cout << "Pinned outcome  "
+                          << (ct.satisfiable ? "REACHABLE" : "UNREACHABLE") << "\n";
+                if (ct.satisfiable) {
+                    std::cout << "Trick split    ";
+                    for (int s = 0; s < 4; ++s) {
+                        std::cout << " " << nil::SEAT_CHARS[s] << "=" << ct.seat_tricks[s];
+                    }
+                    std::cout << "\n";
+                }
+                std::cout << "Nodes           " << ct.nodes << "\n";
+            }
+            return 0;
+        }
+
         nil::ConstrainedLineSolution cl;
         if (!nil::solve_constrained_line(pos, roles, live_mask, set_mask, opts.use_memo,
                                           opts.collapse_equivalents, cl, err)) {

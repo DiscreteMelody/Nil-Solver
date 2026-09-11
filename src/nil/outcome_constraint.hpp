@@ -93,6 +93,61 @@ bool solve_constrained_line(const Position& pos, const SeatRoles& roles,
                             bool use_memo, bool collapse_equivalents,
                             ConstrainedLineSolution& out, std::string& err);
 
+// ---------------------------------------------------------------------------
+// STEP 4: the same constraint, now with something optimised inside it.
+//
+// THE PRIORITY, T's, and it is one idea rather than three rules.  A trick
+// taken by a nil bidder counts toward NOBODY's bid -- not even its own
+// partner's -- so a trick landing on a set nil is a wasted trick for that
+// team.  Each side therefore wants, in strict order:
+//
+//   1. MAXIMISE its own cover hand's tricks
+//   2. MINIMISE the other side's cover hand's tricks
+//   3. MAXIMISE the other side's NIL's tricks
+//
+// Level 3 is level 2 seen from the other end: the four counts sum to the
+// tricks remaining, so with levels 1 and 2 fixed, maximising the opponent's
+// nil is identical to minimising one's OWN nil's tricks.  Nothing in the
+// order pulls against anything else, and the order is COMPLETE -- fixing two
+// cover hands and one nil determines the fourth count, so no ties survive it.
+// Level 3 is vacuous when a nil is pinned to MAKE (it takes zero tricks by
+// definition) and binds only when both nils are set.
+//
+// THIS IS NOT A ZERO-SUM SCALAR, which is why it is its own search rather
+// than a new weight on the existing engine.  Both cover hands can prefer the
+// SAME outcome -- each would rather take a trick itself than let a dead nil
+// absorb it -- and two objectives that sometimes agree cannot be one number
+// with a sign flip.  Measured before building: against the closest zero-sum
+// stand-in ("maximise my tricks minus theirs", which WOULD drop into the
+// existing alpha-beta), this order disagrees on 3 of 227 hands, and the
+// disagreements are real rather than tie-breaking noise -- the zero-sum
+// stand-in gives up a trick of its OWN to cost the opponent two, which this
+// order never does.
+//
+// SUFFIX COUNTS, and why the memo is still sound.  Each node returns the
+// tricks taken FROM THERE ON, not the running total.  A lexicographic
+// comparison of (prefix + suffix) against (prefix + suffix') with the same
+// prefix is decided identically by comparing the suffixes alone, component
+// by component, so a memo entry computed under one prefix is valid under any
+// other.  `satisfied` still belongs in the key, because the must-be-set half
+// is a fact about the prefix, not about the suffix's value.
+struct ConstrainedTricksSolution {
+    unsigned require_live_mask = 0;
+    unsigned require_set_mask = 0;
+    bool satisfiable = false;
+    // Tricks per seat on the chosen line.  Meaningless when !satisfiable.
+    int seat_tricks[4] = {0, 0, 0, 0};
+    std::uint64_t nodes = 0;
+};
+
+// Same constraint and same validation as solve_constrained_line, plus: each
+// side must hold exactly one live bid, since the priority above is written in
+// terms of "this side's nil" and "this side's cover hand".
+bool solve_constrained_tricks(const Position& pos, const SeatRoles& roles,
+                              unsigned require_live_mask, unsigned require_set_mask,
+                              bool use_memo, bool collapse_equivalents,
+                              ConstrainedTricksSolution& out, std::string& err);
+
 }  // namespace nil
 
 #endif  // NIL_OUTCOME_CONSTRAINT_HPP

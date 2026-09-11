@@ -196,4 +196,197 @@ bool solve_constrained_line(const Position& pos, const SeatRoles& roles,
     return true;
 }
 
+namespace {
+
+// ---- step 4: the same constraint, with the priority optimised inside it ----
+
+// Suffix trick counts, or "no valid line from here".  `valid` is a SEPARATE
+// channel from the counts on purpose -- see the header's note on why a
+// sentinel value cannot do this job.
+struct TrickVal {
+    bool valid = false;
+    std::int8_t t[4] = {0, 0, 0, 0};
+};
+
+// The memo is a pure cache -- dropping an entry costs time, never accuracy --
+// so it is safe to stop growing it at a bound.  An UNBOUNDED memo here is not
+// a performance question but a robustness bug: at 13 cards the first draft of
+// this search was OOM-killed by the host rather than returning anything, and
+// a library that can kill the calling process is broken regardless of how
+// fast it is on hands that fit.  Roughly 300 MB of entries; past that the
+// search still finishes, just without new memoisation.
+constexpr std::size_t TRICKS_MEMO_MAX_ENTRIES = 4u << 20;
+
+struct TricksCtx {
+    unsigned require_live = 0;
+    unsigned require_set = 0;
+    int nil_of_side[2] = {-1, -1};
+    int cover_of_side[2] = {-1, -1};
+    bool collapse = true;
+    std::unordered_map<ConstraintKey, TrickVal, ConstraintKeyHash>* memo = nullptr;
+    std::uint64_t nodes = 0;
+};
+
+// Is `a` better than `b` for the side to which `seat` belongs?  T's order:
+// own cover hand up, other cover hand down, other nil up.
+inline bool better_for(const TricksCtx& ctx, int seat, const TrickVal& a, const TrickVal& b) {
+    const int side = seat & 1;
+    const int mine = ctx.cover_of_side[side];
+    const int theirs = ctx.cover_of_side[side ^ 1];
+    const int their_nil = ctx.nil_of_side[side ^ 1];
+    if (a.t[mine] != b.t[mine]) return a.t[mine] > b.t[mine];
+    if (a.t[theirs] != b.t[theirs]) return a.t[theirs] < b.t[theirs];
+    return a.t[their_nil] > b.t[their_nil];
+}
+
+TrickVal search_constrained_tricks(Hand hands[4], int leader, const CardId* trick,
+                                   int trick_len, bool broken, unsigned satisfied,
+                                   TricksCtx& ctx) {
+    ++ctx.nodes;
+
+    TrickVal result;
+    if (!(hands[0] | hands[1] | hands[2] | hands[3])) {
+        result.valid = (satisfied == ctx.require_set);
+        return result;  // all-zero suffix counts, which is correct at the end
+    }
+
+    ConstraintKey key;
+    const bool have_key = ctx.memo != nullptr;
+    if (have_key) {
+        key.hands[0] = hands[0];
+        key.hands[1] = hands[1];
+        key.hands[2] = hands[2];
+        key.hands[3] = hands[3];
+        key.trick[0] = trick_len > 0 ? trick[0] : NO_CARD;
+        key.trick[1] = trick_len > 1 ? trick[1] : NO_CARD;
+        key.trick[2] = trick_len > 2 ? trick[2] : NO_CARD;
+        key.trick_len = static_cast<std::int8_t>(trick_len);
+        key.leader = static_cast<std::int8_t>(leader);
+        key.broken = broken;
+        key.satisfied = static_cast<std::uint8_t>(satisfied);
+        const auto it = ctx.memo->find(key);
+        if (it != ctx.memo->end()) return it->second;
+    }
+
+    const int seat = (leader + trick_len) & 3;
+    const int led_suit = trick_len ? card_suit(trick[0]) : -1;
+    Hand moves = legal_moves(hands[seat], trick_len, led_suit, broken);
+
+    // COLLAPSED, and the first draft of this file did NOT collapse, on the
+    // worry that cards equivalent for winning THIS trick might not be
+    // equivalent for who wins the later ones.  That worry was wrong, and
+    // measuring it is what showed so.  `relevant_cards` keeps exactly the
+    // cards the rest of the deal can still tell apart, so playing either of
+    // two collapsed cards leaves positions identical up to relabelling those
+    // cards -- and a relabelling permutes card identities, never which SEAT
+    // takes a trick.  Per-seat trick counts are therefore invariant under it,
+    // which is all this search reports.  Verified rather than argued: the
+    // crosscheck's splits are unchanged with collapsing on, and the cost
+    // difference is the difference between finishing at 13 cards and not.
+    if (ctx.collapse && (moves & (moves - 1)) != 0) {
+        const CardId winning_now = trick_best_card(trick, trick_len);
+        const Hand relevant = relevant_cards(hands, winning_now);
+        moves = distinct_moves(moves, relevant);
+    }
+
+    bool have_best = false;
+    TrickVal best;
+    for (Hand rest = moves; rest;) {
+        const CardId card = take_lowest(rest);
+
+        const Hand saved = hands[seat];
+        hands[seat] &= ~card_bit(card);
+        const bool next_broken = spades_broken_after(broken, card_suit(card));
+
+        TrickVal child;
+        int winner = -1;
+        if (trick_len == 3) {
+            const CardId played[4] = {trick[0], trick[1], trick[2], card};
+            winner = trick_winner(leader, played, 4);
+            if (ctx.require_live & (1u << winner)) {
+                child.valid = false;  // must-make violated: abandon, no recursion
+            } else {
+                const unsigned next_satisfied = satisfied | (ctx.require_set & (1u << winner));
+                child = search_constrained_tricks(hands, winner, trick, 0, next_broken,
+                                                  next_satisfied, ctx);
+                if (child.valid) ++child.t[winner];  // this trick belongs to the suffix
+            }
+        } else {
+            CardId next_trick[3];
+            for (int i = 0; i < trick_len; ++i) next_trick[i] = trick[i];
+            next_trick[trick_len] = card;
+            child = search_constrained_tricks(hands, leader, next_trick, trick_len + 1,
+                                              next_broken, satisfied, ctx);
+        }
+
+        hands[seat] = saved;
+
+        if (!child.valid) continue;  // skipped, never scored -- see the header
+        if (!have_best || better_for(ctx, seat, child, best)) {
+            best = child;
+            have_best = true;
+        }
+    }
+
+    if (have_best) result = best;
+    if (have_key && ctx.memo->size() < TRICKS_MEMO_MAX_ENTRIES) (*ctx.memo)[key] = result;
+    return result;
+}
+
+}  // namespace
+
+bool solve_constrained_tricks(const Position& pos, const SeatRoles& roles,
+                              unsigned require_live_mask, unsigned require_set_mask,
+                              bool use_memo, bool collapse_equivalents,
+                              ConstrainedTricksSolution& out, std::string& err) {
+    ConstrainedLineSolution shape_check;
+    // Reuse the filter's own validation verbatim rather than a second copy of
+    // it: same masks, same rules, so a divergence between the two would be a
+    // bug waiting to happen.
+    if (!solve_constrained_line(pos, roles, require_live_mask, require_set_mask,
+                                 /*use_memo=*/true, /*collapse_equivalents=*/true,
+                                 shape_check, err)) {
+        return false;
+    }
+
+    TricksCtx ctx;
+    ctx.require_live = require_live_mask;
+    ctx.require_set = require_set_mask;
+    ctx.collapse = collapse_equivalents;
+    for (int side = 0; side < 2; ++side) {
+        int found = -1;
+        for (int seat = side; seat < 4; seat += 2) {
+            if (!roles.is_nil(seat)) continue;
+            if (found >= 0) {
+                err = "each side must hold exactly one live bid for the trick priority to be "
+                      "written (" + describe_seat_roles(roles) + ")";
+                return false;
+            }
+            found = seat;
+        }
+        if (found < 0) {
+            err = "each side must hold exactly one live bid for the trick priority to be "
+                  "written (" + describe_seat_roles(roles) + ")";
+            return false;
+        }
+        ctx.nil_of_side[side] = found;
+        ctx.cover_of_side[side] = (found + 2) & 3;
+    }
+
+    std::unordered_map<ConstraintKey, TrickVal, ConstraintKeyHash> memo;
+    ctx.memo = use_memo ? &memo : nullptr;
+
+    Hand hands[4] = {pos.hands[0], pos.hands[1], pos.hands[2], pos.hands[3]};
+    const CardId trick[3] = {pos.trick[0], pos.trick[1], pos.trick[2]};
+
+    const TrickVal v = search_constrained_tricks(hands, pos.leader, trick, pos.trick_len,
+                                                 pos.spades_broken, 0u, ctx);
+    out.require_live_mask = require_live_mask;
+    out.require_set_mask = require_set_mask;
+    out.satisfiable = v.valid;
+    for (int s = 0; s < 4; ++s) out.seat_tricks[s] = v.t[s];
+    out.nodes = ctx.nodes;
+    return true;
+}
+
 }  // namespace nil

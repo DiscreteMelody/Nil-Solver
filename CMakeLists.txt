@@ -443,6 +443,17 @@ if(NIL_SOLVER_BUILD_TESTS)
               --cases 25 --cards 4 --seed 23)
     set_tests_properties(cooperative_fail_crosscheck PROPERTIES TIMEOUT 600)
 
+    # ITEM 60 STEP 4: the trick split under T's priority, against an
+    # INDEPENDENT backward induction written from that priority directly, with
+    # the constraint applied the slow way (both halves at the terminal state).
+    # Checks BOTH leans, since the priority is written per side and a bug that
+    # swapped "my cover hand" for "theirs" would pass a one-lean run.
+    add_test(NAME constrained_tricks_crosscheck
+      COMMAND ${Python3_EXECUTABLE}
+              "${CMAKE_CURRENT_SOURCE_DIR}/tools/constrained_tricks_crosscheck.py"
+              --cases 10 --cards 4 --seed 41)
+    set_tests_properties(constrained_tricks_crosscheck PROPERTIES TIMEOUT 900)
+
     # ITEM 60 STEP 3: the pinned-outcome filter against an INDEPENDENT
     # reference that applies both halves of the constraint at the end of the
     # line, the slow obvious way.  What that checks is precisely the
