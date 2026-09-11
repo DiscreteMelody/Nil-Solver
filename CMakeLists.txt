@@ -37,6 +37,7 @@ add_library(nil_solver_core STATIC
   src/nil/cooperative.cpp
   src/nil/corpus.cpp
   src/nil/position.cpp
+  src/nil/same_lean.cpp
   src/nil/search.cpp
   src/nil/seats.cpp
   src/nil/statekey.cpp
@@ -429,6 +430,19 @@ if(NIL_SOLVER_BUILD_TESTS)
               "${CMAKE_CURRENT_SOURCE_DIR}/tools/cooperative_cpp_crosscheck.py"
               --cases 12 --cards 4 --seed 17)
     set_tests_properties(cooperative_cpp_crosscheck PROPERTIES TIMEOUT 600)
+
+    # ITEM 60 STEP 1: solve()'s new same-lean branch against the oracle's
+    # exhaustive backward induction, on the two cells it implements (neither
+    # bid individually reachable; exactly one is) -- and confirms solve()
+    # REFUSES rather than guesses on the third cell (both reachable), which
+    # is step 2's job.  A wrong-looking success on that third cell would be a
+    # correctness hazard, not just a missing feature, so it is checked here
+    # too, not just the two implemented branches.
+    add_test(NAME same_lean_partial_crosscheck
+      COMMAND ${Python3_EXECUTABLE}
+              "${CMAKE_CURRENT_SOURCE_DIR}/tools/same_lean_partial_crosscheck.py"
+              --cases 200 --cards 4 --seed 5)
+    set_tests_properties(same_lean_partial_crosscheck PROPERTIES TIMEOUT 600)
 
     # THE CLAIM `nils_set_mask_determined` IS DERIVED FROM.  The field says the
     # broken-bid mask is pinned by the objective on the single-nil and opposed

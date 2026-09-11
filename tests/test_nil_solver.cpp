@@ -1809,13 +1809,27 @@ int main(int argc, char** argv) {
         check("and they are the same answer", a.value, b.value);
         check("down to the line", nil::format_pv_compact(a), nil::format_pv_compact(b));
 
-        // solve() refuses an unsupported shape rather than answering something
-        // adjacent to what was asked.
+        // Item 60, step 1: this same-lean deal is now DETERMINED (branch B --
+        // north holds the top heart with no other suit to escape into, so
+        // it is doomed on cards alone regardless of anyone's play, and an
+        // ordinary single-nil check on east settles east's fate).  Checked
+        // against the oracle's exhaustive backward induction before writing
+        // this assertion (nil_makes = [False, True]), not assumed from the
+        // decision procedure's proof alone.
+        nil::Solution determined;
+        check("solve now determines two_nils' outcome",
+              nil::solve(from_north, two_nils, plain, determined, err), true);
+        check("north's bid fails", (determined.nils_set_mask & (1u << nil::SEAT_NORTH)) != 0,
+              true);
+        check("east's bid survives", (determined.nils_set_mask & (1u << nil::SEAT_EAST)) != 0,
+              false);
+        check("exactly one bid goes down", determined.nils_set, 1);
+
+        // solve_moves() is a separate entry point step 1 does not touch yet;
+        // it still refuses outright rather than guessing.
         nil::Solution refused;
-        check("solve refuses opposing nils",
-              nil::solve(from_north, two_nils, plain, refused, err), false);
         std::vector<nil::MoveScore> no_moves;
-        check("and so does solve_moves",
+        check("and solve_moves still refuses this shape (not this step's job)",
               nil::solve_moves(from_north, two_nils, plain, refused, no_moves, err), false);
     }
 
@@ -2172,12 +2186,25 @@ int main(int argc, char** argv) {
         check("nil_solve rejects an out-of-range role", static_cast<long long>(rc_range),
               static_cast<long long>(NIL_ERR_ILLEGAL_POSITION));
 
+        // Item 60, step 1: this same-lean deal now resolves too (north holds
+        // the only spade and leads it into three seats that cannot follow,
+        // so it is doomed on cards alone; east's own card can never win a
+        // trick it isn't led into, so east's ordinary single-nil check comes
+        // back safe).  Checked directly against nil_cli before writing this
+        // assertion: nils_set_mask=1 (north only).
         const std::int32_t two_nils[4] = {NIL_ROLE_NIL, NIL_ROLE_NIL, NIL_ROLE_COVER,
                                           NIL_ROLE_COVER};
+        nil_result two_r;
         const int32_t rc_two = nil_solve("N:A... .A.. ..A. ...A", NIL_SEAT_NORTH, "", two_nils, 0,
-                                         &r, err, sizeof(err));
-        check("nil_solve reports two nils as unsupported, not malformed",
-              static_cast<long long>(rc_two), static_cast<long long>(NIL_ERR_UNSUPPORTED));
+                                         &two_r, err, sizeof(err));
+        check("nil_solve now determines two_nils' outcome",
+              static_cast<long long>(rc_two), static_cast<long long>(NIL_OK));
+        check("north's bid fails, east's does not",
+              static_cast<long long>(two_r.nils_set_mask), 1LL);
+        check("exactly one bid goes down", static_cast<long long>(two_r.nils_set), 1LL);
+
+        // The full trick-count computation (steps 3-4) is not written yet;
+        // nil_solve still refuses when solve_moves() is what is asked for.
 
         // The roles are read against the PBN's anchor, so the same deal spelled
         // two ways is one question across the ABI too.

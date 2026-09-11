@@ -6,6 +6,7 @@
 
 #include "nil/bounds.hpp"
 #include "nil/rules.hpp"
+#include "nil/same_lean.hpp"
 #include "nil/statekey.hpp"
 #include "nil/tt.hpp"
 
@@ -2312,21 +2313,50 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
 
     // SHAPE_OPPOSING_NILS_SAME_LEAN (item 60) is a RECOGNIZED shape now --
     // seat_shape() names it rather than refusing the deal -- but nothing
-    // below this line may be pointed at it yet: the packed value, the
-    // transposition table, and this function's own conjunction block all
+    // below this line (the packed value, the transposition table, this
+    // function's own conjunction block) may be pointed at it: they all
     // assume the two sides' rankings sum to a constant, which same-lean does
-    // not.  It is decided by case analysis instead, in its own function --
-    // not written yet.  Refused explicitly here, ahead of everything that
-    // would otherwise silently answer a question it cannot pose: without
-    // this, a same-lean deal would fall through to the ordinary alpha-beta
-    // search below and get a real-looking number that is simply wrong
-    // whenever the position is not one of the degenerate cases where every
-    // objective happens to agree.
+    // not.  Decided by case analysis instead.  Step 1 of that procedure
+    // (solve_same_lean_partial) covers two of its three branches; the third
+    // -- both bids individually reachable, needing the conjunction probe --
+    // is step 2 and still falls through to an explicit refusal below.
     if (seat_shape_of(roles) == SHAPE_OPPOSING_NILS_SAME_LEAN) {
-        err = "both nil bidders' partners lean the same way (" + describe_seat_roles(roles) +
-              "); seat_shape() names this shape but solve() does not implement it yet -- "
-              "see the item 60 ROADMAP entry";
-        return false;
+        SameLeanOutcome outcome;
+        std::string sl_err;
+        if (!solve_same_lean_partial(pos, roles, opts, outcome, sl_err)) {
+            err = sl_err;
+            return false;
+        }
+        if (!outcome.determined) {
+            err = "both nil bidders' partners lean the same way (" + describe_seat_roles(roles) +
+                  "); both bids are individually reachable, and resolving that case needs the "
+                  "conjunction probe, which is not wired in for this shape yet -- see the item "
+                  "60 ROADMAP entry (step 2)";
+            return false;
+        }
+        out = Solution();
+        out.roles = roles;
+        out.mode = opts.mode;
+        // Step 1 determines WHICH bids fail, not trick counts -- that is
+        // steps 3-4's job (the hard must-make/must-be-set constraints and
+        // the corrected cover-hand objective).  Same convention MODE_FAST
+        // and the conjunction probe already use for "no trick data here".
+        out.nil_tricks = TRICKS_NOT_COMPUTED;
+        out.nil_side_tricks = TRICKS_NOT_COMPUTED;
+        out.opponent_tricks = TRICKS_NOT_COMPUTED;
+        int set_count = 0;
+        for (int s = 0; s < 4; ++s) {
+            if (outcome.nils_set_mask & (1u << s)) ++set_count;
+        }
+        out.nils_set = set_count;
+        out.nils_set_mask = outcome.nils_set_mask;
+        // Proved, not assumed: every branch solve_same_lean_partial can
+        // reach names a specific, pinned outcome -- see the ROADMAP entry --
+        // so two equally-optimal lines can never disagree about which bids
+        // go down.
+        out.nils_set_mask_determined = true;
+        out.nodes = outcome.nodes;
+        return true;
     }
 
     const ObjectiveWeights weights = objective_weights(pos.tricks_remaining(), roles, opts);
