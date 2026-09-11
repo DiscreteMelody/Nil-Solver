@@ -36,6 +36,7 @@ add_library(nil_solver_core STATIC
   src/nil/cards.cpp
   src/nil/cooperative.cpp
   src/nil/corpus.cpp
+  src/nil/outcome_constraint.cpp
   src/nil/position.cpp
   src/nil/same_lean.cpp
   src/nil/search.cpp
@@ -441,6 +442,19 @@ if(NIL_SOLVER_BUILD_TESTS)
               "${CMAKE_CURRENT_SOURCE_DIR}/tools/cooperative_fail_crosscheck.py"
               --cases 25 --cards 4 --seed 23)
     set_tests_properties(cooperative_fail_crosscheck PROPERTIES TIMEOUT 600)
+
+    # ITEM 60 STEP 3: the pinned-outcome filter against an INDEPENDENT
+    # reference that applies both halves of the constraint at the end of the
+    # line, the slow obvious way.  What that checks is precisely the
+    # optimisation: abandoning a must-make violation the instant it happens,
+    # without recursing, must not change the answer.  The run fails if the
+    # early-abandon path never fires, so the check cannot silently stop
+    # exercising the thing it exists for.
+    add_test(NAME outcome_constraint_crosscheck
+      COMMAND ${Python3_EXECUTABLE}
+              "${CMAKE_CURRENT_SOURCE_DIR}/tools/outcome_constraint_crosscheck.py"
+              --cases 20 --cards 4 --seed 31)
+    set_tests_properties(outcome_constraint_crosscheck PROPERTIES TIMEOUT 600)
 
     # ITEM 60 STEP 1: solve()'s new same-lean branch against the oracle's
     # exhaustive backward induction, on the two cells it implements (neither

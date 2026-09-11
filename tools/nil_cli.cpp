@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "nil/cooperative.hpp"
+#include "nil/outcome_constraint.hpp"
 #include "nil/position.hpp"
 #include "nil/search.hpp"
 #include "nil/seats.hpp"
@@ -120,6 +121,12 @@ void usage(const char* argv0) {
         << "                          where both sides prefer both bids down.\n"
         << "                          Same seat syntax and same flags as\n"
         << "                          --cooperative\n"
+        << "  --require-live <seats>  step 3: with the outcome already pinned by the\n"
+        << "  --require-set <seats>   presolve, keep only lines where every --require-set\n"
+        << "                          seat takes at least one trick and no --require-live\n"
+        << "                          seat takes any, and report whether such a line\n"
+        << "                          exists.  The FILTER alone: no trick counts, no\n"
+        << "                          optimisation inside it\n"
         << "  --compact               print only the machine-readable result\n"
         << "  --help                  this message\n";
 }
@@ -169,6 +176,8 @@ int main(int argc, char** argv) {
     std::string conjunction_text;
     std::string cooperative_text;
     std::string cooperative_fail_text;
+    std::string require_live_text;
+    std::string require_set_text;
     bool list_moves = false;
     bool tt_stats = false;
     nil::SearchOptions opts;
@@ -279,6 +288,10 @@ int main(int argc, char** argv) {
             cooperative_text = argv[++i];
         } else if (arg == "--cooperative-fail" && i + 1 < argc) {
             cooperative_fail_text = argv[++i];
+        } else if (arg == "--require-live" && i + 1 < argc) {
+            require_live_text = argv[++i];
+        } else if (arg == "--require-set" && i + 1 < argc) {
+            require_set_text = argv[++i];
         } else if (arg == "--no-settled-tricks") {
             opts.settled_tricks = false;
         } else if (arg == "--no-conjunction-presolve") {
@@ -342,7 +355,8 @@ int main(int argc, char** argv) {
     // and 3/3 cells) is the reason it exists.  Every other mode goes through
     // solve() or its Ctx and does need an accepted shape, so the general gate
     // stays for them.
-    if (cooperative_text.empty() && cooperative_fail_text.empty() &&
+    const bool constraint_mode = !require_live_text.empty() || !require_set_text.empty();
+    if (cooperative_text.empty() && cooperative_fail_text.empty() && !constraint_mode &&
         !nil::validate_seat_roles(roles, err)) {
         std::cerr << "error: --seats: " << err << "\n";
         return 2;
@@ -425,6 +439,45 @@ int main(int argc, char** argv) {
                       << "Mutual outcome  " << (coop.reachable ? "REACHABLE" : "UNREACHABLE")
                       << "\n"
                       << "Nodes           " << coop.nodes << "\n";
+        }
+        return 0;
+    }
+
+    if (constraint_mode) {
+        // Step 3: the pinned-outcome FILTER on its own -- does a line
+        // producing exactly this outcome exist?  No objective attached; see
+        // outcome_constraint.hpp for why that is deliberate.
+        unsigned live_mask = 0;
+        unsigned set_mask = 0;
+        if (!require_live_text.empty() && !parse_seat_list(require_live_text, live_mask, err)) {
+            std::cerr << "error: --require-live: " << err << "\n";
+            return 2;
+        }
+        if (!require_set_text.empty() && !parse_seat_list(require_set_text, set_mask, err)) {
+            std::cerr << "error: --require-set: " << err << "\n";
+            return 2;
+        }
+        nil::ConstrainedLineSolution cl;
+        if (!nil::solve_constrained_line(pos, roles, live_mask, set_mask, opts.use_memo,
+                                          opts.collapse_equivalents, cl, err)) {
+            std::cerr << "error: --require-live/--require-set: " << err << "\n";
+            return 3;
+        }
+        if (compact) {
+            std::cout << "constrained=" << (cl.satisfiable ? 1 : 0) << "\n"
+                      << "require_live=" << require_live_text << "\n"
+                      << "require_set=" << require_set_text << "\n"
+                      << "nodes=" << cl.nodes << "\n"
+                      << "live_prunes=" << cl.live_prunes << "\n";
+        } else {
+            std::cout << "Must make       " << (require_live_text.empty() ? "-" : require_live_text)
+                      << "\n"
+                      << "Must be set     " << (require_set_text.empty() ? "-" : require_set_text)
+                      << "\n"
+                      << "Pinned outcome  "
+                      << (cl.satisfiable ? "REACHABLE" : "UNREACHABLE") << "\n"
+                      << "Nodes           " << cl.nodes << "\n"
+                      << "Make-prunes     " << cl.live_prunes << "\n";
         }
         return 0;
     }

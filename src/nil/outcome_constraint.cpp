@@ -1,0 +1,199 @@
+#include "nil/outcome_constraint.hpp"
+
+#include <unordered_map>
+
+#include "nil/rules.hpp"
+
+namespace nil {
+namespace {
+
+// Literal-state key plus `satisfied`: which of require_set_mask's seats have
+// already taken a trick on this line.  Needed for the same reason
+// cooperative.cpp's FailKey needs it -- "has this seat's requirement already
+// been met" is not implied by the cards, and only ever grows along a line, so
+// it is sound to fold into the key rather than re-derive.
+//
+// require_live_mask needs NO bit here: a violating line is abandoned at the
+// violation, so no node past that point exists to key.
+struct ConstraintKey {
+    Hand hands[4];
+    CardId trick[3];
+    std::int8_t trick_len;
+    std::int8_t leader;
+    bool broken;
+    std::uint8_t satisfied;
+
+    bool operator==(const ConstraintKey& o) const {
+        return hands[0] == o.hands[0] && hands[1] == o.hands[1] && hands[2] == o.hands[2] &&
+               hands[3] == o.hands[3] && trick[0] == o.trick[0] && trick[1] == o.trick[1] &&
+               trick[2] == o.trick[2] && trick_len == o.trick_len && leader == o.leader &&
+               broken == o.broken && satisfied == o.satisfied;
+    }
+};
+
+struct ConstraintKeyHash {
+    std::size_t operator()(const ConstraintKey& k) const noexcept {
+        std::uint64_t h = 1469598103934665603ull;
+        auto mix = [&h](std::uint64_t v) {
+            h ^= v;
+            h *= 1099511628211ull;
+        };
+        mix(k.hands[0]);
+        mix(k.hands[1]);
+        mix(k.hands[2]);
+        mix(k.hands[3]);
+        mix(static_cast<std::uint64_t>(k.trick[0] + 1));
+        mix(static_cast<std::uint64_t>(k.trick[1] + 1));
+        mix(static_cast<std::uint64_t>(k.trick[2] + 1));
+        mix((static_cast<std::uint64_t>(k.trick_len) << 8) |
+            (static_cast<std::uint64_t>(k.leader) << 2) | (k.broken ? 1u : 0u));
+        mix(static_cast<std::uint64_t>(k.satisfied));
+        return static_cast<std::size_t>(h);
+    }
+};
+
+using ConstraintMemo = std::unordered_map<ConstraintKey, bool, ConstraintKeyHash>;
+
+struct ConstraintCtx {
+    unsigned require_live = 0;
+    unsigned require_set = 0;
+    bool collapse = true;
+    ConstraintMemo* memo = nullptr;
+    std::uint64_t nodes = 0;
+    std::uint64_t live_prunes = 0;
+};
+
+bool search_constrained(Hand hands[4], int leader, const CardId* trick, int trick_len,
+                        bool broken, unsigned satisfied, ConstraintCtx& ctx) {
+    ++ctx.nodes;
+
+    if (!(hands[0] | hands[1] | hands[2] | hands[3])) {
+        // The must-make half needs no check here: a line that violated it was
+        // abandoned at the violation and never reached this point.  The
+        // must-be-set half is checked here and only here -- see the header.
+        return satisfied == ctx.require_set;
+    }
+
+    ConstraintKey key;
+    const bool have_key = ctx.memo != nullptr;
+    if (have_key) {
+        key.hands[0] = hands[0];
+        key.hands[1] = hands[1];
+        key.hands[2] = hands[2];
+        key.hands[3] = hands[3];
+        key.trick[0] = trick_len > 0 ? trick[0] : NO_CARD;
+        key.trick[1] = trick_len > 1 ? trick[1] : NO_CARD;
+        key.trick[2] = trick_len > 2 ? trick[2] : NO_CARD;
+        key.trick_len = static_cast<std::int8_t>(trick_len);
+        key.leader = static_cast<std::int8_t>(leader);
+        key.broken = broken;
+        key.satisfied = static_cast<std::uint8_t>(satisfied);
+        const auto it = ctx.memo->find(key);
+        if (it != ctx.memo->end()) return it->second;
+    }
+
+    const int seat = (leader + trick_len) & 3;
+    const int led_suit = trick_len ? card_suit(trick[0]) : -1;
+    Hand moves = legal_moves(hands[seat], trick_len, led_suit, broken);
+
+    if (ctx.collapse && (moves & (moves - 1)) != 0) {
+        const CardId winning_now = trick_best_card(trick, trick_len);
+        const Hand relevant = relevant_cards(hands, winning_now);
+        moves = distinct_moves(moves, relevant);
+    }
+
+    bool result = false;
+    for (Hand rest = moves; rest;) {
+        const CardId card = take_lowest(rest);
+
+        const Hand saved = hands[seat];
+        hands[seat] &= ~card_bit(card);
+        const bool next_broken = spades_broken_after(broken, card_suit(card));
+
+        bool found;
+        if (trick_len == 3) {
+            const CardId played[4] = {trick[0], trick[1], trick[2], card};
+            const int winner = trick_winner(leader, played, 4);
+            if (ctx.require_live & (1u << winner)) {
+                // The must-make half, violated.  A bid never un-breaks, so
+                // nothing below can repair it: abandon without recursing.
+                ++ctx.live_prunes;
+                found = false;
+            } else {
+                const unsigned next_satisfied =
+                    satisfied | (ctx.require_set & (1u << winner));
+                found = search_constrained(hands, winner, trick, 0, next_broken,
+                                           next_satisfied, ctx);
+            }
+        } else {
+            CardId next_trick[3];
+            for (int i = 0; i < trick_len; ++i) next_trick[i] = trick[i];
+            next_trick[trick_len] = card;
+            found = search_constrained(hands, leader, next_trick, trick_len + 1, next_broken,
+                                       satisfied, ctx);
+        }
+
+        hands[seat] = saved;
+
+        if (found) {
+            result = true;
+            break;
+        }
+    }
+
+    if (have_key) (*ctx.memo)[key] = result;
+    return result;
+}
+
+}  // namespace
+
+bool solve_constrained_line(const Position& pos, const SeatRoles& roles,
+                            unsigned require_live_mask, unsigned require_set_mask,
+                            bool use_memo, bool collapse_equivalents,
+                            ConstrainedLineSolution& out, std::string& err) {
+    if (!validate(pos, err)) return false;
+
+    if ((require_live_mask | require_set_mask) & ~0xFu) {
+        err = "a constraint mask has bits set outside the four seats";
+        return false;
+    }
+    if (require_live_mask & require_set_mask) {
+        err = "a seat cannot be required both to make and to be set";
+        return false;
+    }
+    for (int seat = 0; seat < 4; ++seat) {
+        const unsigned bit = 1u << seat;
+        if (!((require_live_mask | require_set_mask) & bit)) continue;
+        if (roles[seat] == ROLE_NIL_SET) {
+            err = std::string("seat ") + SEAT_CHARS[seat] +
+                  " was declared already down, so constraining its bid is either a "
+                  "contradiction or a tautology; drop it from the masks";
+            return false;
+        }
+        if (roles[seat] != ROLE_NIL) {
+            err = std::string("seat ") + SEAT_CHARS[seat] +
+                  " did not bid nil, so there is no bid there to constrain";
+            return false;
+        }
+    }
+
+    ConstraintCtx ctx;
+    ctx.require_live = require_live_mask;
+    ctx.require_set = require_set_mask;
+    ctx.collapse = collapse_equivalents;
+    ConstraintMemo memo;
+    ctx.memo = use_memo ? &memo : nullptr;
+
+    Hand hands[4] = {pos.hands[0], pos.hands[1], pos.hands[2], pos.hands[3]};
+    const CardId trick[3] = {pos.trick[0], pos.trick[1], pos.trick[2]};
+
+    out.require_live_mask = require_live_mask;
+    out.require_set_mask = require_set_mask;
+    out.satisfiable = search_constrained(hands, pos.leader, trick, pos.trick_len,
+                                         pos.spades_broken, 0u, ctx);
+    out.nodes = ctx.nodes;
+    out.live_prunes = ctx.live_prunes;
+    return true;
+}
+
+}  // namespace nil
