@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Item 60, step 1: does solve()'s new same-lean branch agree with the
-oracle's exhaustive backward induction (solve_opposing_nils) on the two
-branches it implements -- and does it correctly REFUSE, rather than guess,
-on the third branch that is not this step's job?
+"""Item 60: does solve()'s same-lean path agree with the oracle's exhaustive
+backward induction (solve_opposing_nils) on all three branches of the
+decision procedure -- both bids doomed on cards alone, exactly one doomed,
+and the delicate cell where both are individually reachable?
 
 Population is asserted, not just checked: a run that never lands in one of
 the three cells is not exercising the thing this step is for.
@@ -67,7 +67,7 @@ def main():
     rng = random.Random(args.seed)
     role_sets = [(0, 0, 2, 2), (0, 0, 3, 3)]
 
-    branch_a = branch_b = branch_neither = 0
+    branch_a = branch_b = branch_c_forced = branch_c_open = 0
     mismatches = []
 
     for case in range(args.cases):
@@ -101,32 +101,52 @@ def main():
                     f"branch B mismatch: {pbn} seats={seats_text} got={got_mask:04b} "
                     f"want={want_mask:04b} (oracle nil_makes={truth.nil_makes})")
         else:
-            branch_neither += 1
-            # Both individually reachable: not this step's branch. solve()
-            # must refuse outright, never guess -- a wrong-looking success
-            # here would be a real correctness hazard, not a missing feature.
-            if got_mask is not None:
-                mismatches.append(
-                    f"undetermined branch answered instead of refusing: {pbn} "
-                    f"seats={seats_text} got={got_mask:04b}")
+            # The delicate cell, split by the conjunction probe.  Step 2
+            # resolves the FORCING rung and leaves the rest open, so which
+            # behaviour is correct here depends on that probe, not on the
+            # cooperative ones.
+            c0 = oracle.solve_conjunction(pos, list(roles), 0, use_memo=True).can_force
+            c1 = oracle.solve_conjunction(pos, list(roles), 1, use_memo=True).can_force
+            truth = oracle.solve_opposing_nils(pos, list(roles), use_memo=True)
+            want_mask = (0 if truth.nil_makes[0] else 1) | (0 if truth.nil_makes[1] else 2)
+            if c0 or c1:
+                branch_c_forced += 1
+                if got_mask is None:
+                    mismatches.append(f"branch C forcing rung refused: {pbn} "
+                                       f"seats={seats_text}: {cli_err}")
+                elif got_mask != want_mask:
+                    mismatches.append(
+                        f"branch C forcing rung mismatch: {pbn} seats={seats_text} "
+                        f"got={got_mask:04b} want={want_mask:04b} "
+                        f"(oracle nil_makes={truth.nil_makes})")
+            else:
+                branch_c_open += 1
+                # The open cell: solve() must REFUSE, never guess.  The
+                # tiebreak once intended here is disproved, so a confident
+                # answer would be a correctness hazard, not a feature.
+                if got_mask is not None:
+                    mismatches.append(
+                        f"open cell answered instead of refusing: {pbn} "
+                        f"seats={seats_text} got={got_mask:04b}")
 
     print(f"{args.cases} deals at {args.cards} cards")
     print(f"  branch A (neither reachable):      {branch_a}")
     print(f"  branch B (exactly one reachable):  {branch_b}")
-    print(f"  undetermined (both reachable):     {branch_neither}")
+    print(f"  branch C forcing rung (resolved):    {branch_c_forced}")
+    print(f"  branch C open cell (must refuse):    {branch_c_open}")
     print()
     for m in mismatches[:10]:
         print(f"FAIL: {m}")
     if len(mismatches) > 10:
         print(f"... and {len(mismatches) - 10} more")
 
-    if branch_a == 0 or branch_b == 0:
-        print("FAIL: this run never exercised one of the two implemented branches")
+    if branch_a == 0 or branch_b == 0 or branch_c_forced == 0 or branch_c_open == 0:
+        print("FAIL: this run never exercised one of the four cells")
         return 1
     if mismatches:
         return 1
-    print("C++ agrees with the oracle on both implemented branches, and correctly refuses "
-          "(never guesses) the branch that is not this step's job")
+    print("C++ agrees with the oracle's exhaustive backward induction on every cell "
+          "the procedure resolves, and refuses (never guesses) the one still open")
     return 0
 
 

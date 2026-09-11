@@ -344,4 +344,47 @@ bool solve_cooperative(const Position& pos, const SeatRoles& roles, unsigned pro
     return true;
 }
 
+bool solve_cooperative_fail(const Position& pos, const SeatRoles& roles, unsigned fail_mask,
+                            bool use_memo, bool collapse_equivalents,
+                            CooperativeFailSolution& out, std::string& err) {
+    if (!validate(pos, err)) return false;
+
+    if (fail_mask & ~0xFu) {
+        err = "fail_mask has bits set outside the four seats";
+        return false;
+    }
+    for (int seat = 0; seat < 4; ++seat) {
+        if (!(fail_mask & (1u << seat))) continue;
+        if (roles[seat] == ROLE_NIL_SET) {
+            err = std::string("seat ") + SEAT_CHARS[seat] +
+                  " was declared already down, so its bid has already failed by the caller's "
+                  "own assertion; drop it from the fail set rather than asking this to "
+                  "re-derive it";
+            return false;
+        }
+        if (roles[seat] != ROLE_NIL) {
+            err = std::string("seat ") + SEAT_CHARS[seat] +
+                  " did not bid nil, so there is no bid there to set";
+            return false;
+        }
+    }
+
+    FailCtx ctx;
+    ctx.fail_mask = fail_mask;
+    ctx.collapse = collapse_equivalents;
+    FailMemo memo;
+    ctx.memo = use_memo ? &memo : nullptr;
+
+    Hand hands[4] = {pos.hands[0], pos.hands[1], pos.hands[2], pos.hands[3]};
+    const CardId trick[3] = {pos.trick[0], pos.trick[1], pos.trick[2]};
+
+    out.fail_mask = fail_mask;
+    // `satisfied` starts empty: no seat has taken a trick in the part of the
+    // deal still to be played, which is the only part this search can see.
+    out.reachable = search_cooperative_fail(hands, pos.leader, trick, pos.trick_len,
+                                            pos.spades_broken, 0u, ctx);
+    out.nodes = ctx.nodes;
+    return true;
+}
+
 }  // namespace nil

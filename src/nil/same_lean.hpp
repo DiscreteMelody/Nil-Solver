@@ -12,17 +12,24 @@
 //                          alone, because the doomed one's partner has
 //                          nothing left of its own to protect.  Verified: 25
 //                          of 25 hands, both leans, no conjunction needed.
-//   BOTH reachable      -- needs the conjunction probe (C0/C1) and, in the
-//                          cell neither forces, the delicate-cell tiebreak.
-//                          NOT this file -- see item 60 step 2.
+//   BOTH reachable      -- the delicate cell.  PARTLY resolved (step 2): if
+//                          either side can force rank 3 -- its own bid alive,
+//                          the other's dead -- it takes it, settled by the
+//                          item 78 conjunction probe.  When NEITHER side can
+//                          force it, the cell is still open: the tiebreak
+//                          that was going to fill it (cooperative
+//                          reachability of the shared lean's preferred
+//                          middle) is DISPROVED, measured wrong on 48 of 116
+//                          OPPONENT-lean and 5 of 116 COVER-lean cells.  See
+//                          same_lean.cpp's rung 2 comment and the ROADMAP
+//                          entry.
 //
-// This file is the first two rows of that table.  It reuses only what
-// already exists and is already trusted: `solve_cooperative` (item 2b) and
-// the ordinary single-nil `solve()` via `seat_roles_from_nil`.  It touches
-// nothing about the conjunction machinery -- deliberately, since reusing
-// that safely (its own internal shape gate currently checks for strict
-// opposition specifically) is its own, separate step, not folded in here
-// to finish the table in one patch.
+// This file is the whole table as of step 2.  It reuses only what already
+// exists and is already trusted: `solve_cooperative` (item 2b), the ordinary
+// single-nil `solve()` via `seat_roles_from_nil`, and the item 78 conjunction
+// probe via `SearchOptions::conjunction_seat` (whose shape gate step 2
+// widened to admit this lean, on the ground that its indicator is rank 3 and
+// `side_rank` decides rank 3 before it reads the lean).
 #ifndef NIL_SAME_LEAN_HPP
 #define NIL_SAME_LEAN_HPP
 
@@ -39,19 +46,19 @@ struct SameLeanOutcome {
     // Bit `s` set for each seat whose bid FAILS.  Meaningless when
     // `determined` is false.
     unsigned nils_set_mask = 0;
-    // True when this call alone settled the outcome (the "neither" or
-    // "exactly one" branches above).  False means both bids are
-    // individually reachable -- the third branch, which is step 2's job,
-    // not an error condition here.
+    // True when this call settled the outcome.  False means the position
+    // landed in the one cell still open -- both bids individually reachable
+    // AND neither side able to force rank 3 -- which solve() reports as
+    // unhandled rather than guessing at.
     bool determined = false;
     std::uint64_t nodes = 0;
 };
 
-// Attempts the first two branches of item 60's decision procedure for a
-// same-lean opposing-nils position.  Returns false only on a genuine error
-// (an invalid position, or roles that are not two live bids on opposing
-// sides); returning true with `out.determined == false` is the expected,
-// non-error way of saying "the remaining branch is not this function's job."
+// Runs item 60's decision procedure for a same-lean opposing-nils position.
+// Returns false only on a genuine error (an invalid position, or roles that
+// are not two live bids on opposing sides).  Returning true with
+// `out.determined == false` is the expected, non-error way of saying the
+// position landed in the cell the procedure does not yet resolve.
 bool solve_same_lean_partial(const Position& pos, const SeatRoles& roles,
                               const SearchOptions& opts, SameLeanOutcome& out,
                               std::string& err);

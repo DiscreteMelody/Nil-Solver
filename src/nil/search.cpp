@@ -2312,15 +2312,21 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
     if (!validate(pos, err)) return false;
 
     // SHAPE_OPPOSING_NILS_SAME_LEAN (item 60) is a RECOGNIZED shape now --
-    // seat_shape() names it rather than refusing the deal -- but nothing
-    // below this line (the packed value, the transposition table, this
-    // function's own conjunction block) may be pointed at it: they all
-    // assume the two sides' rankings sum to a constant, which same-lean does
-    // not.  Decided by case analysis instead.  Step 1 of that procedure
-    // (solve_same_lean_partial) covers two of its three branches; the third
-    // -- both bids individually reachable, needing the conjunction probe --
-    // is step 2 and still falls through to an explicit refusal below.
-    if (seat_shape_of(roles) == SHAPE_OPPOSING_NILS_SAME_LEAN) {
+    // seat_shape() names it rather than refusing the deal -- but most of what
+    // is below this line (the packed value, the transposition table, the
+    // rank-band machinery) may not be pointed at it: those assume the two
+    // sides' rankings sum to a constant, which same-lean does not.  Decided
+    // by case analysis instead, in solve_same_lean_partial.
+    //
+    // THE CONJUNCTION PROBE IS THE ONE EXCEPTION, and step 2 both widens its
+    // gate (see that block below) and lets a caller reach it: its indicator
+    // is rank 3, which `side_rank` decides before reading the lean at all.
+    // A caller who explicitly asked for the probe is asking a question this
+    // shape CAN answer, so it must not be intercepted here -- without this
+    // condition, `--conjunction` on same-lean roles would be swallowed by the
+    // case-analysis path and answered with a bid mask instead of the boolean
+    // that was asked for.
+    if (opts.conjunction_seat < 0 && seat_shape_of(roles) == SHAPE_OPPOSING_NILS_SAME_LEAN) {
         SameLeanOutcome outcome;
         std::string sl_err;
         if (!solve_same_lean_partial(pos, roles, opts, outcome, sl_err)) {
@@ -2329,9 +2335,10 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
         }
         if (!outcome.determined) {
             err = "both nil bidders' partners lean the same way (" + describe_seat_roles(roles) +
-                  "); both bids are individually reachable, and resolving that case needs the "
-                  "conjunction probe, which is not wired in for this shape yet -- see the item "
-                  "60 ROADMAP entry (step 2)";
+                  "); both bids are individually reachable AND neither side can force its "
+                  "own bid alive while the other's dies, which is the one cell item 60's "
+                  "decision procedure does not resolve yet -- the cooperative-reachability "
+                  "tiebreak intended for it is disproved, see the ROADMAP entry";
             return false;
         }
         out = Solution();
@@ -2380,7 +2387,23 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
     if (opts.conjunction_seat >= 0) {
         std::string shape_err;
         SeatRoles copy = roles;
-        if (seat_shape(copy, shape_err) != SHAPE_OPPOSING_NILS) {
+        const SeatShape conj_shape = seat_shape(copy, shape_err);
+        // ITEM 60 STEP 2 WIDENS THIS GATE, from SHAPE_OPPOSING_NILS alone to
+        // "a bid on each side, either lean".  The probe's own indicator is
+        // `conjunction_value`, which reads only the two bidder SEATS -- it is
+        // rank 3, and `side_rank` returns 3 from its first branch, before it
+        // ever looks at `partner_role`.  The lean only ever swaps the two
+        // MIDDLE rungs (1 and 2), so it cannot move the indicator.  Verified
+        // against the oracle before widening, not merely argued: across 120
+        // deals, `solve_conjunction` returns identical answers for 0 0 3 2,
+        // 0 0 2 2 and 0 0 3 3 on the same cards, zero disagreements.
+        //
+        // NOTE the asymmetry with `ctx.opposing`, which stays false for
+        // same-lean: that flag gates the rank-band machinery, which DOES read
+        // `far_partner_role` and genuinely is lean-dependent.  Only the
+        // indicator is safe to widen, and only the indicator is widened here.
+        if (conj_shape != SHAPE_OPPOSING_NILS &&
+            conj_shape != SHAPE_OPPOSING_NILS_SAME_LEAN) {
             err = "the conjunction probe asks about a deal with a bid on EACH side; " +
                   describe_seat_roles(roles) + " is not one";
             return false;

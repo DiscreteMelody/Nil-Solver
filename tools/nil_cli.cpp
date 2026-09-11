@@ -112,6 +112,14 @@ void usage(const char* argv0) {
         << "                          whose partners lean the same way (0 0 2 2 or\n"
         << "                          0 0 3 3) -- since this probe reads no role\n"
         << "                          but the ones it is asked to protect\n"
+        << "  --cooperative-fail <seats>  the dual: with every seat cooperating,\n"
+        << "                          is there ANY line on which every named\n"
+        << "                          seat's nil bid FAILS (that seat takes at\n"
+        << "                          least one trick)?  Item 60 needs this for\n"
+        << "                          the OPPONENT-lean side of the delicate cell,\n"
+        << "                          where both sides prefer both bids down.\n"
+        << "                          Same seat syntax and same flags as\n"
+        << "                          --cooperative\n"
         << "  --compact               print only the machine-readable result\n"
         << "  --help                  this message\n";
 }
@@ -160,6 +168,7 @@ int main(int argc, char** argv) {
     bool compact = false;
     std::string conjunction_text;
     std::string cooperative_text;
+    std::string cooperative_fail_text;
     bool list_moves = false;
     bool tt_stats = false;
     nil::SearchOptions opts;
@@ -268,6 +277,8 @@ int main(int argc, char** argv) {
             conjunction_text = argv[++i];
         } else if (arg == "--cooperative" && i + 1 < argc) {
             cooperative_text = argv[++i];
+        } else if (arg == "--cooperative-fail" && i + 1 < argc) {
+            cooperative_fail_text = argv[++i];
         } else if (arg == "--no-settled-tricks") {
             opts.settled_tricks = false;
         } else if (arg == "--no-conjunction-presolve") {
@@ -331,7 +342,8 @@ int main(int argc, char** argv) {
     // and 3/3 cells) is the reason it exists.  Every other mode goes through
     // solve() or its Ctx and does need an accepted shape, so the general gate
     // stays for them.
-    if (cooperative_text.empty() && !nil::validate_seat_roles(roles, err)) {
+    if (cooperative_text.empty() && cooperative_fail_text.empty() &&
+        !nil::validate_seat_roles(roles, err)) {
         std::cerr << "error: --seats: " << err << "\n";
         return 2;
     }
@@ -382,6 +394,34 @@ int main(int argc, char** argv) {
                       << "nodes=" << coop.nodes << "\n";
         } else {
             std::cout << "Protecting      " << cooperative_text << "\n"
+                      << "Mutual outcome  " << (coop.reachable ? "REACHABLE" : "UNREACHABLE")
+                      << "\n"
+                      << "Nodes           " << coop.nodes << "\n";
+        }
+        return 0;
+    }
+
+    if (!cooperative_fail_text.empty()) {
+        // The dual of the block above: can every named bid be made to FAIL on
+        // some line, with all four seats cooperating?  Standalone for the same
+        // reason -- it calls solve() for nothing.
+        unsigned mask = 0;
+        if (!parse_seat_list(cooperative_fail_text, mask, err)) {
+            std::cerr << "error: --cooperative-fail: " << err << "\n";
+            return 2;
+        }
+        nil::CooperativeFailSolution coop;
+        if (!nil::solve_cooperative_fail(pos, roles, mask, opts.use_memo,
+                                          opts.collapse_equivalents, coop, err)) {
+            std::cerr << "error: --cooperative-fail: " << err << "\n";
+            return 3;
+        }
+        if (compact) {
+            std::cout << "cooperative_fail=" << (coop.reachable ? 1 : 0) << "\n"
+                      << "fail=" << cooperative_fail_text << "\n"
+                      << "nodes=" << coop.nodes << "\n";
+        } else {
+            std::cout << "Setting         " << cooperative_fail_text << "\n"
                       << "Mutual outcome  " << (coop.reachable ? "REACHABLE" : "UNREACHABLE")
                       << "\n"
                       << "Nodes           " << coop.nodes << "\n";

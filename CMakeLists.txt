@@ -431,6 +431,17 @@ if(NIL_SOLVER_BUILD_TESTS)
               --cases 12 --cards 4 --seed 17)
     set_tests_properties(cooperative_cpp_crosscheck PROPERTIES TIMEOUT 600)
 
+    # THE FAIL PROBE AGAINST AN INDEPENDENT REFERENCE, not against a cousin of
+    # itself: the oracle has no fail-mode equivalent, so this enumerates the
+    # reachable outcome set directly by exhaustive play.  The probe is used by
+    # nothing in the shipped decision procedure as of step 2 (the rung it was
+    # built for is disproved), but it is correct code and checked as such.
+    add_test(NAME cooperative_fail_crosscheck
+      COMMAND ${Python3_EXECUTABLE}
+              "${CMAKE_CURRENT_SOURCE_DIR}/tools/cooperative_fail_crosscheck.py"
+              --cases 25 --cards 4 --seed 23)
+    set_tests_properties(cooperative_fail_crosscheck PROPERTIES TIMEOUT 600)
+
     # ITEM 60 STEP 1: solve()'s new same-lean branch against the oracle's
     # exhaustive backward induction, on the two cells it implements (neither
     # bid individually reachable; exactly one is) -- and confirms solve()
