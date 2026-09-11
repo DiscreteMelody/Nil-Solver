@@ -105,6 +105,52 @@ bool solve_cooperative(const Position& pos, const SeatRoles& roles, unsigned pro
                        bool use_memo, bool collapse_equivalents, CooperativeSolution& out,
                        std::string& err);
 
+// ---------------------------------------------------------------------------
+// THE DUAL QUESTION, for item 60's OPPONENT-lean (`3/3`) fallback.
+//
+// Proved (not just measured) in the ROADMAP entry for this item: in the cell
+// where neither conjunction is forceable, the equilibrium is confined to
+// {both survive, both fail}, and whichever of the two the shared lean prefers
+// wins WHENEVER IT IS REACHABLE.  COVER prefers both-survive, and
+// `solve_cooperative` already answers that.  OPPONENT prefers both-fail, and
+// nothing above answers THAT -- this does.
+//
+// NOT A SIGN-FLIP OF `solve_cooperative`, and the reason is state.  A
+// protected bid there dies the instant it is broken, so the line is simply
+// abandoned; no memo key needs to say more.  A bid required to FAIL here is
+// satisfied the FIRST time its seat wins a trick and stays satisfied for the
+// rest of the line -- membership in `fail_mask` is not enough to know whether
+// a given seat has already done its part, so the search carries a second
+// mask (`satisfied`, part of the recursive state and the memo key) tracking
+// exactly that, the same shape of bookkeeping `_search_conjunction`'s
+// `broken_nils` uses for a different reason.
+struct CooperativeFailSolution {
+    // Seats whose bids this run required to fail (take at least one trick).
+    unsigned fail_mask = 0;
+    // Is there a line, everyone cooperating, on which EVERY seat in
+    // `fail_mask` takes at least one trick by the end -- not necessarily the
+    // same trick, and not necessarily in any particular order?
+    bool reachable = false;
+    std::uint64_t nodes = 0;
+};
+
+// Same validation as `solve_cooperative`: every bit of `fail_mask` must name
+// a seat holding a live bid (`roles[seat] == ROLE_NIL`).  Asking to force the
+// failure of a seat that never bid, or one already declared down, is refused
+// via `err` rather than silently answered -- a `ROLE_NIL_SET` seat's bid has
+// already failed by the caller's own assertion, which is a reason to leave it
+// out of `fail_mask` rather than a case for this function to re-derive.
+//
+// `use_memo` and `collapse_equivalents` mean what they do for
+// `solve_cooperative`, and the same equivalence-class argument from
+// cooperative.hpp's own header carries over unchanged: which seat wins a
+// trick, and therefore whether `fail_mask` gets satisfied, is decided by the
+// rules alone, so swapping two rank-equivalent cards throughout the rest of
+// the tree cannot change the answer, only the node count.
+bool solve_cooperative_fail(const Position& pos, const SeatRoles& roles, unsigned fail_mask,
+                            bool use_memo, bool collapse_equivalents,
+                            CooperativeFailSolution& out, std::string& err);
+
 }  // namespace nil
 
 #endif  // NIL_COOPERATIVE_HPP

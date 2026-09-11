@@ -2310,6 +2310,25 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
     if (!validate_seat_roles(roles, err)) return false;
     if (!validate(pos, err)) return false;
 
+    // SHAPE_OPPOSING_NILS_SAME_LEAN (item 60) is a RECOGNIZED shape now --
+    // seat_shape() names it rather than refusing the deal -- but nothing
+    // below this line may be pointed at it yet: the packed value, the
+    // transposition table, and this function's own conjunction block all
+    // assume the two sides' rankings sum to a constant, which same-lean does
+    // not.  It is decided by case analysis instead, in its own function --
+    // not written yet.  Refused explicitly here, ahead of everything that
+    // would otherwise silently answer a question it cannot pose: without
+    // this, a same-lean deal would fall through to the ordinary alpha-beta
+    // search below and get a real-looking number that is simply wrong
+    // whenever the position is not one of the degenerate cases where every
+    // objective happens to agree.
+    if (seat_shape_of(roles) == SHAPE_OPPOSING_NILS_SAME_LEAN) {
+        err = "both nil bidders' partners lean the same way (" + describe_seat_roles(roles) +
+              "); seat_shape() names this shape but solve() does not implement it yet -- "
+              "see the item 60 ROADMAP entry";
+        return false;
+    }
+
     const ObjectiveWeights weights = objective_weights(pos.tricks_remaining(), roles, opts);
 
     // ---- item 78: the conjunction probe -----------------------------------
@@ -2850,6 +2869,15 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
         return false;
     }
     if (!validate(pos, err)) return false;
+
+    // Same refusal as solve(), and for the same reason: seat_shape() names
+    // this shape now, but nothing past this point may be pointed at it yet.
+    if (seat_shape_of(roles) == SHAPE_OPPOSING_NILS_SAME_LEAN) {
+        err = "both nil bidders' partners lean the same way (" + describe_seat_roles(roles) +
+              "); seat_shape() names this shape but solve_moves() does not implement it yet -- "
+              "see the item 60 ROADMAP entry";
+        return false;
+    }
 
     out = Solution();
     out.roles = roles;

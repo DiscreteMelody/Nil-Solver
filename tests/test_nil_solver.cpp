@@ -1770,9 +1770,15 @@ int main(int argc, char** argv) {
         nil::SeatRoles two_nils;
         check("opposing nils parse",
               nil::parse_seat_roles("0 0 2 2", nil::SEAT_NORTH, two_nils, err), true);
-        check("but do not validate", nil::validate_seat_roles(two_nils, err), false);
-        check("and are refused as unsupported rather than malformed",
-              err.find("not supported yet") != std::string::npos, true);
+        // Item 60: seat_shape() now NAMES this shape instead of refusing the
+        // deal -- it validates -- but nothing downstream implements it yet,
+        // which "solve refuses opposing nils" and "and so does solve_moves"
+        // below still cover.
+        check("and validates, named rather than refused",
+              nil::validate_seat_roles(two_nils, err), true);
+        check("as the same-lean shape",
+              static_cast<int>(nil::seat_shape(two_nils, err)),
+              static_cast<int>(nil::SHAPE_OPPOSING_NILS_SAME_LEAN));
 
         nil::SeatRoles no_nil;
         check("a deal with no nil parses",
@@ -1826,13 +1832,17 @@ int main(int argc, char** argv) {
               static_cast<int>(nil::SHAPE_PARTNER_NILS));
         check("with two bidders", nil::nil_count(pair_bids), 2);
 
-        // The shapes next door, each refused for its own reason.
+        // The shapes next door, each refused for its own reason.  Nils on
+        // opposing sides used to be refused here too; item 60 means both
+        // leans of that shape now validate (as SHAPE_OPPOSING_NILS or
+        // SHAPE_OPPOSING_NILS_SAME_LEAN), covered above and in "One nil on
+        // each side" below, so it is gone from this list rather than still
+        // asserted false.
         struct Refusal {
             const char* text;
             const char* label;
         };
         const Refusal refusals[] = {
-            {"0 0 3 3", "nils on opposing sides"},
             {"0 3 0 2", "a cover with nobody left to cover"},
             {"0 0 0 3", "three nils"},
         };
@@ -2036,10 +2046,14 @@ int main(int argc, char** argv) {
         check("the opposed shape validates", nil::validate_seat_roles(opposed, err), true);
         check("it is the opposing shape", static_cast<int>(nil::seat_shape(opposed, err)),
               static_cast<int>(nil::SHAPE_OPPOSING_NILS));
-        check("the unopposed pair is refused",
-              nil::validate_seat_roles(protective, err), false);
-        check("and says the sides share an interest",
-              err.find("share an interest") != std::string::npos, true);
+        // Item 60: same-lean now validates too, as its own distinct shape --
+        // "the unopposed pair" is no longer refused at this level.  Nothing
+        // downstream implements it yet; see the solve()-refusal checks below.
+        check("the unopposed pair validates too",
+              nil::validate_seat_roles(protective, err), true);
+        check("as the same-lean shape, not the opposing one",
+              static_cast<int>(nil::seat_shape(protective, err)),
+              static_cast<int>(nil::SHAPE_OPPOSING_NILS_SAME_LEAN));
 
         // East leads the only high card and East holds a bid, so exactly one
         // bid dies and it is East's.

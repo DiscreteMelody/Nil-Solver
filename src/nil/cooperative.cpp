@@ -160,6 +160,148 @@ bool search_cooperative(Hand hands[4], int leader, const CardId* trick, int tric
     return result;
 }
 
+// The dual question's key.  Same literal-state fields as CoopKey, plus
+// `satisfied`: which of ctx.fail_mask's seats have already taken a trick on
+// this line.  Needed here and not above because "has this seat's requirement
+// already been met" is not implied by the other fields the way "is this
+// protected seat still alive" is -- there, dying ends the line outright, so
+// no node past that point exists to need a bit for it.
+struct FailKey {
+    Hand hands[4];
+    CardId trick[3];
+    std::int8_t trick_len;
+    std::int8_t leader;
+    bool broken;
+    std::uint8_t satisfied;
+
+    bool operator==(const FailKey& o) const {
+        return hands[0] == o.hands[0] && hands[1] == o.hands[1] && hands[2] == o.hands[2] &&
+               hands[3] == o.hands[3] && trick[0] == o.trick[0] && trick[1] == o.trick[1] &&
+               trick[2] == o.trick[2] && trick_len == o.trick_len && leader == o.leader &&
+               broken == o.broken && satisfied == o.satisfied;
+    }
+};
+
+struct FailKeyHash {
+    std::size_t operator()(const FailKey& k) const noexcept {
+        std::uint64_t h = 1469598103934665603ull;  // FNV-1a offset basis
+        auto mix = [&h](std::uint64_t v) {
+            h ^= v;
+            h *= 1099511628211ull;  // FNV-1a prime
+        };
+        mix(k.hands[0]);
+        mix(k.hands[1]);
+        mix(k.hands[2]);
+        mix(k.hands[3]);
+        mix(static_cast<std::uint64_t>(k.trick[0] + 1));
+        mix(static_cast<std::uint64_t>(k.trick[1] + 1));
+        mix(static_cast<std::uint64_t>(k.trick[2] + 1));
+        mix((static_cast<std::uint64_t>(k.trick_len) << 8) |
+            (static_cast<std::uint64_t>(k.leader) << 2) | (k.broken ? 1u : 0u));
+        mix(static_cast<std::uint64_t>(k.satisfied));
+        return static_cast<std::size_t>(h);
+    }
+};
+
+using FailMemo = std::unordered_map<FailKey, bool, FailKeyHash>;
+
+struct FailCtx {
+    unsigned fail_mask = 0;
+    bool collapse = true;
+    FailMemo* memo = nullptr;
+    std::uint64_t nodes = 0;
+};
+
+// Is there ANY line from here on which every seat in ctx.fail_mask ends up
+// having taken at least one trick?  `satisfied` names which of them already
+// have, as of entry to this call; it only ever grows along a line, never
+// shrinks, which is what makes it sound to fold into the memo key rather than
+// re-derive from the trick history on every lookup.
+bool search_cooperative_fail(Hand hands[4], int leader, const CardId* trick, int trick_len,
+                             bool broken, unsigned satisfied, FailCtx& ctx) {
+    ++ctx.nodes;
+
+    if (!(hands[0] | hands[1] | hands[2] | hands[3])) {
+        // Every card played: did every required seat collect its trick along
+        // the way?  `satisfied` already reflects the whole line, so there is
+        // nothing left to check but the set itself.
+        return satisfied == ctx.fail_mask;
+    }
+
+    FailKey key;
+    const bool have_key = ctx.memo != nullptr;
+    if (have_key) {
+        key.hands[0] = hands[0];
+        key.hands[1] = hands[1];
+        key.hands[2] = hands[2];
+        key.hands[3] = hands[3];
+        key.trick[0] = trick_len > 0 ? trick[0] : NO_CARD;
+        key.trick[1] = trick_len > 1 ? trick[1] : NO_CARD;
+        key.trick[2] = trick_len > 2 ? trick[2] : NO_CARD;
+        key.trick_len = static_cast<std::int8_t>(trick_len);
+        key.leader = static_cast<std::int8_t>(leader);
+        key.broken = broken;
+        key.satisfied = static_cast<std::uint8_t>(satisfied);
+        const auto it = ctx.memo->find(key);
+        if (it != ctx.memo->end()) return it->second;
+    }
+
+    const int seat = (leader + trick_len) & 3;
+    const int led_suit = trick_len ? card_suit(trick[0]) : -1;
+    Hand moves = legal_moves(hands[seat], trick_len, led_suit, broken);
+
+    // Same reduction, same argument as search_cooperative: which seat wins is
+    // decided by the rules alone, and `satisfied` is a function of who wins,
+    // so relabelling two rank-equivalent cards changes neither.
+    if (ctx.collapse && (moves & (moves - 1)) != 0) {
+        const CardId winning_now = trick_best_card(trick, trick_len);
+        const Hand relevant = relevant_cards(hands, winning_now);
+        moves = distinct_moves(moves, relevant);
+    }
+
+    bool result = false;
+    for (Hand rest = moves; rest;) {
+        const CardId card = take_lowest(rest);
+
+        const Hand saved = hands[seat];
+        hands[seat] &= ~card_bit(card);
+        const bool next_broken = spades_broken_after(broken, card_suit(card));
+
+        bool found;
+        if (trick_len == 3) {
+            const CardId played[4] = {trick[0], trick[1], trick[2], card};
+            const int winner = trick_winner(leader, played, 4);
+            // Unlike the protect side, a win here is progress, not a dead
+            // end: fold it into `satisfied` (a no-op if already set, or if
+            // this winner is not one of the seats being asked about) and
+            // keep going -- there is no early success either, since every
+            // OTHER named seat still has to collect its own trick too.
+            const unsigned next_satisfied =
+                satisfied | (ctx.fail_mask & (1u << winner));
+            found = search_cooperative_fail(hands, winner, trick, 0, next_broken,
+                                            next_satisfied, ctx);
+        } else {
+            CardId next_trick[3];
+            for (int i = 0; i < trick_len; ++i) next_trick[i] = trick[i];
+            next_trick[trick_len] = card;
+            found = search_cooperative_fail(hands, leader, next_trick, trick_len + 1,
+                                            next_broken, satisfied, ctx);
+        }
+
+        hands[seat] = saved;  // undo, whether or not this line succeeded
+
+        if (found) {
+            // Still OR at every node: one line where everyone asked-about
+            // eventually takes a trick is the whole answer.
+            result = true;
+            break;
+        }
+    }
+
+    if (have_key) (*ctx.memo)[key] = result;
+    return result;
+}
+
 }  // namespace
 
 bool solve_cooperative(const Position& pos, const SeatRoles& roles, unsigned protect_mask,

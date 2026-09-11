@@ -233,13 +233,11 @@ SeatShape seat_shape(const SeatRoles& roles, std::string& err) {
         // the two sides then share an interest -- both would rather have both
         // bids live, or both dead, than trade -- so their rankings are not
         // reverses of each other and no single scalar describes the position.
-        // Refused by name rather than answered with a scalar that does not fit.
+        // Named rather than folded into SHAPE_OPPOSING_NILS: item 60's decision
+        // procedure answers it by case analysis, never by pointing the
+        // constant-sum-assuming search machinery at it.
         if (!strictly_opposed(roles)) {
-            err = "both nil bidders' partners lean the same way (" +
-                  describe_seat_roles(roles) +
-                  "), so the two sides share an interest and the deal is not a "
-                  "strictly opposed two-team game; that is not supported yet";
-            return SHAPE_UNSUPPORTED;
+            return SHAPE_OPPOSING_NILS_SAME_LEAN;
         }
         return SHAPE_OPPOSING_NILS;
     }

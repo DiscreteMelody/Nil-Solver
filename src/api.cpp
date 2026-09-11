@@ -174,6 +174,15 @@ std::int32_t solve_impl(const char* pbn, std::int32_t leader, const char* curren
     nil::Solution sol;
     if (!nil::solve(pos, roles, opts, sol, err)) {
         copy_err(err_buf, err_len, err);
+        // solve() recognizes SHAPE_OPPOSING_NILS_SAME_LEAN (item 60) but does
+        // not implement it yet -- a build limitation, not a malformed call --
+        // so it gets the same code the shape-validation refusal above uses
+        // for the same distinction, checked directly rather than by matching
+        // the error text a second time.
+        std::string shape_err;
+        if (nil::seat_shape(roles, shape_err) == nil::SHAPE_OPPOSING_NILS_SAME_LEAN) {
+            return NIL_ERR_UNSUPPORTED;
+        }
         return NIL_ERR_INTERNAL;
     }
 
@@ -275,6 +284,11 @@ NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve_moves(
     std::vector<nil::MoveScore> scored;
     if (!nil::solve_moves(pos, roles, opts, sol, scored, err)) {
         copy_err(err_buf, err_len, err);
+        // Same reasoning as nil_solve's mapping above.
+        std::string shape_err;
+        if (nil::seat_shape(roles, shape_err) == nil::SHAPE_OPPOSING_NILS_SAME_LEAN) {
+            return NIL_ERR_UNSUPPORTED;
+        }
         return NIL_ERR_INTERNAL;
     }
 

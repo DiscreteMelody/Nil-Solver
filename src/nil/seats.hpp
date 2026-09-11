@@ -105,6 +105,14 @@ enum SeatShape : int {
     // does when it cannot both save its own and set the other's.  See
     // side_rank().
     SHAPE_OPPOSING_NILS = 3,
+    // One bid per pair, BOTH partners leaning the same way (item 60).  Named
+    // separately from SHAPE_OPPOSING_NILS because it is not strictly opposed --
+    // see side_rank() and strictly_opposed() -- so nothing that assumes a
+    // single scalar (the alpha-beta search, its transposition table, the
+    // rank-band presolve) may be pointed at it.  Decided by case analysis
+    // alone; see the item 60 ROADMAP entry for the decision procedure and its
+    // proof.
+    SHAPE_OPPOSING_NILS_SAME_LEAN = 4,
 };
 
 // HOW GOOD AN OUTCOME IS FOR ONE SIDE, 3 best to 0 worst.
