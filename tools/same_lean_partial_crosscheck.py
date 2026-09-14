@@ -121,19 +121,26 @@ def main():
                         f"(oracle nil_makes={truth.nil_makes})")
             else:
                 branch_c_open += 1
-                # The open cell: solve() must REFUSE, never guess.  The
-                # tiebreak once intended here is disproved, so a confident
-                # answer would be a correctness hazard, not a feature.
-                if got_mask is not None:
+                # The formerly-open cell, now resolved by backward induction.
+                # Checked against the same exhaustive ground truth as every
+                # other cell: this is the one the whole item exists for, and
+                # the one where a plausible-sounding shortcut was already
+                # measured wrong once, so it gets the strongest check
+                # available rather than a weaker "did it refuse" one.
+                if got_mask is None:
+                    mismatches.append(f"formerly-open cell refused: {pbn} "
+                                       f"seats={seats_text}: {cli_err}")
+                elif got_mask != want_mask:
                     mismatches.append(
-                        f"open cell answered instead of refusing: {pbn} "
-                        f"seats={seats_text} got={got_mask:04b}")
+                        f"open-cell mismatch: {pbn} seats={seats_text} "
+                        f"got={got_mask:04b} want={want_mask:04b} "
+                        f"(oracle nil_makes={truth.nil_makes})")
 
     print(f"{args.cases} deals at {args.cards} cards")
     print(f"  branch A (neither reachable):      {branch_a}")
     print(f"  branch B (exactly one reachable):  {branch_b}")
     print(f"  branch C forcing rung (resolved):    {branch_c_forced}")
-    print(f"  branch C open cell (must refuse):    {branch_c_open}")
+    print(f"  branch C formerly-open cell:         {branch_c_open}")
     print()
     for m in mismatches[:10]:
         print(f"FAIL: {m}")
@@ -146,7 +153,7 @@ def main():
     if mismatches:
         return 1
     print("C++ agrees with the oracle's exhaustive backward induction on every cell "
-          "the procedure resolves, and refuses (never guesses) the one still open")
+          "of the decision procedure, including the formerly-open one")
     return 0
 
 
