@@ -74,6 +74,15 @@ struct CooperativeSolution {
     // every seat in `protect_mask` finishes never having taken a trick?
     bool reachable = false;
     std::uint64_t nodes = 0;
+    // Did the search hit its node budget before finishing?  An OR-only search
+    // has no adversary and therefore no cutoff on a NEGATIVE answer: every
+    // line has to be tried and found wanting, which at 13 cards can run for
+    // over a minute (measured: 67.6s on a random deal).  A caller wiring this
+    // into a general-purpose entry point must be able to give up.  When true,
+    // `reachable` is MEANINGLESS -- not false.  The two must never be
+    // confused: "no line exists" and "I stopped looking" are different facts,
+    // and only the first is an answer.
+    bool exhausted = false;
 };
 
 // Can every bid named in `protect_mask` survive together, on SOME line, with
@@ -101,9 +110,11 @@ struct CooperativeSolution {
 //
 // Returns false and sets `err` on an invalid position (nil::validate) or a
 // protect seat that is not a live bid.
+// `node_budget` of 0 means no limit; any other value caps the search, which
+// then reports `exhausted` and no answer.
 bool solve_cooperative(const Position& pos, const SeatRoles& roles, unsigned protect_mask,
-                       bool use_memo, bool collapse_equivalents, CooperativeSolution& out,
-                       std::string& err);
+                       bool use_memo, bool collapse_equivalents, std::uint64_t node_budget,
+                       CooperativeSolution& out, std::string& err);
 
 // ---------------------------------------------------------------------------
 // THE DUAL QUESTION, for item 60's OPPONENT-lean (`3/3`) fallback.
@@ -132,6 +143,15 @@ struct CooperativeFailSolution {
     // same trick, and not necessarily in any particular order?
     bool reachable = false;
     std::uint64_t nodes = 0;
+    // Did the search hit its node budget before finishing?  An OR-only search
+    // has no adversary and therefore no cutoff on a NEGATIVE answer: every
+    // line has to be tried and found wanting, which at 13 cards can run for
+    // over a minute (measured: 67.6s on a random deal).  A caller wiring this
+    // into a general-purpose entry point must be able to give up.  When true,
+    // `reachable` is MEANINGLESS -- not false.  The two must never be
+    // confused: "no line exists" and "I stopped looking" are different facts,
+    // and only the first is an answer.
+    bool exhausted = false;
 };
 
 // Same validation as `solve_cooperative`: every bit of `fail_mask` must name
@@ -149,7 +169,8 @@ struct CooperativeFailSolution {
 // the tree cannot change the answer, only the node count.
 bool solve_cooperative_fail(const Position& pos, const SeatRoles& roles, unsigned fail_mask,
                             bool use_memo, bool collapse_equivalents,
-                            CooperativeFailSolution& out, std::string& err);
+                            std::uint64_t node_budget, CooperativeFailSolution& out,
+                            std::string& err);
 
 }  // namespace nil
 

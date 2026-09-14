@@ -6,6 +6,7 @@
 
 #include "nil/bounds.hpp"
 #include "nil/rules.hpp"
+#include "nil/outcome_constraint.hpp"
 #include "nil/same_lean.hpp"
 #include "nil/statekey.hpp"
 #include "nil/tt.hpp"
@@ -2333,6 +2334,14 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
             err = sl_err;
             return false;
         }
+        if (!outcome.determined && outcome.exhausted) {
+            err = "both nil bidders' partners lean the same way (" + describe_seat_roles(roles) +
+                  "); a reachability probe hit its node budget after " +
+                  std::to_string(outcome.nodes) +
+                  " nodes, so the outcome is unknown rather than unresolvable -- raise "
+                  "SearchOptions::same_lean_probe_budget (0 lifts the limit) to let it finish";
+            return false;
+        }
         if (!outcome.determined) {
             err = "both nil bidders' partners lean the same way (" + describe_seat_roles(roles) +
                   "); both bids are individually reachable AND neither side can force its "
@@ -2344,13 +2353,38 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
         out = Solution();
         out.roles = roles;
         out.mode = opts.mode;
-        // Step 1 determines WHICH bids fail, not trick counts -- that is
-        // steps 3-4's job (the hard must-make/must-be-set constraints and
-        // the corrected cover-hand objective).  Same convention MODE_FAST
-        // and the conjunction probe already use for "no trick data here".
+        // Step 5: the outcome is settled, so the trick split is now computed
+        // too -- in MODE_FULL only, and only within a node budget, because
+        // the search that does it does not reach 13 cards.  Three ways to
+        // end up with no trick data, all of them reported identically as
+        // TRICKS_NOT_COMPUTED rather than as a guess: fast mode never asked,
+        // the budget ran out, or the pinned outcome turned out unsatisfiable
+        // (which would be an internal inconsistency -- the decision
+        // procedure just asserted that outcome -- so it is reported as
+        // missing data rather than silently papered over).
         out.nil_tricks = TRICKS_NOT_COMPUTED;
         out.nil_side_tricks = TRICKS_NOT_COMPUTED;
         out.opponent_tricks = TRICKS_NOT_COMPUTED;
+        std::uint64_t trick_nodes = 0;
+        if (opts.mode == MODE_FULL) {
+            const unsigned live_bits = live_nil_mask(roles);
+            const unsigned set_bits = outcome.nils_set_mask;
+            ConstrainedTricksSolution ct;
+            std::string ct_err;
+            if (solve_constrained_tricks(pos, roles, live_bits & ~set_bits, set_bits,
+                                          opts.use_memo, opts.collapse_equivalents,
+                                          opts.same_lean_trick_budget, ct, ct_err) &&
+                ct.satisfiable && !ct.exhausted) {
+                const int near_nil = roles.nil_seat();
+                const int near_cover = (near_nil + 2) & 3;
+                const int far_nil = (near_nil + 1) & 3;
+                const int far_cover = (near_nil + 3) & 3;
+                out.nil_tricks = ct.seat_tricks[near_nil];
+                out.nil_side_tricks = ct.seat_tricks[near_nil] + ct.seat_tricks[near_cover];
+                out.opponent_tricks = ct.seat_tricks[far_nil] + ct.seat_tricks[far_cover];
+            }
+            trick_nodes = ct.nodes;
+        }
         int set_count = 0;
         for (int s = 0; s < 4; ++s) {
             if (outcome.nils_set_mask & (1u << s)) ++set_count;
@@ -2362,7 +2396,7 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
         // so two equally-optimal lines can never disagree about which bids
         // go down.
         out.nils_set_mask_determined = true;
-        out.nodes = outcome.nodes;
+        out.nodes = outcome.nodes + trick_nodes;
         return true;
     }
 

@@ -30,16 +30,27 @@ bool solve_same_lean_partial(const Position& pos, const SeatRoles& roles,
     CooperativeSolution coop_near;
     CooperativeSolution coop_far;
     if (!solve_cooperative(pos, roles, 1u << near, opts.use_memo, opts.collapse_equivalents,
-                           coop_near, sub_err)) {
+                           opts.same_lean_probe_budget, coop_near, sub_err)) {
         err = sub_err;
         return false;
     }
     if (!solve_cooperative(pos, roles, 1u << far, opts.use_memo, opts.collapse_equivalents,
-                           coop_far, sub_err)) {
+                           opts.same_lean_probe_budget, coop_far, sub_err)) {
         err = sub_err;
         return false;
     }
     total_nodes += coop_near.nodes + coop_far.nodes;
+
+    // A probe that gave up has told us nothing.  Every branch below reads
+    // these two booleans, so an exhausted probe must stop the procedure here
+    // rather than be read as `false` -- "no line exists" and "I stopped
+    // looking" are different facts and only the first is an answer.
+    if (coop_near.exhausted || coop_far.exhausted) {
+        out.determined = false;
+        out.exhausted = true;
+        out.nodes = total_nodes;
+        return true;
+    }
 
     if (!coop_near.reachable && !coop_far.reachable) {
         // Neither bid is reachable even with every seat helping: both fail,

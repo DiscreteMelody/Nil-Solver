@@ -225,6 +225,8 @@ struct TricksCtx {
     bool collapse = true;
     std::unordered_map<ConstraintKey, TrickVal, ConstraintKeyHash>* memo = nullptr;
     std::uint64_t nodes = 0;
+    std::uint64_t budget = 0;  // 0 = unlimited
+    bool aborted = false;
 };
 
 // Is `a` better than `b` for the side to which `seat` belongs?  T's order:
@@ -243,6 +245,14 @@ TrickVal search_constrained_tricks(Hand hands[4], int leader, const CardId* tric
                                    int trick_len, bool broken, unsigned satisfied,
                                    TricksCtx& ctx) {
     ++ctx.nodes;
+    if (ctx.budget && ctx.nodes > ctx.budget) {
+        // Out of budget.  Returning an invalid TrickVal unwinds the whole
+        // search cheaply; `aborted` is what tells the caller that the
+        // invalidity means "gave up", not "no such line".  The two must not
+        // be confused, which is why they are separate channels.
+        ctx.aborted = true;
+        return TrickVal();
+    }
 
     TrickVal result;
     if (!(hands[0] | hands[1] | hands[2] | hands[3])) {
@@ -338,6 +348,7 @@ TrickVal search_constrained_tricks(Hand hands[4], int leader, const CardId* tric
 bool solve_constrained_tricks(const Position& pos, const SeatRoles& roles,
                               unsigned require_live_mask, unsigned require_set_mask,
                               bool use_memo, bool collapse_equivalents,
+                              std::uint64_t node_budget,
                               ConstrainedTricksSolution& out, std::string& err) {
     ConstrainedLineSolution shape_check;
     // Reuse the filter's own validation verbatim rather than a second copy of
@@ -353,6 +364,7 @@ bool solve_constrained_tricks(const Position& pos, const SeatRoles& roles,
     ctx.require_live = require_live_mask;
     ctx.require_set = require_set_mask;
     ctx.collapse = collapse_equivalents;
+    ctx.budget = node_budget;
     for (int side = 0; side < 2; ++side) {
         int found = -1;
         for (int seat = side; seat < 4; seat += 2) {
@@ -383,8 +395,9 @@ bool solve_constrained_tricks(const Position& pos, const SeatRoles& roles,
                                                  pos.spades_broken, 0u, ctx);
     out.require_live_mask = require_live_mask;
     out.require_set_mask = require_set_mask;
-    out.satisfiable = v.valid;
-    for (int s = 0; s < 4; ++s) out.seat_tricks[s] = v.t[s];
+    out.exhausted = ctx.aborted;
+    out.satisfiable = v.valid && !ctx.aborted;
+    for (int s = 0; s < 4; ++s) out.seat_tricks[s] = ctx.aborted ? 0 : v.t[s];
     out.nodes = ctx.nodes;
     return true;
 }

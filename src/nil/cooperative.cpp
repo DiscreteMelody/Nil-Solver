@@ -60,6 +60,8 @@ using CoopMemo = std::unordered_map<CoopKey, bool, CoopKeyHash>;
 
 struct CoopCtx {
     unsigned protect_mask = 0;
+    std::uint64_t budget = 0;  // 0 = unlimited
+    bool aborted = false;
     bool collapse = true;
     CoopMemo* memo = nullptr;  // null when the caller asked for no memo
     std::uint64_t nodes = 0;
@@ -77,6 +79,10 @@ struct CoopCtx {
 bool search_cooperative(Hand hands[4], int leader, const CardId* trick, int trick_len,
                         bool broken, CoopCtx& ctx) {
     ++ctx.nodes;
+    if (ctx.budget && ctx.nodes > ctx.budget) {
+        ctx.aborted = true;
+        return false;  // unwinds cheaply; `aborted` says this false is not an answer
+    }
 
     if (!(hands[0] | hands[1] | hands[2] | hands[3])) {
         // Every card played, and nothing pruned this line along the way --
@@ -207,6 +213,8 @@ using FailMemo = std::unordered_map<FailKey, bool, FailKeyHash>;
 
 struct FailCtx {
     unsigned fail_mask = 0;
+    std::uint64_t budget = 0;  // 0 = unlimited
+    bool aborted = false;
     bool collapse = true;
     FailMemo* memo = nullptr;
     std::uint64_t nodes = 0;
@@ -220,6 +228,10 @@ struct FailCtx {
 bool search_cooperative_fail(Hand hands[4], int leader, const CardId* trick, int trick_len,
                              bool broken, unsigned satisfied, FailCtx& ctx) {
     ++ctx.nodes;
+    if (ctx.budget && ctx.nodes > ctx.budget) {
+        ctx.aborted = true;
+        return false;
+    }
 
     if (!(hands[0] | hands[1] | hands[2] | hands[3])) {
         // Every card played: did every required seat collect its trick along
@@ -305,8 +317,8 @@ bool search_cooperative_fail(Hand hands[4], int leader, const CardId* trick, int
 }  // namespace
 
 bool solve_cooperative(const Position& pos, const SeatRoles& roles, unsigned protect_mask,
-                       bool use_memo, bool collapse_equivalents, CooperativeSolution& out,
-                       std::string& err) {
+                       bool use_memo, bool collapse_equivalents, std::uint64_t node_budget,
+                       CooperativeSolution& out, std::string& err) {
     if (!validate(pos, err)) return false;
 
     if (protect_mask & ~0xFu) {
@@ -331,6 +343,7 @@ bool solve_cooperative(const Position& pos, const SeatRoles& roles, unsigned pro
     CoopCtx ctx;
     ctx.protect_mask = protect_mask;
     ctx.collapse = collapse_equivalents;
+    ctx.budget = node_budget;
     CoopMemo memo;
     ctx.memo = use_memo ? &memo : nullptr;
 
@@ -338,15 +351,18 @@ bool solve_cooperative(const Position& pos, const SeatRoles& roles, unsigned pro
     const CardId trick[3] = {pos.trick[0], pos.trick[1], pos.trick[2]};
 
     out.protect_mask = protect_mask;
-    out.reachable =
+    const bool found =
         search_cooperative(hands, pos.leader, trick, pos.trick_len, pos.spades_broken, ctx);
+    out.exhausted = ctx.aborted;
+    out.reachable = found && !ctx.aborted;
     out.nodes = ctx.nodes;
     return true;
 }
 
 bool solve_cooperative_fail(const Position& pos, const SeatRoles& roles, unsigned fail_mask,
                             bool use_memo, bool collapse_equivalents,
-                            CooperativeFailSolution& out, std::string& err) {
+                            std::uint64_t node_budget, CooperativeFailSolution& out,
+                            std::string& err) {
     if (!validate(pos, err)) return false;
 
     if (fail_mask & ~0xFu) {
@@ -372,6 +388,7 @@ bool solve_cooperative_fail(const Position& pos, const SeatRoles& roles, unsigne
     FailCtx ctx;
     ctx.fail_mask = fail_mask;
     ctx.collapse = collapse_equivalents;
+    ctx.budget = node_budget;
     FailMemo memo;
     ctx.memo = use_memo ? &memo : nullptr;
 
@@ -381,8 +398,10 @@ bool solve_cooperative_fail(const Position& pos, const SeatRoles& roles, unsigne
     out.fail_mask = fail_mask;
     // `satisfied` starts empty: no seat has taken a trick in the part of the
     // deal still to be played, which is the only part this search can see.
-    out.reachable = search_cooperative_fail(hands, pos.leader, trick, pos.trick_len,
-                                            pos.spades_broken, 0u, ctx);
+    const bool found = search_cooperative_fail(hands, pos.leader, trick, pos.trick_len,
+                                               pos.spades_broken, 0u, ctx);
+    out.exhausted = ctx.aborted;
+    out.reachable = found && !ctx.aborted;
     out.nodes = ctx.nodes;
     return true;
 }

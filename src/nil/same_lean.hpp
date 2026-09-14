@@ -51,6 +51,14 @@ struct SameLeanOutcome {
     // AND neither side able to force rank 3 -- which solve() reports as
     // unhandled rather than guessing at.
     bool determined = false;
+    // Why `determined` is false, when it is.  The two reasons are genuinely
+    // different and a caller must not be told the wrong one: `exhausted`
+    // means a probe hit its node budget and the cell might well be
+    // resolvable given more of one, while !exhausted means the position
+    // really did land in the cell the procedure cannot resolve.  Reporting
+    // budget exhaustion as the open cell would blame a disproved tiebreak for
+    // what is actually a time limit.
+    bool exhausted = false;
     std::uint64_t nodes = 0;
 };
 

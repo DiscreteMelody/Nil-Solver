@@ -405,7 +405,7 @@ int main(int argc, char** argv) {
         }
         nil::CooperativeSolution coop;
         if (!nil::solve_cooperative(pos, roles, mask, opts.use_memo, opts.collapse_equivalents,
-                                     coop, err)) {
+                                     /*node_budget=*/0, coop, err)) {
             std::cerr << "error: --cooperative: " << err << "\n";
             return 3;
         }
@@ -433,7 +433,8 @@ int main(int argc, char** argv) {
         }
         nil::CooperativeFailSolution coop;
         if (!nil::solve_cooperative_fail(pos, roles, mask, opts.use_memo,
-                                          opts.collapse_equivalents, coop, err)) {
+                                          opts.collapse_equivalents, /*node_budget=*/0, coop,
+                                          err)) {
             std::cerr << "error: --cooperative-fail: " << err << "\n";
             return 3;
         }
@@ -469,7 +470,7 @@ int main(int argc, char** argv) {
             // under T's priority rather than just whether a line exists.
             nil::ConstrainedTricksSolution ct;
             if (!nil::solve_constrained_tricks(pos, roles, live_mask, set_mask, opts.use_memo,
-                                                opts.collapse_equivalents, ct, err)) {
+                                                opts.collapse_equivalents, 0, ct, err)) {
                 std::cerr << "error: --pinned-tricks: " << err << "\n";
                 return 3;
             }

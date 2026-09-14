@@ -645,6 +645,24 @@ struct SearchOptions {
     // It is not a mode, it is a question about a shape -- SHAPE_OPPOSING_NILS
     // and nothing else -- so it rides on `seats` rather than replacing it, and
     // solve() refuses it anywhere the shape does not apply.
+    // Item 60 step 5: how many nodes solve() will spend computing the trick
+    // split for a same-lean deal whose outcome the decision procedure has
+    // already settled.  That search does not reach 13 cards (patch 102), so
+    // an unbounded default would trade a fast, correct bid mask for a hang on
+    // exactly the hands the project cares most about.  On exceeding this the
+    // outcome is still reported and the three trick fields stay
+    // TRICKS_NOT_COMPUTED -- a smaller answer, never a wrong one.  0 means no
+    // limit, for a caller who would rather wait.
+    std::uint64_t same_lean_trick_budget = 8u << 20;
+
+    // The same protection for the DECISION PROCEDURE's own probes.  Budgeting
+    // only the trick search was a mistake caught by measurement: at 13 cards
+    // the bottleneck is upstream, in `solve_cooperative`, whose negative
+    // answer has no cutoff (67.6s on a measured random deal) and which used to
+    // run unbounded here.  On exhaustion the procedure reports the cell as
+    // unresolved -- an honest refusal, never a guess.  0 means no limit.
+    std::uint64_t same_lean_probe_budget = 8u << 20;
+
     int conjunction_seat = -1;
 
     // ITEM 78c: spend a THIRD probe when the first two disagree, to close the

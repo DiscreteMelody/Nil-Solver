@@ -135,17 +135,28 @@ struct ConstrainedTricksSolution {
     unsigned require_live_mask = 0;
     unsigned require_set_mask = 0;
     bool satisfiable = false;
-    // Tricks per seat on the chosen line.  Meaningless when !satisfiable.
+    // Tricks per seat on the chosen line.  Meaningless when !satisfiable, and
+    // equally meaningless when `exhausted` -- see below.
     int seat_tricks[4] = {0, 0, 0, 0};
     std::uint64_t nodes = 0;
+    // Did the search hit its node budget before finishing?  This search does
+    // not reach 13 cards (see the patch 102 ROADMAP entry), so a caller that
+    // wires it into a general-purpose entry point MUST be able to give up
+    // rather than hang.  When this is true EVERY other field except `nodes`
+    // is meaningless: an aborted search is discarded whole, never partially
+    // believed.
+    bool exhausted = false;
 };
 
 // Same constraint and same validation as solve_constrained_line, plus: each
 // side must hold exactly one live bid, since the priority above is written in
 // terms of "this side's nil" and "this side's cover hand".
+// `node_budget` of 0 means no limit.  Any other value caps the search: on
+// hitting it the run stops and reports `exhausted`, with no partial answer.
 bool solve_constrained_tricks(const Position& pos, const SeatRoles& roles,
                               unsigned require_live_mask, unsigned require_set_mask,
                               bool use_memo, bool collapse_equivalents,
+                              std::uint64_t node_budget,
                               ConstrainedTricksSolution& out, std::string& err);
 
 }  // namespace nil
