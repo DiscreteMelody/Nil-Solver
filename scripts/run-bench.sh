@@ -43,10 +43,25 @@ if [ "${NIL_SKIP_WORST:-0}" != "1" ]; then
     # reach 13 cards: a mismatch here means something CHANGED, not necessarily
     # that something broke.  Investigate rather than assume either way.
     #
-    # Baselines to compare against, deterministic and machine independent:
-    #   c13-0000     60,020,405 nodes
-    #   c13-0001     71,253,358 nodes   <- the hardest deal in the repo
-    #   c13-0002     32,230,695 nodes
+    # Baselines to compare against, deterministic and machine independent.
+    # Re-banked at patch 105; the figures that used to sit here were
+    # 60,020,405 / 71,253,358 / 32,230,695, summing to 163,504,458.  That total
+    # EXCEEDS the whole-file figure patch 95 recorded before it raised the
+    # table, so these had already drifted when patch 95 re-banked around them
+    # -- at least two re-banks stale.  Nothing was wrong with the solver; the
+    # numbers simply lived where no re-bank looked.
+    #   c13-0000     59,483,222 nodes
+    #   c13-0001     70,957,819 nodes   <- the hardest deal in the repo
+    #   c13-0002     32,058,737 nodes
+    #   ---------------------------
+    #   total       162,499,778 nodes
+    #
+    # THE STALENESS MATTERED BY THIS SCRIPT'S OWN STANDARD, which is why the
+    # correction is worth more than the 0.6%.  The closing text below tells the
+    # reader a 1% move on these rows is real and not noise; the figures above
+    # were 0.5-0.9% high, so a run that changed nothing read as a small win.
+    # `tools/check_baselines.py` is the fix: it holds the numbers in one place
+    # and COMPARES them rather than printing them for a human to eyeball.
     #
     # All three run the MAX tie-break, matching the rest of the file.  Worth
     # knowing before you read a win off them: min is the more expensive
@@ -63,6 +78,17 @@ if [ "${NIL_SKIP_WORST:-0}" != "1" ]; then
     # a game nobody can play.
     "$BENCH" --corpus tests/corpus/large.txt --cards-only 13 --slowest 3 \
              --history bench-history.csv --note "worst-case 13c${NOTE:+ -- $NOTE}" || exit 1
+fi
+
+# The banked-baseline leg.  Off by default -- it is ~740M nodes and a few
+# minutes -- but it is the only thing here that checks the workloads nobody
+# runs: the three opposed corpora each need a DIFFERENT invocation, and two of
+# them need --seats that no row in the file supplies.  A wrong invocation does
+# not error, it returns a plausible number.  See tools/check_baselines.py.
+if [ "${NIL_RUN_BASELINES:-0}" = "1" ]; then
+    echo
+    echo "=== Banked baselines (~740M nodes, a few minutes) ==="
+    python3 tools/check_baselines.py || python tools/check_baselines.py || exit 1
 fi
 
 echo

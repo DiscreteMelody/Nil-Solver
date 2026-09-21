@@ -44,10 +44,25 @@ rem answers are PINNED FROM THIS SOLVER, not from nil_oracle.py, which cannot
 rem reach 13 cards: a mismatch here means something CHANGED, not necessarily
 rem that something broke.  Investigate rather than assume either way.
 rem
-rem Baselines to compare against, deterministic and machine independent:
-rem   c13-0000     60,020,405 nodes
-rem   c13-0001     71,253,358 nodes   ^<- the hardest deal in the repo
-rem   c13-0002     32,230,695 nodes
+rem Baselines to compare against, deterministic and machine independent.
+rem Re-banked at patch 105; the figures that used to sit here were
+rem 60,020,405 / 71,253,358 / 32,230,695, summing to 163,504,458.  That total
+rem EXCEEDS the whole-file figure patch 95 recorded before it raised the table,
+rem so these had already drifted when patch 95 re-banked around them -- at
+rem least two re-banks stale.  Nothing was wrong with the solver; the numbers
+rem simply lived where no re-bank looked.
+rem   c13-0000     59,483,222 nodes
+rem   c13-0001     70,957,819 nodes   ^<- the hardest deal in the repo
+rem   c13-0002     32,058,737 nodes
+rem   ---------------------------
+rem   total       162,499,778 nodes
+rem
+rem THE STALENESS MATTERED BY THIS SCRIPT'S OWN STANDARD, which is why the
+rem correction is worth more than the 0.6%%.  The closing text below tells the
+rem reader a 1%% move on these rows is real and not noise; the figures above
+rem were 0.5-0.9%% high, so a run that changed nothing read as a small win.
+rem tools\check_baselines.py is the fix: it holds the numbers in one place and
+rem COMPARES them rather than printing them for a human to eyeball.
 rem
 rem All three run the MAX tie-break, matching the rest of the file.  Worth
 rem knowing before you read a win off them: min is the more expensive
@@ -78,6 +93,35 @@ echo Wall time only compares within one machine and build configuration.
 echo.
 echo The worst-case rows are single deals, so their node counts are exact rather
 echo than averaged -- a change of even 1%% there is real and not sampling noise.
+
+rem THIS LEG HAD NEVER RUN.  It used to sit below `exit /b 0` and below the
+rem :not_built and :fail labels, so control could not reach it -- the .sh has
+rem been running a leg the .cmd silently skipped, on the platform that is the
+rem primary one for this project.  Moved here, where the .sh runs it.
+if defined NIL_SKIP_MULTINIL goto :multinil_done
+if not exist tests\corpus\multinil.txt goto :multinil_done
+echo.
+echo === Two nils on one side (13 cards, every bound still gated off) ===
+rem These six rows carry no recorded answer -- the oracle is exhaustive and
+rem cannot reach 13 cards -- so nothing is verified here and the node counts
+rem are the whole output.  A change means the tree MOVED, which may be a win
+rem or a bug; check corpus_multinil for whether the answers survived it.
+"%BENCH%" --corpus tests\corpus\multinil.txt --cards-only 13 --slowest 3
+:multinil_done
+
+rem The banked-baseline leg.  Off by default -- it is ~740M nodes and a few
+rem minutes -- but it is the only thing here that checks the workloads nobody
+rem runs: the three opposed corpora each need a DIFFERENT invocation, and two
+rem of them need --seats that no row in the file supplies.  A wrong invocation
+rem does not error, it returns a plausible number.  The invocations live in
+rem tools\check_baselines.py so they cannot drift between this file and the .sh.
+if not "%NIL_RUN_BASELINES%"=="1" goto :baselines_done
+echo.
+echo === Banked baselines (~740M nodes, a few minutes) ===
+python tools\check_baselines.py
+if errorlevel 1 goto :fail
+:baselines_done
+
 echo.
 pause
 exit /b 0
@@ -95,14 +139,3 @@ echo *** The benchmark reported a failure (see above) ***
 echo.
 pause
 exit /b 1
-
-if defined NIL_SKIP_MULTINIL goto :multinil_done
-if not exist tests\corpus\multinil.txt goto :multinil_done
-echo.
-echo === Two nils on one side (13 cards, every bound still gated off) ===
-rem These six rows carry no recorded answer -- the oracle is exhaustive and
-rem cannot reach 13 cards -- so nothing is verified here and the node counts
-rem are the whole output.  A change means the tree MOVED, which may be a win
-rem or a bug; check corpus_multinil for whether the answers survived it.
-"%BENCH%" --corpus tests\corpus\multinil.txt --cards-only 13 --slowest 3
-:multinil_done
