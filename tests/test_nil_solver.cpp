@@ -527,13 +527,15 @@ int main(int argc, char** argv) {
         const nil::SeatRoles live = nil::seat_roles_from_nil(nil::SEAT_NORTH, false);
         const nil::SeatRoles already = nil::seat_roles_from_nil(nil::SEAT_NORTH, true);
 
-        check("weights: primary dominates", nil::objective_weights(4, live, take).primary, 25);
         check("weights: take", nil::objective_weights(4, live, take).secondary, -5);
         check("weights: shed", nil::objective_weights(4, live, shed).secondary, 5);
-        check("weights: the cover level is on when taking",
-              nil::objective_weights(4, live, take).tertiary, 1);
-        check("weights: and off when shedding",
-              nil::objective_weights(4, live, shed).tertiary, 0);
+        // B1b: what a nil trick is worth is ONE coefficient now.  The old
+        // tertiary is the `+ 1` in the taking direction; there is no second
+        // field to read it off, so it is pinned here on `primary` directly.
+        check("weights: a nil trick is k*k + 1 when taking",
+              nil::objective_weights(4, live, take).primary, 5 * 5 + 1);
+        check("weights: and k*k when shedding",
+              nil::objective_weights(4, live, shed).primary, 5 * 5);
         check("weights: already set drops the primary",
               nil::objective_weights(4, already, take).primary, 0);
         {
@@ -541,7 +543,7 @@ int main(int argc, char** argv) {
             // tie-break starts overruling the nil.
             const nil::ObjectiveWeights w = nil::objective_weights(4, live, take);
             check("weights: levels do not overlap",
-                  w.primary > std::abs(w.secondary) * 4 + w.tertiary * 4, true);
+                  w.primary > std::abs(w.secondary) * 4, true);
         }
 
         // N/S take two tricks here whatever they do.  THE PAIR TOTAL IS THE
@@ -644,8 +646,8 @@ int main(int argc, char** argv) {
               nil::objective_weights(4, north_nil, fast).primary, 1);
         check("fast weights: no secondary",
               nil::objective_weights(4, north_nil, fast).secondary, 0);
-        check("fast weights: no tertiary",
-              nil::objective_weights(4, north_nil, fast).tertiary, 0);
+        check("fast weights: secondary is zero",
+              nil::objective_weights(4, north_nil, fast).secondary, 0);
         {
             SearchOptions fast_shed = fast;
             fast_shed.minimise_own_tricks = true;
@@ -797,12 +799,12 @@ int main(int argc, char** argv) {
                 const int k = tricks + 1;
                 const int primary = k * k;
                 const int secondary = min_own ? k : -k;
-                const int tertiary = min_own ? 0 : 1;
+
                 // Highest a position can score with the nil bidder taking none.
                 const int safe_hi = secondary > 0 ? secondary * tricks : 0;
                 // Lowest it can score with the nil bidder taking one: that
                 // trick, plus the cover tricks arranged to drag it down.
-                const int per_nil = primary + tertiary + secondary;
+                const int per_nil = primary + secondary;
                 const int fail_lo =
                     per_nil + (secondary < 0 ? secondary * (tricks - 1) : 0);
                 separated = fail_lo > safe_hi;
@@ -1896,7 +1898,12 @@ int main(int argc, char** argv) {
             const nil::ObjectiveWeights w = nil::objective_weights(t, pair_bids, plain);
             check("weights separate at " + std::to_string(t) + " tricks",
                   std::abs(w.secondary) * t < w.primary, true);
-            check("no cover level at " + std::to_string(t) + " tricks", w.tertiary, 0);
+            // Was `w.tertiary == 0` before B1b.  With the field gone the
+            // content is that the multi-nil primary is k*k and nothing has
+            // been folded into it -- a pair that both bid has no cover
+            // partner whose share could ever have needed a level below.
+            check("multi-nil primary is exactly k*k at " + std::to_string(t) + " tricks",
+                  w.primary, (t + 1) * (t + 1));
         }
         {
             nil::SearchOptions shed;
@@ -2682,33 +2689,30 @@ int main(int argc, char** argv) {
         const nil::ObjectiveWeights dmin = nil::objective_weights(t, dead, omin);
         const nil::ObjectiveWeights dmax = nil::objective_weights(t, dead, omax);
         check("B1: dead/min primary is zero", dmin.primary, 0);
-        check("B1: dead/min secondary is +k", dmin.secondary, k);
-        check("B1: dead/min tertiary is zero", dmin.tertiary, 0);
+        check("B1: dead/min secondary collapses to +1", dmin.secondary, 1);
         check("B1: dead/max primary is zero", dmax.primary, 0);
-        check("B1: dead/max secondary is -k", dmax.secondary, -k);
-        // The line this patch exists to change.  It read 1 before.
-        check("B1: dead/max tertiary is zero too", dmax.tertiary, 0);
+        check("B1: dead/max secondary collapses to -1", dmax.secondary, -1);
 
-        // LIVE NIL MUST NOT HAVE MOVED.  The tertiary is the +1 in a live nil
-        // trick's K*K + 1 - K; if this ever reads 0 the whole single-nil
-        // corpus moves and the cause will not be obvious from the node counts.
+        // LIVE NIL MUST NOT HAVE MOVED.  A live nil trick is worth K*K + 1 in
+        // the maximising direction -- the `+ 1` is where B1b folded the old
+        // tertiary, and it is now written into `primary` directly.  If the max
+        // primary ever reads K*K the whole single-nil corpus moves and the
+        // cause will not be obvious from the node counts.
         const nil::ObjectiveWeights lmin = nil::objective_weights(t, live, omin);
         const nil::ObjectiveWeights lmax = nil::objective_weights(t, live, omax);
-        check("B1: live/min unchanged (k*k, +k, 0) primary", lmin.primary, k * k);
+        check("B1: live/min unchanged primary is k*k", lmin.primary, k * k);
         check("B1: live/min unchanged secondary", lmin.secondary, k);
-        check("B1: live/min unchanged tertiary", lmin.tertiary, 0);
-        check("B1: live/max unchanged (k*k, -k, 1) primary", lmax.primary, k * k);
+        check("B1: live/max primary carries the folded +1", lmax.primary, k * k + 1);
         check("B1: live/max unchanged secondary", lmax.secondary, -k);
-        check("B1: live/max KEEPS its tertiary", lmax.tertiary, 1);
 
         // The support both directions are supposed to share.  Enumerated from
         // the weights rather than hard-coded, so it tracks the formula:
-        //     value = (primary + tertiary) * n + secondary * (n + p),  n + p <= t
+        //     value = primary * n + secondary * (n + p),  n + p <= t
         auto support = [t](const nil::ObjectiveWeights& w) {
             std::set<long long> seen;
             for (int n = 0; n <= t; ++n)
                 for (int p = 0; p + n <= t; ++p)
-                    seen.insert(static_cast<long long>(w.primary + w.tertiary) * n +
+                    seen.insert(static_cast<long long>(w.primary) * n +
                                 static_cast<long long>(w.secondary) * (n + p));
             return seen;
         };
@@ -2730,26 +2734,39 @@ int main(int argc, char** argv) {
         check("B1: max support is exactly the negation of min's",
               negated_max == smin, true);
         for (int S = 0; S <= t; ++S) {
-            if (smin.count(static_cast<long long>(k) * S) == 0)
-                check("B1: min support is {k*S}", false, true);
-            if (smax.count(static_cast<long long>(-k) * S) == 0)
-                check("B1: max support is {-k*S}", false, true);
+            if (smin.count(static_cast<long long>(S)) == 0)
+                check("B1: min support is {S}", false, true);
+            if (smax.count(static_cast<long long>(-S)) == 0)
+                check("B1: max support is {-S}", false, true);
         }
 
-        // THE WINDOW IS NOT YET 14 AND THIS TEST SAYS SO ON PURPOSE.  A3
-        // predicted 14 values in a 14-integer window.  The support is 14; the
-        // window is 183, because the values are k apart -- `secondary` is still
-        // +/-k, and k exists to separate the levels ABOVE the trick term.  With
-        // primary and tertiary both zero there is nothing left to separate, so
-        // k can collapse to 1 and the window with it, but only once the
-        // machinery that reads those levels is gone.  That is the deletion
-        // patch.  Pinned here so the deletion has a number to move, and so
-        // nobody reads "14 values" as "A3 delivered in full".
+        // THE WINDOW, WHICH IS WHAT B1b MOVED.  B1a delivered 14 values in a
+        // 183-integer window and pinned the 183 deliberately, so that the
+        // deletion patch had a number to move rather than a number to delete.
+        // It is 14 now: with the level above the trick term gone, k has
+        // nothing to separate and collapses to 1, so the 14 team totals occupy
+        // 14 adjacent integers.  A3 is delivered in full here and not before.
+        //
+        // DENSITY IS THE CLAIM, so it is asserted as density rather than as a
+        // width that happens to read 14.  A window equal to the support size
+        // is exactly "no gaps".
         const long long wmin = *smin.rbegin() - *smin.begin() + 1;
         const long long wmax = *smax.rbegin() - *smax.begin() + 1;
-        check("B1: dead/min window is still k-spaced, not dense", wmin,
-              static_cast<long long>(k) * t + 1);
-        check("B1: dead/max window matches min's", wmax, wmin);
+        check("B1b: dead/min window is 14 integers", wmin, static_cast<long long>(t) + 1);
+        check("B1b: dead/max window matches min's", wmax, wmin);
+        check("B1b: dead/min is 100% dense",
+              wmin, static_cast<long long>(smin.size()));
+        check("B1b: dead/max is 100% dense",
+              wmax, static_cast<long long>(smax.size()));
+        // AND THE LIVE NIL IS STILL SPARSE, which is the control: a change that
+        // collapsed k everywhere would pass every check above and move every
+        // single-nil count in the repo.
+        const std::set<long long> slive = support(lmax);
+        check("B1b: live/max support is still 105 values",
+              static_cast<long long>(slive.size()), 105LL);
+        check("B1b: live/max window is still k-spaced",
+              *slive.rbegin() - *slive.begin() + 1 > static_cast<long long>(slive.size()),
+              true);
     }
 
     std::cout << "\n";

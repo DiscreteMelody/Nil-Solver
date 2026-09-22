@@ -107,7 +107,6 @@ struct Ctx {
     int far_partner_role = ROLE_OPPONENT;
     int primary_weight = 0;    // K*K, or 0 when the nil is already set
     int secondary_weight = -1; // -K the nil side wants tricks, +K it wants rid of them
-    int tertiary_weight = 0;   // 1 when the cover partner's share is what counts
     bool collapse = true;      // one move per class of rank-equivalent cards
     bool last_trick = true;    // evaluate a forced final trick instead of searching it
     bool tt_boundaries_only = true;  // consult the table only at a trick boundary
@@ -645,7 +644,7 @@ inline int score_trick(const Ctx& ctx, const State& st, int winner, State& next)
             next.nils_broken = static_cast<unsigned char>(st.nils_broken | bit);
         }
     } else if (winner == ctx.nil_seat) {
-        gained += ctx.primary_weight + ctx.tertiary_weight;
+        gained += ctx.primary_weight;
     }
     if (((winner ^ ctx.nil_seat) & 1) == 0) gained += ctx.secondary_weight;
     return gained;
@@ -1086,7 +1085,7 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
     // window", and it needs no cards at all.
     //
     // THE BOUND.  From advance(): a trick won by the nil bidder scores
-    // primary + tertiary + secondary, one won by the cover partner scores
+    // primary + secondary, one won by the cover partner scores
     // secondary, and a trick won by either opponent scores nothing.  So with n
     // tricks to the nil bidder and p to the partner the subtree is worth
     //
@@ -1173,7 +1172,7 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
             }
         } else {
             const int all_nil =
-                (ctx.primary_weight + ctx.tertiary_weight + ctx.secondary_weight) * t;
+                (ctx.primary_weight + ctx.secondary_weight) * t;
             const int all_partner = ctx.secondary_weight * t;
             if (all_nil > hi) hi = all_nil;
             if (all_partner > hi) hi = all_partner;
@@ -1219,7 +1218,7 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
         // documented as one.
         if (ctx.later_tricks && !ctx.multi_nil) {
             const int per_nil =
-                ctx.primary_weight + ctx.tertiary_weight + ctx.secondary_weight;
+                ctx.primary_weight + ctx.secondary_weight;
             const int per_partner = ctx.secondary_weight;
             const Hand sp = suit_mask(SUIT_SPADES);
             const int cover = ctx.nil_seat ^ 2;
@@ -1376,11 +1375,11 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
     // changes neither.
     //
     // THE ARITHMETIC.  From advance(): a trick won by the nil bidder is worth
-    // primary + tertiary + secondary, one won by the partner is worth
+    // primary + secondary, one won by the partner is worth
     // secondary, and nothing else scores.  So with n tricks to the nil bidder
     // and p to the partner,
     //
-    //     value = (primary + tertiary + secondary) * n + secondary * p
+    //     value = (primary + secondary) * n + secondary * p
     //
     // and each proof pins n.  `t` is tricks remaining, which at a trick
     // boundary is the size of any one hand.
@@ -1389,7 +1388,7 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
         const int t = count_cards(st.hands[ctx.nil_seat]);
         if ((st.hands[ctx.nil_seat] & suit_mask(SUIT_SPADES)) == 0) {
             if (nil_cannot_be_forced(st.hands, ctx.nil_seat, st.leader == ctx.nil_seat)) {
-                // n = 0 exactly, so the primary and tertiary terms vanish and
+                // n = 0 exactly, so the primary term vanishes and
                 // the value is secondary * p for some p in [0, t].  Two ends,
                 // ordered by the sign of the weight rather than assumed.
                 const int span = ctx.secondary_weight * t;
@@ -1415,7 +1414,7 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
             // not.  Guarded on the nil trick being worth something positive, so
             // that the bound is a lower bound for the reason stated rather than
             // for a reason that happens to hold for today's weights.
-            const int per_nil = ctx.primary_weight + ctx.tertiary_weight + ctx.secondary_weight;
+            const int per_nil = ctx.primary_weight + ctx.secondary_weight;
             if (per_nil > 0 && nil_must_take_a_trick(st.hands, ctx.nil_seat)) {
                 const int worst_partner =
                     ctx.secondary_weight < 0 ? ctx.secondary_weight * (t - 1) : 0;
@@ -1863,7 +1862,6 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
     if (ctx.opposing) disable_single_nil_machinery(ctx);
     ctx.primary_weight = weights.primary;
     ctx.secondary_weight = weights.secondary;
-    ctx.tertiary_weight = weights.tertiary;
     ctx.collapse = opts.collapse_equivalents;
     // Read off the weights rather than off the mode, because it is a fact about
     // the weights: with any of them negative a later trick could pull the value
@@ -1879,14 +1877,17 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
     // ...AND NOT UNDER THE CONJUNCTION EITHER, for the same reason spelled a
     // different way: its delta is -1 when the far bid dies after the near one
     // already has, so what is banked bounds nothing.
+    // `weights.tertiary >= 0` used to be a third conjunct.  It was always true
+    // -- the old level was 0 or 1, never negative -- so the fold drops a
+    // tautology rather than a condition.
     ctx.gains_nonnegative = !ctx.opposing && !ctx.conjunction && weights.primary >= 0 &&
-                            weights.secondary >= 0 && weights.tertiary >= 0;
+                            weights.secondary >= 0;
     // ...and the per-node form, for the shape the line above refuses outright.
     // The refusal is about the outcome RANK falling, which needs a live bid to
     // fall; with every bid already down the remaining gain is the trick term
     // alone, and that only goes up when its weight does not go down.
     ctx.settled_gains = opts.settled_gains && ctx.opposing && weights.primary >= 0 &&
-                        weights.secondary >= 0 && weights.tertiary >= 0;
+                        weights.secondary >= 0;
     // Likewise a fact about the weights.  In MODE_FULL the primary is K*K and
     // the secondary is +/-K, so this is false for every K -- including K = 1,
     // where the primary is 1 but the secondary is not zero.  MODE_FULL
@@ -1898,9 +1899,11 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
     // weights alone would wire two sound proofs to a value they say nothing
     // about -- the exact failure mode `disable_single_nil_machinery` exists to
     // prevent.  Excluded by name.
+    // `weights.tertiary == 0` was a third conjunct.  Under the fold the test is
+    // `primary == 1`, and nothing reaches 1 by a route this used to exclude:
+    // a (0, *, 1) weight set never existed, and live/max at k = 1 folds to 2.
     ctx.value_is_nil_tricks =
-        !ctx.conjunction && weights.primary == 1 && weights.secondary == 0 &&
-        weights.tertiary == 0;
+        !ctx.conjunction && weights.primary == 1 && weights.secondary == 0;
     ctx.static_bounds = opts.use_static_bounds;
     ctx.full_static_bounds = opts.full_static_bounds;
     // Both halves matter.  MODE_FULL never reorders whatever the caller asked
@@ -1911,7 +1914,7 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
     // canonical tie-break on the principal variation, so it runs unless a caller
     // has asked for that line specifically.  See SearchOptions::canonical_pv.
     // The third condition is not about speed.  With ROLE_NIL_SET the primary
-    // weight is zero, and with minimise_own_tricks the tertiary is zero too, so
+    // weight is zero, so
     // the value reduces to secondary * nil_side_tricks and says nothing about
     // how that total splits between the nil bidder and its partner.  The two
     // are genuinely interchangeable there, `nil_tricks` is decided by whichever
@@ -1938,13 +1941,13 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
     ctx.cover_duck_short = opts.cover_duck_short;
     // Canonicalise whenever the caller wants the canonical line -- and also,
     // whether they asked or not, whenever the value cannot pin nil_tricks on its
-    // own.  That is exactly `primary + tertiary == 0`: the coefficient the value
+    // own.  That is exactly `primary == 0`: the coefficient the value
     // gives a nil trick.  It is zero only with nil_already_set and a minimising
     // tie-break, and there the value reduces to secondary * nil_side_tricks and
     // says nothing about how that total splits between the bidder and its
     // partner.  Re-deriving the line is then the only thing that makes the split
     // deterministic, so it is not the caller's to decline.
-    const bool value_pins_nil_tricks = (weights.primary + weights.tertiary) != 0;
+    const bool value_pins_nil_tricks = weights.primary != 0;
     ctx.canonicalise = ctx.order_moves && opts.mode == MODE_FULL &&
                        (opts.canonical_pv || !value_pins_nil_tricks);
     // Unlike ordering, this one is NOT restricted to fast mode -- full mode is
@@ -2174,14 +2177,14 @@ ObjectiveWeights objective_weights(int tricks_remaining, const SeatRoles& roles,
     // TWO BIDS ON ONE SIDE.  The primary level counts BIDS DOWN, 0..2, rather
     // than weighting one seat's trick count 0..t.  K*K still separates the
     // levels: the secondary can reach K*t in absolute value, and K*t < K*K, so
-    // no run of tricks outweighs one more bid going down.  There is no tertiary
+    // no run of tricks outweighs one more bid going down.  There is no level below
     // -- a pair that both bid has no cover partner whose share could break a
     // tie -- and no MODE_FAST fork, because solve() refuses that combination
     // before this is reached.
     // One bid on each side.  The primary is one step of outcome RANK, which
     // ranges 0..3, so K*K separates it from the secondary exactly as it does for
     // a pair that both bid: the trick term reaches K*tricks_remaining at most,
-    // and that is under K*K.  No tertiary -- each side's own tricks are one
+    // and that is under K*K.  No level below -- each side's own tricks are one
     // number, and there is no cover partner whose share could break a tie.
     if (opts.conjunction_seat >= 0) {
         // Item 78's probe.  Nothing is packed above or below the indicator, so
@@ -2190,7 +2193,6 @@ ObjectiveWeights objective_weights(int tricks_remaining, const SeatRoles& roles,
         ObjectiveWeights w;
         w.primary = 1;
         w.secondary = 0;
-        w.tertiary = 0;
         return w;
     }
     {
@@ -2201,7 +2203,6 @@ ObjectiveWeights objective_weights(int tricks_remaining, const SeatRoles& roles,
             ObjectiveWeights w;
             w.primary = k * k;
             w.secondary = opts.minimise_own_tricks ? -k : k;
-            w.tertiary = 0;
             return w;
         }
     }
@@ -2217,7 +2218,6 @@ ObjectiveWeights objective_weights(int tricks_remaining, const SeatRoles& roles,
         // anything that reads them.
         w.primary = live_nil_mask(roles) ? k * k : 0;
         w.secondary = opts.minimise_own_tricks ? k : -k;
-        w.tertiary = 0;
         return w;
     }
     if (opts.mode == MODE_FAST) {
@@ -2229,40 +2229,53 @@ ObjectiveWeights objective_weights(int tricks_remaining, const SeatRoles& roles,
         ObjectiveWeights w;
         w.primary = 1;
         w.secondary = 0;
-        w.tertiary = 0;
         return w;
     }
 
     const int k = tricks_remaining + 1;
     ObjectiveWeights w;
-    w.primary = roles.nil_already_set() ? 0 : k * k;
-    w.secondary = opts.minimise_own_tricks ? k : -k;
-    // PHASE B1: THE TERTIARY IS A FACT ABOUT THE SHAPE, NOT ABOUT THE
-    // DIRECTION.  It used to read `opts.minimise_own_tricks ? 0 : 1`, which
-    // welded two independent things together: WHETHER A THIRD LEVEL EXISTS and
-    // WHICH WAY THE SECOND ONE RUNS.  The weld is why the maximising direction
-    // could not reach the team-count value space that the minimising one has
-    // always produced -- asking for `max` silently switched the third level
-    // back on.
+    // WHAT A TRICK TAKEN BY THE NIL BIDDER IS WORTH, as one coefficient.
     //
-    // The level itself only ever bit on ROLE_NIL_SET (see the caveat on
-    // ObjectiveWeights in search.hpp): with the bid already down, it broke the
-    // tie over WHICH of the two partners took the pair's tricks.  Under the
-    // rearchitecture's decision 1 a nil bidder's tricks count toward their
-    // team's total like anyone else's, so that split has no referent -- the
-    // value is the team total `S = n + p` and nothing below it.
+    // This used to be two fields, `primary` and `tertiary`, and the solver read
+    // them in seven places -- every one of them as `primary + tertiary`, never
+    // apart.  B1a zeroed the tertiary on the dead-nil shape; B1b removes the
+    // machinery, which is the fold below.  It is the identity on every weight
+    // set the solver produces, so no node count moves for this reason.
     //
-    // ZEROED HERE RATHER THAN DELETED, deliberately.  The packing and
-    // unpacking machinery still reads `tertiary`, and deleting it would move
-    // the same banked counts this change moves, for a different reason.  One
-    // variable per patch: this one zeroes, the next removes the machinery, and
-    // if a fixed point moves we know which change moved it.
+    // Live nil, minimising: K*K.  Live nil, maximising: K*K + 1 -- the old
+    // tertiary, written where it is actually consumed.  A nil trick is then
+    // worth `K*K + 1 - K` against a side trick's `-K`, and gcd(K*K + 1, K) = 1
+    // keeps every (nil_tricks, side_tricks) pair on its own value, which is
+    // what lets replay_pv recover the counts from the score.
     //
-    // LIVE NIL IS UNTOUCHED IN BOTH DIRECTIONS.  There the primary is K*K and
-    // the tertiary is the +1 in a nil trick's `K*K + 1 - K`; changing it would
-    // move every single-nil count in the repo and has nothing to do with the
-    // team-count formulation.  The gate is the shape, and only the shape.
-    w.tertiary = roles.nil_already_set() ? 0 : (opts.minimise_own_tricks ? 0 : 1);
+    // Dead nil: zero, and the value is the team total alone.  Decision 1 makes
+    // a nil bidder's tricks count toward its team like anyone else's, so there
+    // is no split left for a level below the total to break.
+    w.primary = roles.nil_already_set()
+                    ? 0
+                    : (opts.minimise_own_tricks ? k * k : k * k + 1);
+    // AND K ITSELF COLLAPSES WHERE THERE IS NOTHING LEFT TO SEPARATE (B1b).
+    //
+    // K is not a unit, it is a SEPARATOR: the trick term can reach K*t in
+    // absolute value, and spacing the trick term K apart is what keeps the
+    // level above it from ever being outweighed by a run of tricks.  With a
+    // dead nil the level above is zero -- the value is the team total and
+    // nothing else -- so there is nothing to separate and a step of 1 does the
+    // same job.
+    //
+    // What this buys is DENSITY, not a different answer.  Both scales order
+    // the 14 team totals identically, so the minimax value and the principal
+    // variation are the same line either way.  What changes is the value SPACE
+    // the alpha-beta window lives in: the 14 reachable values sat K = 14 apart
+    // across 183 integers at 7.7% density, and now sit adjacent across 14 at
+    // 100%.  That is A3's prediction delivered in full -- B1a got the support
+    // to 14 and left the window at 183 on purpose, pinned in the test below so
+    // this change had a number to move.
+    //
+    // Live nil keeps K.  There the level above is K*K and the separation is
+    // load-bearing; changing it would move every single-nil count in the repo.
+    const int step = roles.nil_already_set() ? 1 : k;
+    w.secondary = opts.minimise_own_tricks ? step : -step;
     return w;
 }
 
@@ -2912,7 +2925,7 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
                          : ctx.multi_nil
                              ? weights.primary * tally.live_nils_broken +
                                    weights.secondary * tally.nil_side_tricks
-                             : (weights.primary + weights.tertiary) * tally.nil_tricks +
+                             : weights.primary * tally.nil_tricks +
                                    weights.secondary * tally.nil_side_tricks;
     if (replayed != value) {
         std::ostringstream os;
@@ -3213,7 +3226,7 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
                              : ctx.multi_nil
                                  ? weights.primary * tally.live_nils_broken +
                                        weights.secondary * tally.nil_side_tricks
-                                 : (weights.primary + weights.tertiary) * tally.nil_tricks +
+                                 : weights.primary * tally.nil_tricks +
                                        weights.secondary * tally.nil_side_tricks;
         if (replayed != ms.value) {
             std::ostringstream os;

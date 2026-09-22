@@ -512,6 +512,17 @@ if(NIL_SOLVER_BUILD_TESTS)
               --cards 5 --count 40 --seed 3)
     set_tests_properties(subgame_consistency PROPERTIES TIMEOUT 600)
 
+    # THE ORACLE'S OWN SELFTEST, which until now ran only by hand.  It is the
+    # ground truth every crosscheck above is measured against, and its checks
+    # are the ones most likely to encode an assumption rather than test one --
+    # patch 106's separate oracle patch found exactly that, twice.  A check
+    # that quietly stops checking is this repo's recurring bug; a check that
+    # was never wired up has simply never started.  ~7 s, no arguments.
+    add_test(NAME oracle_selftest
+      COMMAND ${Python3_EXECUTABLE}
+              "${CMAKE_CURRENT_SOURCE_DIR}/nil_oracle.py" --selftest)
+    set_tests_properties(oracle_selftest PROPERTIES TIMEOUT 600)
+
     add_test(NAME crosscheck
       COMMAND ${Python3_EXECUTABLE}
               "${CMAKE_CURRENT_SOURCE_DIR}/tools/crosscheck.py"

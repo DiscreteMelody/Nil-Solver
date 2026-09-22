@@ -548,9 +548,8 @@ def deal_to_pbn(hands: Sequence[Sequence[Card]], first_seat: int = 0) -> str:
 @dataclass
 class _Ctx:
     designated: int
-    primary_weight: int          # K*K, or 0 when the nil is already set
+    primary_weight: int          # what a trick to the designated player is worth
     secondary_weight: int        # +/-K: N/S want their side's tricks, or want rid of them
-    tertiary_weight: int         # 1 when the cover's share is what counts, else 0
     memo: Optional[Dict] = None
     nodes: int = 0
 
@@ -559,67 +558,61 @@ def objective_weights(
     tricks_remaining: int,
     secondary: str = "max",
     nil_already_set: bool = False,
-) -> Tuple[int, int, int]:
-    """Return (primary, secondary, tertiary) weights for the objective.
+) -> Tuple[int, int]:
+    """Return (primary, secondary) weights for the objective.
 
     The search returns ONE integer that N/S minimize and E/W maximize:
 
         value = primary   * (tricks the designated player takes)
               + secondary * (tricks N/S take, both partners together)
-              + tertiary  * (tricks the designated player takes)
 
-    with K = tricks_remaining + 1, primary = K*K and secondary = +/-K, so each
-    level is strictly larger than anything the levels below it can contribute
-    and the three are compared lexicographically.
+    with K = tricks_remaining + 1 and secondary = +/-K, so the level above
+    strictly outranks anything the trick term can contribute and the two are
+    compared lexicographically.
 
-    LEVEL 1, primary.  The designated player's trick count.  Zero when the nil
-    is already set, which switches the whole level off.
+    LEVEL 1, primary.  What a trick to the designated player is worth.  K*K
+    minimizing, K*K + 1 maximizing, and ZERO once the nil is already set, which
+    switches the whole level off and leaves the pair's total alone.
 
     LEVEL 2, secondary.  The N/S pair's trick count.  Negative when they want
-    tricks (minimizing the value maximizes them), positive when they want rid of
-    them.
+    tricks (minimizing the value maximizes them), positive when they want rid
+    of them.
 
-    LEVEL 3, tertiary.  The designated player's trick count again, always in the
-    direction "N/S would rather their partner took it".  This is what separates
-    three tricks to the nil bidder and one to its partner from one and three: to
-    the partner's bid only the partner's tricks count, so among lines where the
-    pair takes the same total, the pair prefers the nil bidder to take fewer.
+    THERE WAS A THIRD RETURN VALUE AND IT WAS NEVER A THIRD LEVEL (B1b).  It
+    was the designated player's trick count again, and both this file and the
+    solver read it only ever as `primary + tertiary` -- a redundant split of
+    one coefficient.  It is folded into `primary` above, which is the identity
+    arithmetically; the `+ 1` in the maximizing direction is exactly where it
+    went.
 
-    Level 3 is inert whenever level 1 is on, because level 1 has already pinned
-    the designated player's count -- so it changes nothing for a live nil.  It
-    is zero in the "min" direction, because bags accrue to the pair whoever won
-    the trick, which makes the two partners' tricks genuinely interchangeable
-    there.  The one case it bites is a nil that is already set while the pair is
-    still trying to take tricks.
+    What it used to express: with the nil already set and the pair still taking
+    tricks, it broke the tie over which of the two partners held the pair's
+    tricks.  Under the rearchitecture's decision 1 a nil bidder's tricks count
+    toward its team like anyone else's, so among lines with the same pair total
+    there is nothing left to prefer.  B1a zeroed the level on that shape and
+    left the machinery; this removes the machinery.
 
-    A caveat about that case.  With the nil set, "the pair maximizes the
-    partner's tricks" and "the opponents maximize their own" are not strictly
-    opposed: both sides would rather the nil bidder took nothing, so the split
-    between the two partners is not a tug of war, it is slack that only one side
-    cares about.  Level 3 sits BELOW the pair's total on purpose, so the
-    opponents' objective stays exactly "take as many as we can" and the split is
-    resolved against the pair -- making the reported partner count the one the
-    pair can guarantee rather than the one it might get if the opponents helped.
+    MIRRORED FROM THE SOLVER DELIBERATELY.  An oracle answering a different
+    question than the solver is worse than no oracle, and the split it used to
+    pin is now a WITNESS rather than a result on dead-nil corpus rows -- see
+    `tools/invariants.py`'s `undetermined_split`.
     """
     if secondary not in ("max", "min"):
         raise ValueError("secondary must be 'max' or 'min'")
     k = tricks_remaining + 1
-    primary = 0 if nil_already_set else k * k
-    secondary_weight = -k if secondary == "max" else k
-    # THE THIRD LEVEL IS A FACT ABOUT THE SHAPE, NOT ABOUT THE DIRECTION.  This
-    # read `1 if secondary == "max" else 0`, welding two independent things
-    # together -- the same weld patch 106 removed from the solver's
-    # objective_weights.  Mirrored here so the two stay comparable: an oracle
-    # answering a different question than the solver is worse than no oracle.
-    #
-    # The paragraphs above describing what level 3 does when the nil is already
-    # set now describe history rather than behaviour.  With the bidder's tricks
-    # counting toward its team's total, lines with the same pair total have
-    # nothing left to prefer between them; the split is resolved by the
-    # canonical line instead of by the objective.  Level 3 therefore never
-    # fires today and is kept only until the machinery reading it is removed.
-    tertiary = 0 if nil_already_set else (1 if secondary == "max" else 0)
-    return primary, secondary_weight, tertiary
+    if nil_already_set:
+        primary = 0
+    else:
+        primary = k * k if secondary == "min" else k * k + 1
+    # K IS A SEPARATOR, NOT A UNIT.  It spaces the trick term far enough apart
+    # that a run of tricks can never outweigh the level above it.  With a dead
+    # nil that level is zero, so there is nothing to separate and a step of 1
+    # does the same job -- the 14 team totals then occupy 14 adjacent integers
+    # instead of 183 spread ones.  Same order, same answer, denser window.
+    # Mirrored from the solver's objective_weights.
+    step = 1 if nil_already_set else k
+    secondary_weight = -step if secondary == "max" else step
+    return primary, secondary_weight
 
 
 def _search(
@@ -681,7 +674,7 @@ def _search(
             winner = trick_winner(leader, played)
             gained = 0
             if winner == ctx.designated:
-                gained += ctx.primary_weight + ctx.tertiary_weight
+                gained += ctx.primary_weight
             if winner % 2 == ctx.designated % 2:   # the N/S pair, whichever it is
                 gained += ctx.secondary_weight
             sub_value, sub_pv = _search(next_hands, winner, (), next_broken, ctx)
@@ -1388,13 +1381,68 @@ class ReachableOutcomes:
             "fail" if mask & (1 << s) else "make" for s in self.bidders
         ) + ")"
 
+    def band_is_defined(self) -> bool:
+        """Whether this layout has a rank band at all.
+
+        The way to ASK without triggering `rank_band`'s refusal.  True only on
+        the strictly opposed shape; see `rank_band` for why the other shapes
+        have no band rather than an awkward one.
+        """
+        return role_shape(self.roles) == SHAPE_OPPOSING_NILS
+
     def rank_band(self, side: int = 0) -> Tuple[int, int]:
         """Lowest and highest rank `side` can end on, over reachable outcomes.
+
+        Raises:
+            ValueError: if this layout has no bid on each side.  THE ERROR IS
+                THE API CONTRACT, not a rough edge to be smoothed later: there
+                is no default, no sentinel, no `(0, 0)`, and no widened band
+                standing in for "not applicable".  A caller that wants to
+                branch rather than catch asks `band_is_defined()` first.  A
+                caller that asks anyway gets told, because the alternative is
+                a plausible number -- see below.
 
         A minimax outcome is a reachable outcome, so the true value's rank lies
         in this band whatever either side is trying to do.  Sound as a search
         window for that reason and no other.
+
+        REFUSED UNLESS THERE IS A BID ON EACH SIDE, and the refusal is the
+        point rather than a rough edge.  `side_rank(mine_makes, theirs_makes,
+        partner_role)` is defined over BOTH sides' bids; with one bid on the
+        table `theirs_makes` has no referent.  Any default for it -- True,
+        False, or "a side with no bid counts as making" -- returns a number in
+        0..3 that looks exactly like a rank, and a caller would spend it as a
+        search window.  A tolerant lookup here would have been the parity bug
+        at a different site: an assumption about WHERE A BIDDER SITS, held
+        silently, producing a meaningful-looking answer to a question the
+        layout does not pose.
+
+        THIS CATCHES TWO LAYOUTS, NOT ONE, which is why it asks `role_shape`
+        rather than counting bidders.  `3 2 3 1` has no bidder on the N/S axis.
+        `0 3 0 3` has TWO bidders and still no rank band, because both sit on
+        the same axis and E/W has none -- a bidder count of two would have
+        waved it through and crashed exactly as before.
+
+        Nothing else on this object is affected.  `reachable`, `undecided` and
+        `name()` are defined for any number of bidders, and
+        `solve_reachable_outcomes` computes them without consulting the shape,
+        so the probe still answers on both refused layouts.  It is only the
+        band that does not exist.
+
+        `describe()` renders the band as `n/a` with the shape named, and
+        `--compact` omits `rank_lo`/`rank_hi` entirely rather than printing a
+        placeholder.  BOTH ARE PRESENTATION AND NEITHER IS THE CONTRACT: they
+        consult `band_is_defined()` and never soften what this method does.  A
+        future renderer that wants a value here must change the objective, not
+        this refusal.
         """
+        shape = role_shape(self.roles)
+        if shape != SHAPE_OPPOSING_NILS:
+            raise ValueError(
+                f"rank_band needs a bid on each side, got {shape} "
+                f"({describe_roles(self.roles)}); the reachable set is still "
+                "available, but this layout has no rank band to report"
+            )
         nil_of_side = [
             next(x for x in (t, t + 2) if self.roles[x] in (ROLE_NIL, ROLE_NIL_SET))
             for t in range(2)
@@ -1411,15 +1459,22 @@ class ReachableOutcomes:
         return (min(ranks), max(ranks)) if ranks else (0, 0)
 
     def describe(self) -> str:
-        lo, hi = self.rank_band(0)
         lines = [f"Bidders         {''.join(SEAT_CHARS[s] for s in self.bidders)}"]
         for m in sorted(self.reachable):
             lines.append(f"  reachable     {self.name(m)}")
         blocked = [m for m in self._all_masks() if m not in self.reachable]
         for m in sorted(blocked):
             lines.append(f"  BLOCKED       {self.name(m)}")
-        lines.append(f"Rank band       [{lo}, {hi}]"
-                     f"{'   (collapsed to one outcome)' if lo == hi else ''}")
+        if self.band_is_defined():
+            lo, hi = self.rank_band(0)
+            lines.append(f"Rank band       [{lo}, {hi}]"
+                         f"{'   (collapsed to one outcome)' if lo == hi else ''}")
+        else:
+            # SAID, NOT DROPPED.  A missing line reads as a band that came out
+            # empty or as output someone forgot to add; this names the shape
+            # and says the quantity does not exist for it.
+            lines.append(f"Rank band       n/a  ({role_shape(self.roles)}: "
+                         "a rank needs a bid on each side)")
         lines.append(f"Nodes           {self.nodes}")
         return "\n".join(lines)
 
@@ -1952,14 +2007,13 @@ def solve(
     if not 0 <= designated < 4:
         raise ValueError("designated out of range")
 
-    primary_weight, secondary_weight, tertiary_weight = objective_weights(
+    primary_weight, secondary_weight = objective_weights(
         position.tricks_remaining, secondary, nil_already_set
     )
     ctx = _Ctx(
         designated=designated,
         primary_weight=primary_weight,
         secondary_weight=secondary_weight,
-        tertiary_weight=tertiary_weight,
         memo={} if use_memo else None,
     )
     value, pv = _search(
@@ -1975,7 +2029,7 @@ def solve(
     # back on the value the search reported.
     tally = replay_pv(position, list(pv), designated)
     replayed = (
-        (primary_weight + tertiary_weight) * tally.designated
+        primary_weight * tally.designated
         + secondary_weight * tally.designated_side
     )
     if replayed != value:
@@ -2498,18 +2552,27 @@ def selftest(verbose: bool = True) -> int:
     )
 
     print("Lexicographic secondary objective")
-    check("weights: max", objective_weights(4, "max", False), (25, -5, 1))
-    check("weights: min", objective_weights(4, "min", False), (25, 5, 0))
-    check("weights: nil already set drops the primary",
-          objective_weights(4, "max", True), (0, -5, 0))
-    # ...and the third level with it, in BOTH directions.  The pair is what the
-    # value measures once the bid is down; the split is not the objective's.
-    check("weights: nil already set drops the third level too, max",
-          objective_weights(4, "max", True)[2], 0)
-    check("weights: ...and min, which never had it", objective_weights(4, "min", True)[2], 0)
-    check("weights: each level outranks the ones below it",
-          objective_weights(4, "max", False)[0] > abs(objective_weights(4, "max", False)[1]) * 4
-          + objective_weights(4, "max", False)[2] * 4, True)
+    # (primary, secondary).  The old third field folded into the first: a live
+    # nil trick in the "max" direction is worth K*K + 1, which is where the old
+    # tertiary went.  See objective_weights.
+    check("weights: max", objective_weights(4, "max", False), (26, -5))
+    check("weights: min", objective_weights(4, "min", False), (25, 5))
+    # (0, -1), not (0, -5): with no level above the trick term, K has nothing
+    # to separate and collapses to 1.  See objective_weights.
+    check("weights: nil already set drops the primary and collapses the step",
+          objective_weights(4, "max", True), (0, -1))
+    check("weights: ...and the same the other way",
+          objective_weights(4, "min", True), (0, 1))
+    # DEAD NIL IS THE TEAM TOTAL AND NOTHING ELSE, in BOTH directions.  The
+    # pair is what the value measures once the bid is down; the split is not
+    # the objective's.
+    check("weights: dead nil has no level above the trick term, max",
+          objective_weights(4, "max", True)[0], 0)
+    check("weights: ...and min, the same",
+          objective_weights(4, "min", True)[0], 0)
+    check("weights: the level above outranks the trick term",
+          objective_weights(4, "max", False)[0] > abs(objective_weights(4, "max", False)[1]) * 4,
+          True)
 
     # Three tricks to the nil bidder and one to its partner is NOT the same as
     # one and three: only the partner's tricks count towards the partner's bid.
@@ -3018,6 +3081,49 @@ def selftest(verbose: bool = True) -> int:
     check("...and says which outcomes it failed to decide",
           len(budgeted.undecided) > 0, True)
 
+    # THE BAND IS REFUSED WHERE IT HAS NO MEANING.  `side_rank` reads BOTH
+    # sides' bids, so a layout without one bid per side has no rank band --
+    # and rank_band() used to assume a bidder on each axis and die with
+    # StopIteration instead of saying so, which is what crashed
+    # --reachable-outcomes on `3 2 3 1`.
+    #
+    # BOTH refused shapes are pinned, because a bidder COUNT would have caught
+    # only the first.  `3 2 3 1` has one bidder; `0 3 0 3` has two and still no
+    # band, since both sit on the N/S axis.  Asking role_shape catches both.
+    #
+    # The probe itself must keep answering on them: it is the band that is
+    # missing, not the reachable set, and a refusal that took the whole tool
+    # down with it would be the wrong fix.
+    band_deal = Position(hands=parse_pbn("N:A.2.2. KQ...2 2.3.3. .4.4.3"), leader=0)
+    for label, band_roles in (
+        ("3 2 3 1",
+         [ROLE_OPPONENT, ROLE_COVER, ROLE_OPPONENT, ROLE_NIL_SET]),
+        ("0 3 0 3",
+         [ROLE_NIL, ROLE_OPPONENT, ROLE_NIL, ROLE_OPPONENT]),
+    ):
+        band_reach = solve_reachable_outcomes(band_deal, band_roles)
+        check(f"{label}: the reachable set is still computed",
+              len(band_reach.reachable) > 0, True)
+        check(f"{label}: reports no rank band",
+              band_reach.band_is_defined(), False)
+        refused = None
+        try:
+            band_reach.rank_band(0)
+        except ValueError as exc:
+            refused = str(exc)
+        except StopIteration:
+            refused = "StopIteration"
+        check(f"{label}: rank_band() raises ValueError, not StopIteration",
+              refused is not None and refused != "StopIteration", True)
+        check(f"{label}: and the refusal names the shape",
+              refused is not None and "bid on each side" in refused, True)
+        check(f"{label}: describe() still renders, with the band marked n/a",
+              "Rank band       n/a" in band_reach.describe(), True)
+    # And the band still works where it IS defined -- a refusal that refused
+    # everything would pass every check above.
+    check("the strictly opposed shape still reports a band",
+          hazard_reach.band_is_defined(), True)
+
     # A bid the caller declared down cannot be protected: it is down on every
     # line by assertion, so the ask is a contradiction and should be refused
     # rather than quietly answered False.
@@ -3184,11 +3290,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.reachable_outcomes:
         reach = solve_reachable_outcomes(
             position, roles, use_memo=args.memo, budget=args.reach_budget)
-        lo, hi = reach.rank_band(0)
         if args.compact:
             print("reachable=" + ",".join(str(m) for m in sorted(reach.reachable)))
-            print(f"rank_lo={lo}")
-            print(f"rank_hi={hi}")
+            if reach.band_is_defined():
+                lo, hi = reach.rank_band(0)
+                print(f"rank_lo={lo}")
+                print(f"rank_hi={hi}")
+            else:
+                # NO rank_lo/rank_hi KEYS, rather than placeholder values.  A
+                # consumer that needs the band should fail to find it instead
+                # of parsing a zero that means "this layout has no band".
+                print("rank_band=undefined")
             print(f"undecided={len(reach.undecided)}")
             print(f"nodes={reach.nodes}")
         else:

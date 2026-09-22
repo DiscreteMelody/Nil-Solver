@@ -41,19 +41,24 @@
  * the real game.  The primary objective is dropped, both sides stop protecting
  * and attacking it, and only the secondary objective is optimised.
  *
- * With that role set and the pair still taking tricks, the tertiary level is
- * what decides the split, and it sits BELOW the pair's total on purpose.  The
- * two sides are not strictly opposed there: both would rather the nil bidder
- * took nothing, so the split is slack only one side cares about rather than a
- * tug of war.  Keeping it below the total leaves the opponents' objective
- * exactly "take as many as we can" and resolves the split against the pair, so
- * nil_side_tricks - nil_tricks is the partner count the pair can GUARANTEE, not
- * the one it might get if the opponents were being unhelpful to themselves.
+ * With that role set, the value is the PAIR'S TOTAL and nothing below it.  A
+ * trick taken by the nil bidder counts toward its team exactly like one taken
+ * by its partner, so among lines where the pair takes the same total there is
+ * nothing left for the objective to prefer.
  *
- * Combine that role with NIL_FLAG_MINIMISE_OWN_TRICKS and the tertiary level is
- * off: bags accrue to the pair whoever won, the two partners are
- * interchangeable, and nil_tricks is then whatever the tie-break produced
- * rather than an answer to a question anyone asked.
+ * READ nil_side_tricks, NOT THE SPLIT.  `nil_side_tricks` is what this solve
+ * answers and it is pinned.  `nil_tricks` on a NIL_ROLE_NIL_SET solve -- and
+ * therefore `nil_side_tricks - nil_tricks` -- is a WITNESS: one optimal line's
+ * split, not a quantity the objective determines.  It moves with move ordering
+ * and even with which suit is which, and permuting the three non-trump suits
+ * moves it on roughly half of the affected positions while leaving
+ * `nil_side_tricks` invariant on all of them.  Earlier versions of this header
+ * described the split as the count the pair could GUARANTEE.  That was true of
+ * the old three-level objective and is not true now; a caller relying on it
+ * will read a number that is legal and optimal but not reproducible.
+ *
+ * This holds in BOTH directions.  NIL_FLAG_MINIMISE_OWN_TRICKS does not change
+ * it: the level that used to pin the split is gone rather than switched off.
  *
  * TWO MODES
  * ---------

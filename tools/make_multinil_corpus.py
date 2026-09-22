@@ -205,9 +205,9 @@ def measure(args):
             ctx_one = {}
             oracle.solve(pos, 0, use_memo=True, secondary="max")
             # solve() builds its own memo, so count through a direct search.
-            pw, sw, tw = oracle.objective_weights(pos.tricks_remaining, "max", False)
+            pw, sw = oracle.objective_weights(pos.tricks_remaining, "max", False)
             c1 = oracle._Ctx(designated=0, primary_weight=pw, secondary_weight=sw,
-                             tertiary_weight=tw, memo=ctx_one)
+                             memo=ctx_one)
             oracle._search(pos.hands, pos.leader, pos.current_trick,
                            pos.spades_broken, c1)
             ctx_two = {}

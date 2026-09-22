@@ -203,7 +203,7 @@ def masks_single(hands, leader, trick, spades_broken, broken_nils, ctx, memo):
             gained = 0
             next_nils = broken_nils
             if winner == ctx.designated:
-                gained += ctx.primary_weight + ctx.tertiary_weight
+                gained += ctx.primary_weight
                 next_nils = broken_nils | (1 << winner)
             if winner % 2 == ctx.designated % 2:
                 gained += ctx.secondary_weight
@@ -269,12 +269,11 @@ def run_shape(shape, roles, cards, cases, seed, secondary, verbose):
             _, masks = masks_opposing(hands, leader, (), False, 0, ctx, {})
         else:
             designated = next(s for s, r in enumerate(roles) if r == ROLE_NIL)
-            pw, sw, tw = oracle.objective_weights(cards, secondary, False)
+            pw, sw = oracle.objective_weights(cards, secondary, False)
             ctx = oracle._Ctx(
                 designated=designated,
                 primary_weight=pw,
                 secondary_weight=sw,
-                tertiary_weight=tw,
             )
             _, masks = masks_single(hands, leader, (), False, 0, ctx, {})
 

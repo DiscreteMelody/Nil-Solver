@@ -66,7 +66,7 @@
 // "Evaluated and rejected".
 //
 // The nil question itself is boolean, and a boolean question wants a boolean
-// search.  MODE_FAST zeroes the secondary and tertiary weights and gives the
+// search.  MODE_FAST zeroes the secondary weight and gives the
 // primary weight 1, so the value is literally the nil bidder's trick count and
 // the window worth searching is [0, 1].  It answers `nils_set` and nothing
 // else: no trick counts, no principal variation.
@@ -133,7 +133,7 @@ enum SearchMode {
     // The lexicographic objective: trick counts, a principal variation, and a
     // value the PV replay can be checked against.
     MODE_FULL = 0,
-    // The nil question alone.  Primary weight 1, secondary and tertiary zero.
+    // The nil question alone.  Primary weight 1, secondary zero.
     MODE_FAST = 1,
 };
 
@@ -315,7 +315,7 @@ struct SearchOptions {
     //
     // The two modes answer different questions about the same position, and the
     // cheap one bounds the expensive one.  With k = tricks + 1 the packed value
-    // is (primary + tertiary + secondary) * nil_tricks + secondary * cover, and
+    // is (primary + secondary) * nil_tricks + secondary * cover, and
     // the two halves of that do not overlap: every position where the nil
     // bidder takes no trick scores at most `max_value_if_nil_safe` below, and
     // every position where it takes one scores strictly above.  So a fast
@@ -687,7 +687,7 @@ struct SearchOptions {
     // Only the LINE is at stake, never a value and never a trick count.  Two
     // optimal lines score the same by definition, and the trick counts are
     // recovered from the score rather than from the walk: with a nil trick
-    // worth primary + tertiary = k*k + 1 and a side trick worth k, and
+    // worth primary = k*k + 1 and a side trick worth k, and
     // gcd(k*k + 1, k) = 1, no two (nil_tricks, side_tricks) pairs in range
     // share a value.  So a differently-ordered search yields the same numbers
     // off a different-but-equally-optimal line.
@@ -803,36 +803,40 @@ struct Solution {
     std::uint64_t tt_evictions = 0;
 };
 
-// Weights that pack the three levels into one integer:
+// Weights that pack the objective into one integer:
 //
 //     value = primary   * nil_tricks
 //           + secondary * nil_side_tricks
-//           + tertiary  * nil_tricks
 //
 // which the nil side minimises and the opponents maximise.  With
-// K = tricks remaining + 1, primary is K*K and secondary is +/-K, so each level
-// strictly outranks everything below it and the three compare
-// lexicographically.  primary is zero when the roles say the nil is already
-// set.
+// K = tricks remaining + 1, primary is K*K (or K*K + 1, below) and secondary is
+// +/-K, so the level above strictly outranks the trick term and the two compare
+// lexicographically.  primary is zero when the roles say the nil is already set.
 //
-// A caveat about the one case the tertiary bites -- ROLE_NIL_SET while the
-// pair is still taking tricks.  There, "the pair maximises its partner's
-// tricks" and "the opponents maximise their own" are not strictly opposed:
-// both sides would rather the nil bidder took nothing, so the split between the
-// two partners is slack that only one side cares about, not a tug of war.  The
-// tertiary sits BELOW the pair's total on purpose, so the opponents' objective
-// stays exactly "take as many as we can" and the split resolves against the
-// pair.  The partner count reported is therefore the one the pair can
-// guarantee, not the one it might get if the opponents were helping.
+// THERE WAS A THIRD FIELD HERE AND IT WAS NEVER A THIRD LEVEL (Phase B1b).
+// `tertiary` was read in exactly seven places and every one of them read it as
+// `primary + tertiary` -- never on its own, never against a threshold of its
+// own.  It was a redundant decomposition of ONE coefficient: what a trick taken
+// by the nil bidder is worth.  Folding it into `primary` is arithmetically the
+// identity, which is why this change moves no node count anywhere.
 //
-// In MODE_FAST the weights are (1, 0, 0) regardless of every other option, so
-// the value is the nil bidder's trick count with nothing packed above or below
-// it.  Weight 1 rather than K*K on purpose: it makes the alpha-beta window the
-// next roadmap item wants literally [0, 1] rather than [0, K*K].
+// What it used to decompose: under ROLE_NIL_SET with the pair still taking
+// tricks, the old level 3 broke the tie over WHICH partner held the pair's
+// tricks.  Decision 1 of the rearchitecture makes a nil bidder's tricks count
+// toward its team like anyone else's, so that split has no referent -- B1a
+// zeroed the level on that shape and this removes the machinery that read it.
+// The one place the old decomposition still carried information is the live
+// nil in the maximising direction, where the coefficient is K*K + 1 rather
+// than K*K; that +1 is now written into `primary` directly, and the live-nil
+// value space is unchanged to the bit.
+//
+// In MODE_FAST the weights are (1, 0) regardless of every other option, so the
+// value is the nil bidder's trick count with nothing packed above or below it.
+// Weight 1 rather than K*K on purpose: it makes the alpha-beta window literally
+// [0, 1] rather than [0, K*K].
 struct ObjectiveWeights {
     int primary = 0;
     int secondary = -1;
-    int tertiary = 0;
 };
 
 ObjectiveWeights objective_weights(int tricks_remaining, const SeatRoles& roles,
