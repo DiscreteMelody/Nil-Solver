@@ -302,15 +302,21 @@ def check(exe: str, spec: Dict, timeout: float, rng: random.Random,
             messages.append("  %s: solver did not finish" % info["kind"])
             continue
         run += 1
-        # With the nil already set AND the pair shedding tricks, the two
-        # partners are interchangeable -- bags accrue to the pair whoever won --
-        # so nothing in the objective decides the split and it falls out of the
-        # tie-break.  Relabelling suits changes which card is canonically
-        # lowest, so the split may legitimately move there.  Everywhere else the
-        # split is pinned: by the primary when the nil is live, and by the
-        # tertiary level when it is set and the pair is taking tricks.
-        undetermined_split = (nil_role_of(spec) == 1
-                              and spec.get("secondary") == "min")
+        # WITH THE NIL ALREADY SET, IN EITHER DIRECTION, the two partners are
+        # interchangeable: a busted bidder's tricks count toward its team's
+        # total like anyone else's, so nothing in the objective decides the
+        # split and it falls out of the tie-break.  Relabelling suits changes
+        # which card is canonically lowest, so the split may legitimately move.
+        #
+        # This used to add `and spec.get("secondary") == "min"`, because the
+        # tertiary level pinned the split in the "max" direction.  Patch 106
+        # removed that level for this shape -- it was welded to the direction
+        # rather than to the shape -- so "max" joins "min" here.  The SPLIT IS
+        # NOT A RESULT: it is an arbitrary witness among equally optimal lines,
+        # and this test found that out by permuting suits on c4-0032 and
+        # watching it move 2 -> 3.  The pair total is what the objective
+        # determines and what is checked below.
+        undetermined_split = nil_role_of(spec) == 1
         if mode == "fast":
             fields = ["nils_set"]
         else:

@@ -37,6 +37,11 @@ and this project's rule is that a moved fixed point needs a WRITTEN CAUSE
 before it is re-banked, with the old figure left standing in the historical
 entry that recorded it.  See patches 95 and 97.
 
+THE TABLE BELOW IS NOT ALL ONE THING.  Five rows are the corpus workloads the
+bench scripts already ran; three are the opposed workloads patch 97 had to
+re-bank by hand; one -- `large.txt 13c only` -- is neither, and was added at
+patch 105 purely as a consistency check on the worst-case leg's subtotal.
+
 Usage:
     python3 tools/check_baselines.py [--bench PATH] [--only SUBSTRING]
 """
@@ -54,12 +59,21 @@ import sys
 BASELINES = [
     ("positions.txt fast", 39_701,
      ["--corpus", "tests/corpus/positions.txt", "--mode", "fast"]),
-    ("positions.txt full", 278_059,
+    # Re-banked at patch 106 (B1a): 278,059 -> 274,270, -1.36%.  Cause is in
+    # ROADMAP.md -- the dead-nil/max canonicalisation change across 57 rows.
+    ("positions.txt full", 274_270,
      ["--corpus", "tests/corpus/positions.txt", "--mode", "full"]),
     ("large.txt fast", 49_084,
      ["--corpus", "tests/corpus/large.txt", "--mode", "fast"]),
-    ("large.txt full", 163_149_275,
+    # Re-banked at patch 106 (B1a): 163,149,275 -> 163,134,302, -0.01%, from
+    # the four dead-nil/max rows in this file.  No EXPECTED VALUE in large.txt
+    # moved -- all 19 still match; only the tree searched to reach them did.
+    ("large.txt full", 163_134_302,
      ["--corpus", "tests/corpus/large.txt", "--mode", "full"]),
+    # NOT one of the four hand-run baselines Phase A set out to verify.  Added
+    # at patch 105 as a CONSISTENCY CHECK on the worst-case leg's subtotal in
+    # scripts/run-bench.{sh,cmd}: those three per-deal figures were the ones
+    # found stale, and no other row here covers them.
     ("large.txt 13c only", 162_499_778,
      ["--corpus", "tests/corpus/large.txt", "--cards-only", "13"]),
     ("multinil.txt", 4_833_200,

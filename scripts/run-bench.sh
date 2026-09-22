@@ -102,7 +102,10 @@ echo
 echo "The worst-case rows are single deals, so their node counts are exact rather"
 echo "than averaged -- a change of even 1% there is real and not sampling noise."
 
-if [ -z "${NIL_SKIP_MULTINIL:-}" ] && [ -f tests/corpus/multinil.txt ]; then
+# Guard matches NIL_SKIP_WORST above and the header: only "1" skips.  It used
+# to test -z, so NIL_SKIP_MULTINIL=0 skipped the leg -- the opposite of what
+# the header documents.
+if [ "${NIL_SKIP_MULTINIL:-0}" != "1" ] && [ -f tests/corpus/multinil.txt ]; then
     echo
     echo "=== Two nils on one side (13 cards, every bound still gated off) ==="
     # These six rows carry no recorded answer -- the oracle is exhaustive and

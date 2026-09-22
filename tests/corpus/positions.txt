@@ -4,6 +4,21 @@
 #   name | pbn | leader | seats | broken | trick | secondary |
 #   nils_set | nil_tricks | side_tricks | pv | provenance
 #
+# `nil_tricks` AND `pv` ARE NOT AUTHORITATIVE ON A DEAD-NIL ROW (a `1` in
+# `seats`).  With the bid already down the bidder's tricks count toward its
+# team's total like anyone else's, so among lines with the same pair total the
+# objective has nothing left to prefer: the split, and the line that witnesses
+# it, are arbitrary among equally optimal plays.  They move under a suit
+# relabelling and between search configurations, all of which are correct.
+# `side_tricks` is the determined quantity and is checked on every row.
+#
+# The columns are kept populated -- they are the quickest way to see an answer,
+# and the line is still checked for legality and optimality by the cross-checks
+# -- but nil_bench does not compare them for equality on these rows, and they
+# must NOT be re-banked to whatever the current search happens to emit.  Patch
+# 106 found this out: re-banking them made the suite green and tools/
+# invariants.py then moved c4-0032's split 2 -> 3 by permuting suits.
+#
 # `seats` is one role digit per seat, running CLOCKWISE FROM THE SEAT THE PBN
 # NAMES: 0 a nil bidder with no trick yet, 1 a nil already broken, 2 the
 # partner covering it, 3 a seat on a side with no nil bid.

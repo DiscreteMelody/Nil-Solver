@@ -926,7 +926,26 @@ int main(int argc, char** argv) {
                           << item.repro << "\n";
                 ++failures;
             }
-            if (item.expected >= 0 && sol.nil_tricks != item.expected) {
+            // THE BIDDER/PARTNER SPLIT IS NOT A RESULT ON A DEAD-NIL ROW.
+            //
+            // With the bid already down, the bidder's tricks count toward its
+            // team's total like anyone else's, so among lines with the same
+            // pair total the objective has nothing left to prefer.  Whichever
+            // split comes back is an arbitrary witness: it moves under a suit
+            // relabelling, and it moves between search configurations that are
+            // all equally correct.  tools/invariants.py demonstrated this on
+            // c4-0032, where permuting suits moved it 2 -> 3.
+            //
+            // The `nil_tricks` column is KEPT on these rows rather than blanked
+            // -- an 11-row semantic change is not a 560-row schema change -- but
+            // it is NON-AUTHORITATIVE there: a witness, not a fixed point.  Do
+            // not re-bank it to whatever the current search happens to produce;
+            // pinning an underdetermined value is how it became load-bearing in
+            // the first place.  `side_tricks` below is the determined quantity
+            // and is checked on every row, dead nil or not.
+            const bool split_is_a_witness = item.roles.nil_already_set();
+            if (item.expected >= 0 && !split_is_a_witness &&
+                sol.nil_tricks != item.expected) {
                 std::cout << "FAIL " << item.name << ": expected " << item.expected
                           << " nil trick(s), got " << sol.nil_tricks << "\n  " << item.repro
                           << "\n";
@@ -1029,7 +1048,20 @@ int main(int argc, char** argv) {
             }
         }
 
-        if (check_pv && !item.expected_pv.empty()) {
+        // THE RECORDED LINE IS A WITNESS ON A DEAD-NIL ROW, for the same reason
+        // its `nil_tricks` is -- see the note on split_is_a_witness above.  The
+        // objective fixes the pair total, not which partner takes what, so any
+        // of several lines is equally optimal and which one comes back depends
+        // on move ordering, the transposition table's contents and the search
+        // window.  That is exactly what the --narrow, --presolve, --moves,
+        // --last-trick, --tt-plies, --suit-mix, --target and --tt-narrow
+        // variants each perturb, which is why all eight disagreed here and
+        // none of them disagreed about a total.
+        //
+        // The column stays populated -- it is still the quickest way to SEE an
+        // answer, and it is still checked for legality and optimality by the
+        // cross-checks -- but it is not compared for equality on these rows.
+        if (check_pv && !item.expected_pv.empty() && !item.roles.nil_already_set()) {
             const std::string got = nil::format_pv_compact(sol);
             if (got != item.expected_pv) {
                 std::cout << "FAIL " << item.name << ": PV differs\n    got      " << got

@@ -118,7 +118,16 @@ rem tools\check_baselines.py so they cannot drift between this file and the .sh.
 if not "%NIL_RUN_BASELINES%"=="1" goto :baselines_done
 echo.
 echo === Banked baselines (~740M nodes, a few minutes) ===
-python tools\check_baselines.py
+rem Resolve the interpreter BEFORE running the check, not after.  A bare
+rem `python` that is not on PATH exits 9009, which `if errorlevel 1` cannot
+rem tell apart from the checker's own exit 1 -- so a missing interpreter would
+rem be reported as a moved baseline.  Probing first also avoids re-running
+rem ~740M nodes under a fallback just to find out which failure it was.
+rem (Line 87 above already needs this dance for bench_history.py.)
+set "NIL_PY=python"
+python --version >nul 2>&1
+if errorlevel 1 set "NIL_PY=py"
+%NIL_PY% tools\check_baselines.py
 if errorlevel 1 goto :fail
 :baselines_done
 
