@@ -2237,7 +2237,32 @@ ObjectiveWeights objective_weights(int tricks_remaining, const SeatRoles& roles,
     ObjectiveWeights w;
     w.primary = roles.nil_already_set() ? 0 : k * k;
     w.secondary = opts.minimise_own_tricks ? k : -k;
-    w.tertiary = opts.minimise_own_tricks ? 0 : 1;
+    // PHASE B1: THE TERTIARY IS A FACT ABOUT THE SHAPE, NOT ABOUT THE
+    // DIRECTION.  It used to read `opts.minimise_own_tricks ? 0 : 1`, which
+    // welded two independent things together: WHETHER A THIRD LEVEL EXISTS and
+    // WHICH WAY THE SECOND ONE RUNS.  The weld is why the maximising direction
+    // could not reach the team-count value space that the minimising one has
+    // always produced -- asking for `max` silently switched the third level
+    // back on.
+    //
+    // The level itself only ever bit on ROLE_NIL_SET (see the caveat on
+    // ObjectiveWeights in search.hpp): with the bid already down, it broke the
+    // tie over WHICH of the two partners took the pair's tricks.  Under the
+    // rearchitecture's decision 1 a nil bidder's tricks count toward their
+    // team's total like anyone else's, so that split has no referent -- the
+    // value is the team total `S = n + p` and nothing below it.
+    //
+    // ZEROED HERE RATHER THAN DELETED, deliberately.  The packing and
+    // unpacking machinery still reads `tertiary`, and deleting it would move
+    // the same banked counts this change moves, for a different reason.  One
+    // variable per patch: this one zeroes, the next removes the machinery, and
+    // if a fixed point moves we know which change moved it.
+    //
+    // LIVE NIL IS UNTOUCHED IN BOTH DIRECTIONS.  There the primary is K*K and
+    // the tertiary is the +1 in a nil trick's `K*K + 1 - K`; changing it would
+    // move every single-nil count in the repo and has nothing to do with the
+    // team-count formulation.  The gate is the shape, and only the shape.
+    w.tertiary = roles.nil_already_set() ? 0 : (opts.minimise_own_tricks ? 0 : 1);
     return w;
 }
 

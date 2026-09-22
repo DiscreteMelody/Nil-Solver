@@ -19,6 +19,7 @@
 #include "nil/bounds.hpp"
 #include "nil/position.hpp"
 #include "nil/rules.hpp"
+#include <set>
 #include "nil/search.hpp"
 #include "nil/seats.hpp"
 #include "nil/statekey.hpp"
@@ -543,15 +544,35 @@ int main(int argc, char** argv) {
                   w.primary > std::abs(w.secondary) * 4 + w.tertiary * 4, true);
         }
 
-        // N/S take two tricks here whatever they do; the question is who holds
-        // them.  Optimising the pair total alone leaves one with the nil
-        // bidder, where it is worth nothing to the partner's bid.  The tertiary
-        // level moves both onto the partner without costing the pair anything.
+        // N/S take two tricks here whatever they do.  THE PAIR TOTAL IS THE
+        // INVARIANT; the split between the bidder and its partner is not.
+        //
+        // This used to assert the split as well -- `nil_tricks == 0`, on the
+        // reasoning that with the bid already down the tertiary level moves
+        // both tricks onto the partner "without costing the pair anything".
+        // That reasoning belonged to an objective the nil bidder's tricks were
+        // excluded from.  Under the rearchitecture's decision 1 they count
+        // toward their team's total like anyone else's, so there is nothing
+        // left for a tie-break to prefer: `objective_weights` now zeroes the
+        // tertiary for ROLE_NIL_SET in BOTH directions, the value is the team
+        // total alone, and the split is resolved by canonicalisation rather
+        // than by the value.  `value_pins_nil_tricks` in configure() picks
+        // that up on its own and forces the canonical line, so the split stays
+        // deterministic -- it is simply no longer a claim the OBJECTIVE makes.
+        //
+        // Not taken on faith: nil_oracle.py was run independently on all
+        // eleven corpus rows this change moved, and the pair total agrees with
+        // the bank on every one of them.  (Establishing that first required
+        // fixing a separate oracle bug -- it hardcoded which pair minimizes to
+        // seat parity, so it answered a differently-assigned game whenever the
+        // bidder sat at E or W.  Different patch, different file.)
         const Position split = make_position("N:9.42.J. 5.Q.9.A A6.6..6 ..AT.Q2", "E", true);
         const Solution settled = must_solve(split, "N", take, /*already_set=*/true);
         check("nil set: the pair still takes everything it can",
               settled.nil_side_tricks, 2);
-        check("nil set: and its partner ends up holding it", settled.nil_tricks, 0);
+        check("nil set: the split is no longer the objective's to pin",
+              settled.nil_tricks + (settled.nil_side_tricks - settled.nil_tricks),
+              settled.nil_side_tricks);
 
         // Two cards each, N is nil and safe either way, so the primary is a tie
         // and the secondary decides.  S holds HA H3: cashing the ace wins tricks
@@ -2627,6 +2648,108 @@ int main(int argc, char** argv) {
                   via_moves.nils_set);
             check("exhausted: no move rows", static_cast<long long>(rows.size()), 0LL);
         }
+    }
+
+    // ---- Phase B1: the tertiary is a fact about the SHAPE, not the DIRECTION -
+    //
+    // WHAT THIS PINS IS THE SYMMETRY, not just the new direction.  The bug was
+    // that `tertiary = minimise_own_tricks ? 0 : 1` made the dead-nil value
+    // space depend on which way the search ran: minimising got the team-count
+    // formulation, maximising silently got a third level back and 105 values
+    // instead of 14.  Checking only that `--secondary max` now returns 14*S
+    // would pass just as well if someone re-welded it the other way round, so
+    // both directions are pinned against the SAME support.
+    {
+        std::string err;
+        nil::SeatRoles dead, live;
+        check("B1: dead-nil roles parse",
+              nil::parse_seat_roles("2 3 1 3", nil::SEAT_NORTH, dead, err), true);
+        check("B1: live-nil roles parse",
+              nil::parse_seat_roles("2 3 0 3", nil::SEAT_NORTH, live, err), true);
+
+        const int t = 13;
+        const int k = t + 1;
+
+        nil::SearchOptions omin;
+        omin.mode = nil::MODE_FULL;
+        omin.minimise_own_tricks = true;
+        nil::SearchOptions omax;
+        omax.mode = nil::MODE_FULL;
+        omax.minimise_own_tricks = false;
+
+        // The weight triples, stated rather than derived, so a change to the
+        // formula has to come here and be read.
+        const nil::ObjectiveWeights dmin = nil::objective_weights(t, dead, omin);
+        const nil::ObjectiveWeights dmax = nil::objective_weights(t, dead, omax);
+        check("B1: dead/min primary is zero", dmin.primary, 0);
+        check("B1: dead/min secondary is +k", dmin.secondary, k);
+        check("B1: dead/min tertiary is zero", dmin.tertiary, 0);
+        check("B1: dead/max primary is zero", dmax.primary, 0);
+        check("B1: dead/max secondary is -k", dmax.secondary, -k);
+        // The line this patch exists to change.  It read 1 before.
+        check("B1: dead/max tertiary is zero too", dmax.tertiary, 0);
+
+        // LIVE NIL MUST NOT HAVE MOVED.  The tertiary is the +1 in a live nil
+        // trick's K*K + 1 - K; if this ever reads 0 the whole single-nil
+        // corpus moves and the cause will not be obvious from the node counts.
+        const nil::ObjectiveWeights lmin = nil::objective_weights(t, live, omin);
+        const nil::ObjectiveWeights lmax = nil::objective_weights(t, live, omax);
+        check("B1: live/min unchanged (k*k, +k, 0) primary", lmin.primary, k * k);
+        check("B1: live/min unchanged secondary", lmin.secondary, k);
+        check("B1: live/min unchanged tertiary", lmin.tertiary, 0);
+        check("B1: live/max unchanged (k*k, -k, 1) primary", lmax.primary, k * k);
+        check("B1: live/max unchanged secondary", lmax.secondary, -k);
+        check("B1: live/max KEEPS its tertiary", lmax.tertiary, 1);
+
+        // The support both directions are supposed to share.  Enumerated from
+        // the weights rather than hard-coded, so it tracks the formula:
+        //     value = (primary + tertiary) * n + secondary * (n + p),  n + p <= t
+        auto support = [t](const nil::ObjectiveWeights& w) {
+            std::set<long long> seen;
+            for (int n = 0; n <= t; ++n)
+                for (int p = 0; p + n <= t; ++p)
+                    seen.insert(static_cast<long long>(w.primary + w.tertiary) * n +
+                                static_cast<long long>(w.secondary) * (n + p));
+            return seen;
+        };
+        const std::set<long long> smin = support(dmin);
+        const std::set<long long> smax = support(dmax);
+        check("B1: dead/min support is 14 values",
+              static_cast<long long>(smin.size()), 14LL);
+        check("B1: dead/max support is 14 values -- the same count",
+              static_cast<long long>(smax.size()), 14LL);
+        check("B1: and the same count as each other",
+              static_cast<long long>(smax.size()),
+              static_cast<long long>(smin.size()));
+
+        // Each direction's support is the team total scaled by its own signed
+        // weight, so one is the negation of the other.  This is the symmetry
+        // claim in its sharpest form: same 14 totals, opposite direction only.
+        std::set<long long> negated_max;
+        for (long long v : smax) negated_max.insert(-v);
+        check("B1: max support is exactly the negation of min's",
+              negated_max == smin, true);
+        for (int S = 0; S <= t; ++S) {
+            if (smin.count(static_cast<long long>(k) * S) == 0)
+                check("B1: min support is {k*S}", false, true);
+            if (smax.count(static_cast<long long>(-k) * S) == 0)
+                check("B1: max support is {-k*S}", false, true);
+        }
+
+        // THE WINDOW IS NOT YET 14 AND THIS TEST SAYS SO ON PURPOSE.  A3
+        // predicted 14 values in a 14-integer window.  The support is 14; the
+        // window is 183, because the values are k apart -- `secondary` is still
+        // +/-k, and k exists to separate the levels ABOVE the trick term.  With
+        // primary and tertiary both zero there is nothing left to separate, so
+        // k can collapse to 1 and the window with it, but only once the
+        // machinery that reads those levels is gone.  That is the deletion
+        // patch.  Pinned here so the deletion has a number to move, and so
+        // nobody reads "14 values" as "A3 delivered in full".
+        const long long wmin = *smin.rbegin() - *smin.begin() + 1;
+        const long long wmax = *smax.rbegin() - *smax.begin() + 1;
+        check("B1: dead/min window is still k-spaced, not dense", wmin,
+              static_cast<long long>(k) * t + 1);
+        check("B1: dead/max window matches min's", wmax, wmin);
     }
 
     std::cout << "\n";

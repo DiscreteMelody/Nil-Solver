@@ -606,7 +606,19 @@ def objective_weights(
     k = tricks_remaining + 1
     primary = 0 if nil_already_set else k * k
     secondary_weight = -k if secondary == "max" else k
-    tertiary = 1 if secondary == "max" else 0
+    # THE THIRD LEVEL IS A FACT ABOUT THE SHAPE, NOT ABOUT THE DIRECTION.  This
+    # read `1 if secondary == "max" else 0`, welding two independent things
+    # together -- the same weld patch 106 removed from the solver's
+    # objective_weights.  Mirrored here so the two stay comparable: an oracle
+    # answering a different question than the solver is worse than no oracle.
+    #
+    # The paragraphs above describing what level 3 does when the nil is already
+    # set now describe history rather than behaviour.  With the bidder's tricks
+    # counting toward its team's total, lines with the same pair total have
+    # nothing left to prefer between them; the split is resolved by the
+    # canonical line instead of by the objective.  Level 3 therefore never
+    # fires today and is kept only until the machinery reading it is removed.
+    tertiary = 0 if nil_already_set else (1 if secondary == "max" else 0)
     return primary, secondary_weight, tertiary
 
 
@@ -636,7 +648,21 @@ def _search(
             return cached
 
     seat = (leader + len(trick)) % 4
-    maximizing = (seat % 2) == 1  # E and W
+    # WHICH PAIR MINIMIZES IS DERIVED, NOT ASSUMED.  This read
+    # `maximizing = (seat % 2) == 1  # E and W`, which hardcoded the minimizing
+    # side to parity 0 whatever seat had actually bid.  Two lines below,
+    # `winner % 2 == ctx.designated % 2` derives the pair correctly -- its own
+    # comment says "whichever it is" -- and _search_multi has always derived it
+    # too (`!= ctx.minimizing_parity`).  Only this line did not.
+    #
+    # WHAT IT COST.  With the bidder at E or W the value accumulated for the
+    # E/W pair while E/W were told to MAXIMIZE it, so both sides played the
+    # wrong way round and the opponents cooperated with the nil pair.  The
+    # reported pair total was therefore never below the true one and usually
+    # above it -- a one-directional error, which is why it looked like a
+    # plausible answer rather than a crash.  Six dead-nil corpus rows pinned by
+    # the solver caught it; see the regression block in _selftest.
+    maximizing = (seat % 2) != (ctx.designated % 2)
 
     best_value: Optional[int] = None
     best_pv: Tuple[Play, ...] = ()
@@ -2475,7 +2501,12 @@ def selftest(verbose: bool = True) -> int:
     check("weights: max", objective_weights(4, "max", False), (25, -5, 1))
     check("weights: min", objective_weights(4, "min", False), (25, 5, 0))
     check("weights: nil already set drops the primary",
-          objective_weights(4, "max", True), (0, -5, 1))
+          objective_weights(4, "max", True), (0, -5, 0))
+    # ...and the third level with it, in BOTH directions.  The pair is what the
+    # value measures once the bid is down; the split is not the objective's.
+    check("weights: nil already set drops the third level too, max",
+          objective_weights(4, "max", True)[2], 0)
+    check("weights: ...and min, which never had it", objective_weights(4, "min", True)[2], 0)
     check("weights: each level outranks the ones below it",
           objective_weights(4, "max", False)[0] > abs(objective_weights(4, "max", False)[1]) * 4
           + objective_weights(4, "max", False)[2] * 4, True)
@@ -2495,7 +2526,13 @@ def selftest(verbose: bool = True) -> int:
     )
     settled = solve(split, 0, secondary="max", nil_already_set=True)
     check("nil set: the pair still takes everything it can", settled.side_tricks, 2)
-    check("nil set: and its partner ends up holding it", settled.tricks, 0)
+    # The split assertion that used to sit here (`settled.tricks == 0`) asserted
+    # what level 3 bought.  With the bidder's tricks counting toward the pair
+    # there is nothing to buy: the pair total is the invariant, the split is
+    # decided by the canonical line.  Same change as patch 106 made in the
+    # solver's own test.
+    check("nil set: the split is not the objective's to pin",
+          settled.tricks <= settled.side_tricks, True)
 
     # Level 3 must never buy a better split at the cost of the pair's total.
     for seed in range(6):
@@ -2511,6 +2548,34 @@ def selftest(verbose: bool = True) -> int:
                      nil_already_set=True)
         check(f"seed {300+seed}: shedding is a pair total, not a split",
               shed.side_tricks + shed.opponent_tricks, f.position.tricks_remaining)
+
+    # ---- regression: which pair minimizes, for a bidder off the N/S axis ----
+    #
+    # These six are corpus rows from tests/corpus/positions.txt, pinned by the
+    # solver and unchanged since they were banked.  Three have the bidder at W
+    # (odd parity) and were answered WRONG before `maximizing` was derived from
+    # `ctx.designated`; two have it at S and are the positive control that the
+    # fix moves nothing it should not; one has the bidder at W but a pair total
+    # of zero, where both assignments coincide.
+    #
+    # Checked as (tricks, side_tricks) because the bug moved the PAIR TOTAL, not
+    # just the split -- a split-only check would have passed throughout.
+    for name, pbn, leader, seats, broken, played, want in (
+        # row        pbn / leader / seats / spades-broken / trick / (tricks, side_tricks)
+        ("c4-0011", "N:..32.2 K.9..J6 84..Q6. .3.85.", 3, (3, 2, 3, 1), True, "HK S7", (0, 1)),
+        ("c4-0110", "N:J..3.97 .AT2..4 8532... 6..Q86.", 2, (3, 2, 3, 1), True, "", (0, 0)),
+        ("c4-0112", "N:.K53..3 .7.AQ.6 82.T.5. 9..8.J2", 0, (3, 2, 3, 1), False, "", (1, 2)),
+        ("c4-0176", "N:6..A.2 .7.T3.A AQ.A.. ..5.54", 2, (3, 2, 3, 1), True, "H2 H6 HJ", (0, 0)),
+        ("c4-0050", "N:QT...Q2 53.87.. A.J.J6. J.K.74.", 1, (2, 3, 1, 3), False, "", (1, 3)),
+        ("c4-0100", "N:.9..QT8 T.J.8.A .8.AQ.5 4..KJ.7", 1, (2, 3, 1, 3), False, "", (1, 1)),
+    ):
+        pos = Position.build(
+            parse_pbn(pbn), leader=leader, spades_broken=broken,
+            current_trick=tuple(card_from_str(c) for c in played.split() if c),
+        )
+        got = solve_seats(pos, list(seats), secondary="max")
+        check(f"{name}: pair total, bidder at {SEAT_CHARS[seats.index(1)]}",
+              (got.tricks, got.side_tricks), want)
 
     # Two cards each, N is nil and safe either way, so the primary is a tie and
     # the secondary decides.  S holds HA H3: cashing the ace wins tricks for
