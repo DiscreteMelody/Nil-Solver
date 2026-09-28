@@ -947,7 +947,14 @@ int main(int argc, char** argv) {
             // pinning an underdetermined value is how it became load-bearing in
             // the first place.  `side_tricks` below is the determined quantity
             // and is checked on every row, dead nil or not.
-            const bool split_is_a_witness = item.roles.nil_already_set();
+            // And since the primary became a once-per-bid charge (T's decision,
+            // Sept 2026) the same holds on a live single-nil row whose nil
+            // BREAKS: past its first trick the bidder's tricks count for the
+            // pair like the cover's, so how many it takes is a witness too.
+            // A nil that survives still pins its count -- zero.
+            const bool split_is_a_witness =
+                item.roles.nil_already_set() ||
+                (nil::nil_count(item.roles) == 1 && item.expected > 0);
             if (item.expected >= 0 && !split_is_a_witness &&
                 sol.nil_tricks != item.expected) {
                 std::cout << "FAIL " << item.name << ": expected " << item.expected

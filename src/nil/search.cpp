@@ -652,7 +652,14 @@ inline int score_trick(const Ctx& ctx, const State& st, int winner, State& next)
             next.nils_broken = static_cast<unsigned char>(st.nils_broken | bit);
         }
     } else if (winner == ctx.nil_seat) {
-        gained += ctx.primary_weight;
+        // CHARGED ONCE (T's decision, Sept 2026): the nil's first trick breaks
+        // it and carries the primary; any later one counts for the pair like
+        // the cover's.  nils_broken remembers which case this is.
+        const unsigned bit = 1u << winner;
+        if ((ctx.nil_mask & bit) && !(st.nils_broken & bit)) {
+            gained += ctx.primary_weight;
+            next.nils_broken = static_cast<unsigned char>(st.nils_broken | bit);
+        }
     }
     if (((winner ^ ctx.nil_seat) & 1) == 0) gained += ctx.secondary_weight;
     return gained;
@@ -753,6 +760,49 @@ int value_after_impl(Ctx& ctx, const State& st, CardId card, int alpha, int beta
     return value;
 }
 
+// THE LATER-TRICKS TRIANGLE UNDER A PRIMARY CHARGED ONCE.
+//
+// triangle_bounds() prices every nil trick at per_nil = primary + secondary,
+// which was the objective when each of the bidder's tricks was charged.  Now
+// only the first is (T's decision, Sept 2026): with n nil tricks and p cover
+// tricks the value is
+//
+//     P * [n >= 1] + S * (n + p),     P = 0 once the nil is already broken,
+//
+// over the same region n >= kn, p >= kp, n + p <= room.  Where n >= 1 is forced
+// (kn >= 1) or the nil is already down, the indicator is a constant and the
+// value depends on n + p alone.  Otherwise the region splits into the n = 0
+// edge and the n >= 1 remainder, and each is linear in one count.  Every piece
+// is monotone in that count, so its ends are its extremes.
+bool triangle_once(const Ctx& ctx, const State& st, int kn, int kp, int room, int& hi, int& lo) {
+    if (room < kn + kp) return false;
+    const long long S = ctx.secondary_weight;
+    const bool broken = (st.nils_broken & (1u << ctx.nil_seat)) != 0;
+    const long long P = broken ? 0 : ctx.primary_weight;
+    long long h = 0, l = 0;
+    bool any = false;
+    auto take = [&](long long v) {
+        if (!any || v > h) h = v;
+        if (!any || v < l) l = v;
+        any = true;
+    };
+    if (broken || kn >= 1) {
+        const long long c = kn >= 1 ? P : 0;  // broken: P is already zero
+        take(c + S * (kn + kp));
+        take(c + S * room);
+    } else {
+        take(S * kp);    // n = 0, p from kp ...
+        take(S * room);  // ... to room
+        if (room >= 1 + kp) {
+            take(P + S * (1 + kp));  // n >= 1, n + p from 1 + kp ...
+            take(P + S * room);      // ... to room
+        }
+    }
+    hi = static_cast<int>(h);
+    lo = static_cast<int>(l);
+    return true;
+}
+
 // BIDS WHOSE FATE NO LINE OF PLAY CAN CHANGE.  With a bid on each side, or
 // both bids on one side, the primary is charged once per bid, on its first
 // trick.  So when every bid still live is either
@@ -789,6 +839,8 @@ bool dd_pinned_offset(const Ctx& ctx, const State& st, int& offset) {
     }
     return true;
 }
+
+CardId canonical_move_for(Ctx& ctx, const State& st, int value, int alpha, int beta);
 
 // THE DOUBLE-DUMMY HANDOFF.  Called at a trick boundary once no bid in the
 // objective is still live.  The value from here is C + W * F, F being the far
@@ -844,6 +896,14 @@ int dd_settled_value(Ctx& ctx, const State& st, CardId& best_move, int alpha, in
         const int f = far_is_ns ? ns : t - ns;
         value = static_cast<int>(C + W * f);
         best_move = lead;
+        // The engine's lead is optimal but not necessarily the canonically
+        // lowest optimal card.  When the caller is not re-deriving the line
+        // canonically itself (ordering off), do it here, so the principal
+        // variation is the same one the oracle's strict-improvement scan picks.
+        if (!ctx.canonicalise) {
+            const CardId c = canonical_move_for(ctx, st, value, alpha, beta);
+            if (c != NO_CARD) best_move = c;
+        }
     }
     if (best_move == NO_CARD) best_move = first_legal_move(st);
     ctx.nodes += eng.stats().nodes - nodes_before;
@@ -953,7 +1013,7 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
     if (ctx.dd_engine && st.trick_len == 0) {
         int offset = 0;
         if ((ctx.nil_mask & ~st.nils_broken) == 0 ||
-            ((ctx.opposing || ctx.multi_nil) && dd_pinned_offset(ctx, st, offset))) {
+            dd_pinned_offset(ctx, st, offset)) {
             if constexpr (TRACK)
                 *essential = st.hands[0] | st.hands[1] | st.hands[2] | st.hands[3];
             return dd_settled_value(ctx, st, best_move, alpha, beta, offset);
@@ -1245,7 +1305,10 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
     // encoding a key and hashing it, and a node they answer wants neither a
     // probe nor a store: it is not work the table needs to remember, because
     // reaching this position again costs the same few mask tests.
-    if (ctx.static_bounds && ctx.value_is_nil_tricks && st.trick_len == 0) {
+    // Both proofs speak about the nil's FIRST trick, which is the only one the
+    // primary charges; once it is broken they have nothing left to say.
+    if (ctx.static_bounds && ctx.value_is_nil_tricks && st.trick_len == 0 &&
+        !(st.nils_broken & (1u << ctx.nil_seat))) {
         // Whether the nil bidder still holds a spade is the cheap gate on both
         // proofs, and they want opposite answers to it -- a spade is what makes
         // safety unprovable and what makes a forced trick provable -- so it is
@@ -1468,14 +1531,14 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
                 const int co = count_cards((st.hands[lho] | st.hands[rho]) & sp);
                 int ghi = 0, glo = 0;
                 const bool bounded =
-                    triangle_bounds(per_nil, per_partner, cn, cp, t - co, ghi, glo);
+                    triangle_once(ctx, st, cn, cp, t - co, ghi, glo);
                 if (!bounded || ghi <= alpha || glo >= beta) {
                     if (ctx.quick_stats) ++ctx.quick_stats->gate_forced;
                     int forced[4];
                     forced_spade_tricks(st.hands, forced);
                     const int ko = forced[lho] + forced[rho];
                     int hi2 = 0, lo2 = 0;
-                    if (triangle_bounds(per_nil, per_partner, forced[ctx.nil_seat],
+                    if (triangle_once(ctx, st, forced[ctx.nil_seat],
                                         forced[cover], t - ko, hi2, lo2)) {
                         if (hi2 <= alpha) {
                             if (ctx.quick_stats) ++ctx.quick_stats->fire_forced;
@@ -1504,7 +1567,7 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
                         room = t - k;
                     }
                     int hi2 = 0, lo2 = 0;
-                    if (triangle_bounds(per_nil, per_partner, kn, kp, room, hi2, lo2)) {
+                    if (triangle_once(ctx, st, kn, kp, room, hi2, lo2)) {
                         if (hi2 <= alpha) {
                             best_move = first_legal_move(st);
                             return hi2;
@@ -1623,7 +1686,8 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
             // that the bound is a lower bound for the reason stated rather than
             // for a reason that happens to hold for today's weights.
             const int per_nil = ctx.primary_weight + ctx.secondary_weight;
-            if (per_nil > 0 && nil_must_take_a_trick(st.hands, ctx.nil_seat)) {
+            if (per_nil > 0 && !(st.nils_broken & (1u << ctx.nil_seat)) &&
+                nil_must_take_a_trick(st.hands, ctx.nil_seat)) {
                 const int worst_partner =
                     ctx.secondary_weight < 0 ? ctx.secondary_weight * (t - 1) : 0;
                 const int lo = per_nil + worst_partner;
@@ -1669,7 +1733,7 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
     if (ctx.tt && (st.trick_len == 0 || !ctx.tt_boundaries_only)) {
         keyed = encode_state_key(st.hands, st.leader, st.broken, st.trick, st.trick_len, key,
                                  profile, st.nils_broken,
-                                     ctx.multi_nil || ctx.opposing);
+                                     ctx.multi_nil || ctx.opposing || ctx.nil_mask != 0);
         if (keyed) {
             hash = mix_key(key);
             // A bound recorded under a wider window is still a fact about the
@@ -2180,7 +2244,7 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
         ctx.dd_engine = opts.dd_engine && !ctx.conjunction && opts.mode == MODE_FULL && w_far > 0;
         ctx.dd_weight = w_far;
         ctx.dd_const_per_trick = ctx.opposing ? 0 : weights.secondary;
-        ctx.dd_live_bounds = ctx.dd_engine && opts.dd_live_bounds && (ctx.opposing || ctx.multi_nil);
+        ctx.dd_live_bounds = ctx.dd_engine && opts.dd_live_bounds;
     }
     // Which QUESTION this solve's values answer.  The key says which position an
     // entry is about; without this a two-nil value would be readable by a
@@ -2480,7 +2544,7 @@ ObjectiveWeights objective_weights(int tricks_remaining, const SeatRoles& roles,
     // is no split left for a level below the total to break.
     w.primary = roles.nil_already_set()
                     ? 0
-                    : (opts.minimise_own_tricks ? k * k : k * k + 1);
+                    : k * k;
     // AND K ITSELF COLLAPSES WHERE THERE IS NOTHING LEFT TO SEPARATE (B1b).
     //
     // K is not a unit, it is a SEPARATOR: the trick term can reach K*t in
@@ -3149,11 +3213,8 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
                              ? weights.primary * (far_side_rank(tally.broken_mask, ctx) -
                                                   far_side_rank(0, ctx)) +
                                    weights.secondary * tally.opponent_tricks
-                         : ctx.multi_nil
-                             ? weights.primary * tally.live_nils_broken +
-                                   weights.secondary * tally.nil_side_tricks
-                             : weights.primary * tally.nil_tricks +
-                                   weights.secondary * tally.nil_side_tricks;
+                         : weights.primary * tally.live_nils_broken +
+                               weights.secondary * tally.nil_side_tricks;
     if (replayed != value) {
         std::ostringstream os;
         os << "internal inconsistency: search says " << value << ", replaying the PV gives "
@@ -3450,11 +3511,8 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
                                  ? weights.primary * (far_side_rank(tally.broken_mask, ctx) -
                                                       far_side_rank(0, ctx)) +
                                        weights.secondary * tally.opponent_tricks
-                             : ctx.multi_nil
-                                 ? weights.primary * tally.live_nils_broken +
-                                       weights.secondary * tally.nil_side_tricks
-                                 : weights.primary * tally.nil_tricks +
-                                       weights.secondary * tally.nil_side_tricks;
+                             : weights.primary * tally.live_nils_broken +
+                                   weights.secondary * tally.nil_side_tricks;
         if (replayed != ms.value) {
             std::ostringstream os;
             os << "internal inconsistency: " << card_to_string(ms.card) << " scores " << ms.value

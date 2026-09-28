@@ -16,6 +16,7 @@
 #include <type_traits>
 #include <vector>
 
+#include "nil/ddtricks.hpp"
 #include "nil/bounds.hpp"
 #include "nil/position.hpp"
 #include "nil/rules.hpp"
@@ -529,11 +530,11 @@ int main(int argc, char** argv) {
 
         check("weights: take", nil::objective_weights(4, live, take).secondary, -5);
         check("weights: shed", nil::objective_weights(4, live, shed).secondary, 5);
-        // B1b: what a nil trick is worth is ONE coefficient now.  The old
-        // tertiary is the `+ 1` in the taking direction; there is no second
-        // field to read it off, so it is pinned here on `primary` directly.
-        check("weights: a nil trick is k*k + 1 when taking",
-              nil::objective_weights(4, live, take).primary, 5 * 5 + 1);
+        // The primary is charged once, on the nil's first trick, and is K*K in
+        // both directions: with later nil tricks worth what the cover's are,
+        // the old `+ 1` that told the two apart has nothing left to do.
+        check("weights: the nil's first trick is k*k when taking",
+              nil::objective_weights(4, live, take).primary, 5 * 5);
         check("weights: and k*k when shedding",
               nil::objective_weights(4, live, shed).primary, 5 * 5);
         check("weights: already set drops the primary",
@@ -752,6 +753,13 @@ int main(int argc, char** argv) {
         // variation, and strictly more nodes.
         SearchOptions wide = full;
         wide.narrow_window = false;
+        // Node counts are only comparable from the same starting point.  The
+        // double-dummy engine's table survives between solves by design (its
+        // entries are valid across deals), so without this the second run
+        // would inherit the first one's engine work and look cheaper.
+        nil::dd::engine().clear();
+        const Solution narrowed = must_solve(pos, "N", full);
+        nil::dd::engine().clear();
         const Solution exhaustive = must_solve(pos, "N", wide);
         check("narrowing does not change the value", slow.value, exhaustive.value);
         bool same_pv = slow.pv.size() == exhaustive.pv.size();
@@ -760,7 +768,7 @@ int main(int argc, char** argv) {
                       slow.pv[i].card == exhaustive.pv[i].card;
         }
         check("narrowing does not change the principal variation", same_pv, true);
-        check("narrowing visits fewer nodes", slow.nodes < exhaustive.nodes, true);
+        check("narrowing visits fewer nodes", narrowed.nodes < exhaustive.nodes, true);
         check("and without it full mode stores nothing but exact values",
               exhaustive.tt_partial, 0ull);
 
@@ -2693,16 +2701,14 @@ int main(int argc, char** argv) {
         check("B1: dead/max primary is zero", dmax.primary, 0);
         check("B1: dead/max secondary collapses to -1", dmax.secondary, -1);
 
-        // LIVE NIL MUST NOT HAVE MOVED.  A live nil trick is worth K*K + 1 in
-        // the maximising direction -- the `+ 1` is where B1b folded the old
-        // tertiary, and it is now written into `primary` directly.  If the max
-        // primary ever reads K*K the whole single-nil corpus moves and the
-        // cause will not be obvious from the node counts.
+        // LIVE NIL.  K*K in both directions since the primary became a
+        // once-per-bid charge (T's decision, Sept 2026); the `+ 1` B1b folded
+        // in for the maximising direction went with the per-trick charge.
         const nil::ObjectiveWeights lmin = nil::objective_weights(t, live, omin);
         const nil::ObjectiveWeights lmax = nil::objective_weights(t, live, omax);
         check("B1: live/min unchanged primary is k*k", lmin.primary, k * k);
         check("B1: live/min unchanged secondary", lmin.secondary, k);
-        check("B1: live/max primary carries the folded +1", lmax.primary, k * k + 1);
+        check("B1: live/max primary is k*k", lmax.primary, k * k);
         check("B1: live/max unchanged secondary", lmax.secondary, -k);
 
         // The support both directions are supposed to share.  Enumerated from

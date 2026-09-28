@@ -563,16 +563,28 @@ def objective_weights(
 
     The search returns ONE integer that N/S minimize and E/W maximize:
 
-        value = primary   * (tricks the designated player takes)
+        value = primary   * (1 if the designated player takes any trick, else 0)
               + secondary * (tricks N/S take, both partners together)
 
     with K = tricks_remaining + 1 and secondary = +/-K, so the level above
     strictly outranks anything the trick term can contribute and the two are
     compared lexicographically.
 
-    LEVEL 1, primary.  What a trick to the designated player is worth.  K*K
-    minimizing, K*K + 1 maximizing, and ZERO once the nil is already set, which
-    switches the whole level off and leaves the pair's total alone.
+    LEVEL 1, primary.  What the designated player's FIRST trick is worth: K*K,
+    charged once, on the trick that breaks the nil, and never again.  ZERO once
+    the nil is already set, which switches the whole level off and leaves the
+    pair's total alone.
+
+    CHARGED ONCE, NOT PER TRICK (T's decision, Sept 2026).  A trick the nil
+    bidder takes after its first counts toward the pair like any other: one nil
+    trick and six cover tricks is the same outcome as three and four.  Until
+    then the level weighted EVERY trick the bidder took, K*K minimizing and
+    K*K + 1 maximizing, so a broken nil still ducked to keep its own count down
+    and the pair gave up tricks to do it.  The + 1 was what made the bidder's
+    and the cover's tricks land on different values; with the bidder's later
+    tricks worth exactly what the cover's are, there is nothing left for it to
+    separate.  This is the objective solve_partner_nils has always charged, one
+    bid's worth.
 
     LEVEL 2, secondary.  The N/S pair's trick count.  Negative when they want
     tricks (minimizing the value maximizes them), positive when they want rid
@@ -603,7 +615,7 @@ def objective_weights(
     if nil_already_set:
         primary = 0
     else:
-        primary = k * k if secondary == "min" else k * k + 1
+        primary = k * k
     # K IS A SEPARATOR, NOT A UNIT.  It spaces the trick term far enough apart
     # that a run of tricks can never outweigh the level above it.  With a dead
     # nil that level is zero, so there is nothing to separate and a step of 1
@@ -621,6 +633,7 @@ def _search(
     trick: Tuple[Card, ...],
     spades_broken: bool,
     ctx: _Ctx,
+    nil_broken: bool = False,
 ) -> Tuple[int, Tuple[Play, ...]]:
     """Return (objective value from here on, PV from here).
 
@@ -635,7 +648,7 @@ def _search(
 
     key = None
     if ctx.memo is not None:
-        key = (hands, leader, trick, spades_broken)
+        key = (hands, leader, trick, spades_broken, nil_broken)
         cached = ctx.memo.get(key)
         if cached is not None:
             return cached
@@ -673,14 +686,18 @@ def _search(
         if len(played) == 4:
             winner = trick_winner(leader, played)
             gained = 0
-            if winner == ctx.designated:
-                gained += ctx.primary_weight
+            broken_after = nil_broken
+            if winner == ctx.designated and not nil_broken:
+                gained += ctx.primary_weight   # the first trick, and only that one
+                broken_after = True
             if winner % 2 == ctx.designated % 2:   # the N/S pair, whichever it is
                 gained += ctx.secondary_weight
-            sub_value, sub_pv = _search(next_hands, winner, (), next_broken, ctx)
+            sub_value, sub_pv = _search(next_hands, winner, (), next_broken, ctx,
+                                        broken_after)
             value = gained + sub_value
         else:
-            value, sub_pv = _search(next_hands, leader, played, next_broken, ctx)
+            value, sub_pv = _search(next_hands, leader, played, next_broken, ctx,
+                                    nil_broken)
 
         # Strict improvement only, so ties keep the canonically lowest card.
         better = (
@@ -1980,8 +1997,9 @@ def solve(
 ) -> Solution:
     """Exhaustive minimax over a lexicographic objective.
 
-    Primary (unless nil_already_set): the designated player's trick count.
-    N/S minimize it, E/W maximize it, exactly as before.
+    Primary (unless nil_already_set): whether the designated player takes a
+    trick at all.  N/S try to keep it off, E/W try to force one on.  Only the
+    first trick is charged; later ones count toward the pair like any other.
 
     Secondary, used only to break ties in the primary:
         secondary="max"  each pair takes as many tricks as it can
@@ -2029,7 +2047,7 @@ def solve(
     # back on the value the search reported.
     tally = replay_pv(position, list(pv), designated)
     replayed = (
-        primary_weight * tally.designated
+        primary_weight * min(tally.designated, 1)
         + secondary_weight * tally.designated_side
     )
     if replayed != value:
@@ -2552,10 +2570,10 @@ def selftest(verbose: bool = True) -> int:
     )
 
     print("Lexicographic secondary objective")
-    # (primary, secondary).  The old third field folded into the first: a live
-    # nil trick in the "max" direction is worth K*K + 1, which is where the old
-    # tertiary went.  See objective_weights.
-    check("weights: max", objective_weights(4, "max", False), (26, -5))
+    # (primary, secondary).  K*K in both directions: the primary is charged
+    # once, on the nil's first trick, so there is no longer a + 1 separating
+    # the bidder's tricks from the cover's.  See objective_weights.
+    check("weights: max", objective_weights(4, "max", False), (25, -5))
     check("weights: min", objective_weights(4, "min", False), (25, 5))
     # (0, -1), not (0, -5): with no level above the trick term, K has nothing
     # to separate and collapses to 1.  See objective_weights.
@@ -2686,8 +2704,9 @@ def selftest(verbose: bool = True) -> int:
         f = random_fixture(seed=200 + seed, cards_per_hand=4)
         high = solve(f.position, f.designated, use_memo=True, secondary="max")
         low = solve(f.position, f.designated, use_memo=True, secondary="min")
+        # The primary is whether the nil breaks, not how many tricks it takes.
         check(f"seed {200+seed}: secondary never moves the primary",
-              high.tricks, low.tricks)
+              min(high.tricks, 1), min(low.tricks, 1))
 
     print("Parsing and fixtures")
     full = "N:8.K5.KT2.KQT9762 AQT643.T.QJ864.8 J9.A943.73.AJ543 K752.QJ8762.A95."

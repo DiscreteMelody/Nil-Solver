@@ -108,6 +108,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     considered = 0
     changed = 0
+    verdicts_moved = 0
     for index, raw in enumerate(lines):
         line = raw.strip()
         if not line or line.startswith("#"):
@@ -139,15 +140,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             note.append("pv only")
         print("  %-10s %s" % (record["name"], ", ".join(note)))
 
-        parts[NILS_SET_COL] = str(
-            1 if (case.nil_already_set or nil_tricks > 0) else 0
-        )
+        # `case` used to be read here, but it only exists inside recompute();
+        # the already-set flag is the row's own seats column.
+        already_set = oracle.nil_already_set_of(
+            oracle.parse_roles(record["seats"], oracle.pbn_anchor(record["pbn"])))
+        new_nils_set = str(1 if (already_set or nil_tricks > 0) else 0)
+        if new_nils_set != record["nils_set"]:
+            # No objective change below the primary may move the verdict; if
+            # one does, that is a bug to look at, not a row to re-bank.
+            print("  %-10s VERDICT MOVED %s->%s" % (record["name"], record["nils_set"],
+                                                   new_nils_set))
+            verdicts_moved += 1
+        parts[NILS_SET_COL] = new_nils_set
         parts[NIL_TRICKS_COL] = str(nil_tricks)
         parts[SIDE_TRICKS_COL] = str(side_tricks)
         parts[PV_COL] = pv
         lines[index] = " | ".join(parts)
 
-    print("\n%d row(s) matched the filter, %d changed" % (considered, changed))
+    print("\n%d row(s) matched the filter, %d changed, %d verdict(s) moved"
+          % (considered, changed, verdicts_moved))
     if args.dry_run:
         print("(dry run, nothing written)")
         return 0

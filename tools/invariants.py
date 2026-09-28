@@ -316,7 +316,15 @@ def check(exe: str, spec: Dict, timeout: float, rng: random.Random,
         # and this test found that out by permuting suits on c4-0032 and
         # watching it move 2 -> 3.  The pair total is what the objective
         # determines and what is checked below.
-        undetermined_split = nil_role_of(spec) == 1
+        # A dead nil pins no split, and neither does a live one that breaks:
+        # past its first trick the bidder's tricks count for the pair like the
+        # cover's (the primary is charged once), so which partner holds them is
+        # a witness.  A nil that survives still pins its count at zero.
+        try:
+            nil_took = int(base.get("tricks") or 0)
+        except ValueError:
+            nil_took = 0
+        undetermined_split = nil_role_of(spec) == 1 or nil_took > 0
         if mode == "fast":
             fields = ["nils_set"]
         else:
