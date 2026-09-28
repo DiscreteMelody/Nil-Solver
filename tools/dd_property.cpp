@@ -1,5 +1,7 @@
 // Property test for nil/ddtricks: the double-dummy engine against an
-// independent brute-force minimax, on random positions of up to seven tricks.
+// independent brute-force minimax, on random positions.
+//
+//   dd_property <cases> <max tricks per hand> <seed>
 //
 // What it checks, for every position:
 //   * ns_exact returns the brute-force N/S trick count;
@@ -20,7 +22,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <random>
-#include <unordered_map>
 #include <vector>
 
 #include "nil/cards.hpp"
@@ -39,26 +40,59 @@ struct RefPos {
     bool broken;
 };
 
-struct KeyHash {
-    std::size_t operator()(const std::vector<std::uint64_t>& k) const {
-        std::uint64_t x = 1469598103934665603ull;
-        for (std::uint64_t v : k) x = (x ^ v) * 1099511628211ull;
-        return static_cast<std::size_t>(x);
-    }
+// The reference's memo: an open-addressed table on the EXACT position, stamped
+// with a generation so starting a new position costs nothing.  (A
+// std::unordered_map keyed on a heap-allocated vector was the first version;
+// its per-lookup allocation and O(buckets) clear() made this test take ten
+// minutes under MSVC.)  Leader and breaking state ride in padding bits of the
+// first hand, which a Hand never uses.
+struct MemoSlot {
+    Hand h[4];
+    std::uint32_t gen;
+    std::int8_t value;
 };
+constexpr std::size_t MEMO_SLOTS = std::size_t{1} << 20;
+std::vector<MemoSlot> memo(MEMO_SLOTS);
+std::uint32_t memo_gen = 1;
+std::size_t memo_used = 0;
 
-std::unordered_map<std::vector<std::uint64_t>, int, KeyHash> memo;
+void memo_new_position() {
+    ++memo_gen;
+    memo_used = 0;
+}
+
+std::size_t memo_index(const Hand k[4]) {
+    std::uint64_t x = k[0] * 0x9E3779B97F4A7C15ull;
+    x ^= (k[1] + 0x632BE59BD9B4E019ull) * 0xC2B2AE3D27D4EB4Full;
+    x ^= (k[2] + 0x85EBCA77C2B2AE63ull) * 0x165667B19E3779F9ull;
+    x ^= (k[3] + 0x27D4EB2F165667C5ull) * 0xD6E8FEB86659FD93ull;
+    x ^= x >> 29;
+    return static_cast<std::size_t>(x) & (MEMO_SLOTS - 1);
+}
+
+// Returns the slot holding `k`, or the empty slot where it belongs, or null
+// when the table is too full to be worth probing (the search then simply
+// recomputes -- slower, never wrong).
+MemoSlot* memo_find(const Hand k[4]) {
+    std::size_t i = memo_index(k);
+    for (int probes = 0; probes < 64; ++probes, i = (i + 1) & (MEMO_SLOTS - 1)) {
+        MemoSlot& m = memo[i];
+        if (m.gen != memo_gen) return &m;
+        if (m.h[0] == k[0] && m.h[1] == k[1] && m.h[2] == k[2] && m.h[3] == k[3]) return &m;
+    }
+    return nullptr;
+}
 
 // N/S tricks from here under optimal play, brute force.
 int reference(const RefPos& p) {
     const Hand all = p.h[0] | p.h[1] | p.h[2] | p.h[3];
     if (!all && p.len == 0) return 0;
-    std::vector<std::uint64_t> key;
+    Hand key[4] = {p.h[0] | (static_cast<Hand>(p.leader | (p.broken ? 4 : 0)) << 61), p.h[1],
+                   p.h[2], p.h[3]};
     if (p.len == 0) {
-        key = {p.h[0], p.h[1], p.h[2], p.h[3],
-               static_cast<std::uint64_t>(p.leader | (p.broken ? 4 : 0))};
-        auto it = memo.find(key);
-        if (it != memo.end()) return it->second;
+        if (MemoSlot* m = memo_find(key)) {
+            if (m->gen == memo_gen) return m->value;
+        }
     }
     const int seat = (p.leader + p.len) & 3;
     const bool ns = (seat & 1) == 0;
@@ -84,15 +118,22 @@ int reference(const RefPos& p) {
         const int v = gained + reference(q);
         if (ns ? v > best : v < best) best = v;
     }
-    if (p.len == 0) memo[key] = best;
+    if (p.len == 0 && memo_used < MEMO_SLOTS / 2) {
+        if (MemoSlot* m = memo_find(key)) {
+            if (m->gen != memo_gen) ++memo_used;
+            for (int i = 0; i < 4; ++i) m->h[i] = key[i];
+            m->gen = memo_gen;
+            m->value = static_cast<std::int8_t>(best);
+        }
+    }
     return best;
 }
 
 }  // namespace
 
 int main(int argc, char** argv) {
-    const int cases = argc > 1 ? std::atoi(argv[1]) : 3000;
-    const int max_tricks = argc > 2 ? std::atoi(argv[2]) : 6;
+    const int cases = argc > 1 ? std::atoi(argv[1]) : 2000;
+    const int max_tricks = argc > 2 ? std::atoi(argv[2]) : 5;
     const unsigned seed = argc > 3 ? static_cast<unsigned>(std::atoi(argv[3])) : 7u;
     std::mt19937 rng(seed);
     dd::engine().resize(16);
@@ -130,7 +171,7 @@ int main(int argc, char** argv) {
         p.leader = leader;
         p.len = 0;
         p.broken = broken;
-        memo.clear();
+        memo_new_position();
         const int want = reference(p);
 
         CardId best = NO_CARD;

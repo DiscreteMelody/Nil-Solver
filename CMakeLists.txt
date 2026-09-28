@@ -126,13 +126,20 @@ if(NIL_SOLVER_BUILD_TESTS)
 
   # The double-dummy engine (nil/ddtricks) against an independent brute-force
   # minimax: exact counts, every zero-window target, and the reported lead, on
-  # random positions of up to six tricks with spades broken and unbroken.  The
-  # engine's table is never cleared between positions, so this also checks the
-  # claim that its entries are valid across deals.
+  # random positions with spades broken and unbroken.  The engine's table is
+  # never cleared between positions, so this also checks the claim that its
+  # entries are valid across deals.
+  #
+  # The cost is all in the brute force, and it grows steeply with hand size:
+  # many small positions for breadth, a hundred six-trick ones for depth.  A
+  # few seconds each.  For a deeper run by hand: dd_property <cases> <max
+  # tricks> <seed>, e.g. dd_property 300 7 99 (minutes).
   add_executable(dd_property tools/dd_property.cpp)
   target_link_libraries(dd_property PRIVATE nil_solver_core)
-  add_test(NAME dd_property COMMAND dd_property 1500 6 7)
-  set_tests_properties(dd_property PROPERTIES TIMEOUT 600)
+  add_test(NAME dd_property COMMAND dd_property 2000 5 7)
+  set_tests_properties(dd_property PROPERTIES TIMEOUT 300)
+  add_test(NAME dd_property_deep COMMAND dd_property 100 6 11)
+  set_tests_properties(dd_property_deep PROPERTIES TIMEOUT 300)
 
   # The corpus is the accuracy regression test: answers came from
   # nil_oracle.py once, and replaying them needs neither Python nor the oracle.
