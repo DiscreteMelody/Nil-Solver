@@ -439,6 +439,11 @@ extern "C" {
  * whether it can also take the other's.  Same value, same trick counts, same
  * principal variation; a control arm. */
 #define NIL_FLAG_NO_CONJUNCTION_PRESOLVE 0x4000000u
+/* Once no nil bid is live, keep searching the rest of the hand with the general
+ * search instead of handing it to the built-in double-dummy engine.  Same
+ * answer and principal variation, much slower; a control arm, like the other
+ * NO_ flags. */
+#define NIL_FLAG_NO_DD_ENGINE 0x8000000u
 
 #define NIL_FLAG_NO_SETTLED_GAINS 0x800000u
 

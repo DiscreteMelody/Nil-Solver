@@ -700,6 +700,19 @@ struct SearchOptions {
     // nil_solve_moves -- turn this off and take the ordering, which is worth
     // 2.3x on a hard thirteen.
     bool canonical_pv = true;
+
+    // Hand every trick-boundary position whose nil question is already settled
+    // to the plain double-dummy engine in nil/ddtricks.hpp.  "Settled" means
+    // no bid in the objective is still live -- every one is down, or the
+    // caller declared it down -- so the packed value from that point is
+    // C + W * (far side's tricks) with W > 0, which is ordinary double dummy.
+    // Applies to the single already-set nil, a pair that both bid, and one bid
+    // per side, in the default direction (each pair takes what it can); the
+    // "shed" direction is a different game and stays on the general search.
+    // Answer-neutral: the engine returns the same trick counts, and on an
+    // exact answer an optimal lead, so values and principal variations are
+    // unchanged.  Off with --no-dd-engine / NIL_FLAG_NO_DD_ENGINE.
+    bool dd_engine = true;
 };
 
 // Who took what along a line.

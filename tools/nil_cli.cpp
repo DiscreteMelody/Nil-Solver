@@ -17,6 +17,7 @@
 #include "nil/cooperative.hpp"
 #include "nil/outcome_constraint.hpp"
 #include "nil/position.hpp"
+#include "nil/ddtricks.hpp"
 #include "nil/search.hpp"
 #include "nil/seats.hpp"
 
@@ -71,6 +72,9 @@ void usage(const char* argv0) {
         << "  --no-ordering           try moves in canonical order rather than a\n"
         << "                          promising-first one (same answer, more nodes;\n"
         << "                          fast mode only)\n"
+        << "  --no-dd-engine          once no bid is live, keep searching with the\n"
+        << "                          general search instead of the double-dummy\n"
+        << "                          engine (same answer and PV, much slower)\n"
         << "  --no-last-trick         search the forced final trick instead of\n"
         << "                          evaluating it (same answer, more nodes)\n"
         << "  --cover-duck-short      lead the cheapest duckable card in the nil\n"
@@ -309,6 +313,8 @@ int main(int argc, char** argv) {
             opts.opposed_reach = false;
         } else if (arg == "--no-presolve") {
             opts.presolve_window = false;
+        } else if (arg == "--no-dd-engine") {
+            opts.dd_engine = false;
         } else if (arg == "--no-canonical-pv") {
             opts.canonical_pv = false;
         } else if (arg == "--tt-mb") {
@@ -642,6 +648,17 @@ int main(int argc, char** argv) {
                       << "  partial      " << sol.tt_partial << "\n"
                       << "  stores       " << sol.tt_stores << "\n"
                       << "  evictions    " << sol.tt_evictions << "\n";
+            // The double-dummy engine's counters are per thread and cumulative,
+            // so they cover this whole run of the CLI -- presolve included.
+            const nil::dd::DDStats& dd = nil::dd::engine().stats();
+            std::cout << "\nDouble-dummy engine (settled positions)\n"
+                      << "  handoffs     " << dd.calls << "\n"
+                      << "  probes       " << dd.probes << "\n"
+                      << "  nodes        " << dd.nodes << "\n"
+                      << "  tt probes    " << dd.tt_probes << "\n"
+                      << "  tt cuts      " << dd.tt_cuts << "\n"
+                      << "  quick cuts   " << dd.quick_cuts << "\n"
+                      << "  later cuts   " << dd.later_cuts << "\n";
         }
     }
     return 0;

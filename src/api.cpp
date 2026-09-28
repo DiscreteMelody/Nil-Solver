@@ -131,6 +131,7 @@ std::int32_t prepare(const char* pbn, std::int32_t leader, const char* current_t
     opts.cover_duck_short = (flags & NIL_FLAG_COVER_DUCK_SHORT) != 0;
     opts.narrow_window = (flags & NIL_FLAG_NO_NARROW) == 0;
     opts.presolve_window = (flags & NIL_FLAG_NO_PRESOLVE) == 0;
+    opts.dd_engine = (flags & NIL_FLAG_NO_DD_ENGINE) == 0;
     opts.tt_megabytes = g_table_megabytes;
     opts.minimise_own_tricks = (flags & NIL_FLAG_MINIMISE_OWN_TRICKS) != 0;
     opts.mode = (flags & NIL_FLAG_FAST_MODE) != 0 ? nil::MODE_FAST : nil::MODE_FULL;

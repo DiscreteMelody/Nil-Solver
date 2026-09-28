@@ -690,6 +690,8 @@ int main(int argc, char** argv) {
             check_moves = true;
         } else if (arg == "--check-pv") {
             check_pv = true;
+        } else if (arg == "--no-dd-engine") {
+            opts.dd_engine = false;
         } else if (arg == "--no-settled-tricks") {
             opts.settled_tricks = false;
         } else if (arg == "--no-conjunction-presolve") {

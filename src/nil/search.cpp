@@ -5,6 +5,7 @@
 #include <sstream>
 
 #include "nil/bounds.hpp"
+#include "nil/ddtricks.hpp"
 #include "nil/rules.hpp"
 #include "nil/outcome_constraint.hpp"
 #include "nil/same_lean.hpp"
@@ -186,6 +187,12 @@ struct Ctx {
     // Set once the value is known and the remaining work is recovering the
     // line, so item 79's sweep can keep those nodes out of the population.
     bool in_pv_walk = false;
+    // The double-dummy handoff (SearchOptions::dd_engine).  When on, a
+    // settled position scores dd_const_per_trick * t + dd_weight * F, where t
+    // is the tricks left and F the far side's tricks from here.
+    bool dd_engine = false;
+    int dd_weight = 0;
+    int dd_const_per_trick = 0;
     bool opposed_reach = true;  // item 79's bound, spent rather than counted
     // ITEM 79, PRECOMPUTED.  The rank term depends on the mask and on nothing
     // else, and there are four masks, so it is four pairs of numbers settled
@@ -745,12 +752,118 @@ int value_after_impl(Ctx& ctx, const State& st, CardId card, int alpha, int beta
     return value;
 }
 
+// BIDS WHOSE FATE NO LINE OF PLAY CAN CHANGE.  With a bid on each side, or
+// both bids on one side, the primary is charged once per bid, on its first
+// trick.  So when every bid still live is either
+//
+//   safe   -- nil_cannot_be_forced: it wins no trick on ANY line, or
+//   doomed -- nil_must_take_a_trick: it wins one on EVERY line (a spade it
+//             cannot get covered),
+//
+// the primary still to come is the same on every line, and what is left is
+// plain double dummy plus a constant.  Both proofs are unconditional -- they
+// quantify over every line, not over one side's best play -- which is what
+// makes the constant a constant.  Returns false when some live bid is neither.
+bool dd_pinned_offset(const Ctx& ctx, const State& st, int& offset) {
+    const unsigned live = ctx.nil_mask & ~st.nils_broken;
+    unsigned final_mask = st.nils_broken;
+    for (int seat = 0; seat < 4; ++seat) {
+        if (!(live & (1u << seat))) continue;
+        if (nil_must_take_a_trick(st.hands, seat)) {
+            final_mask |= 1u << seat;
+        } else if (!((st.hands[seat] & suit_mask(SUIT_SPADES)) == 0 &&
+                     nil_cannot_be_forced(st.hands, seat, st.leader == seat))) {
+            return false;
+        }
+    }
+    if (ctx.opposing) {
+        offset = ctx.primary_weight *
+                 (far_side_rank(final_mask, ctx) - far_side_rank(st.nils_broken, ctx));
+    } else {
+        int newly = 0;
+        for (int seat = 0; seat < 4; ++seat) {
+            if ((final_mask & ~st.nils_broken) & (1u << seat)) ++newly;
+        }
+        offset = ctx.primary_weight * newly;
+    }
+    return true;
+}
+
+// THE DOUBLE-DUMMY HANDOFF.  Called at a trick boundary once no bid in the
+// objective is still live.  The value from here is C + W * F, F being the far
+// side's tricks, so every question the window asks is a question about F, and
+// each is one zero-window probe of the engine:
+//
+//   F >= need  settles value >= beta   (returned as a fail-soft lower bound)
+//   F <= cap   settles value <= alpha  (returned as a fail-soft upper bound)
+//
+// and only when neither probe settles it is the exact count bisected out,
+// with an optimal lead attached for the principal variation.
+//
+// `offset` is primary weight still to be charged on every line from here --
+// see dd_pinned_offset -- and is simply part of C.
+int dd_settled_value(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta,
+                     int offset = 0) {
+    dd::Engine& eng = dd::engine();
+    const std::uint64_t nodes_before = eng.stats().nodes;
+    ++eng.mutable_stats().calls;
+    const int t = count_cards(st.hands[st.leader]);
+    const bool far_is_ns = (ctx.nil_seat & 1) != 0;
+    const long long W = ctx.dd_weight;
+    const long long C = static_cast<long long>(ctx.dd_const_per_trick) * t + offset;
+
+    auto reach_far = [&](int f) -> bool {
+        if (f <= 0) return true;
+        if (f > t) return false;
+        if (far_is_ns) return eng.ns_reach(st.hands, st.leader, st.broken, f, nullptr);
+        return !eng.ns_reach(st.hands, st.leader, st.broken, t - f + 1, nullptr);
+    };
+    auto floor_div = [](long long a, long long b) {
+        return a >= 0 ? a / b : -((-a + b - 1) / b);
+    };
+    const long long need = -floor_div(-(beta - C), W);  // ceil((beta - C) / W)
+    const long long cap = floor_div(alpha - C, W);
+
+    int value = 0;
+    best_move = NO_CARD;
+    if (need <= 0) {
+        value = static_cast<int>(C);
+    } else if (cap >= t) {
+        value = static_cast<int>(C + W * t);
+    } else if (need <= t && reach_far(static_cast<int>(need))) {
+        value = static_cast<int>(C + W * need);
+    } else if (cap >= 0 && !reach_far(static_cast<int>(cap) + 1)) {
+        value = static_cast<int>(C + W * cap);
+    } else {
+        const int flo = static_cast<int>(cap + 1 > 0 ? cap + 1 : 0);
+        const int fhi = static_cast<int>(need - 1 < t ? need - 1 : t);
+        CardId lead = NO_CARD;
+        const int ns = eng.ns_exact(st.hands, st.leader, st.broken, far_is_ns ? flo : t - fhi,
+                                    far_is_ns ? fhi : t - flo, &lead);
+        const int f = far_is_ns ? ns : t - ns;
+        value = static_cast<int>(C + W * f);
+        best_move = lead;
+    }
+    if (best_move == NO_CARD) best_move = first_legal_move(st);
+    ctx.nodes += eng.stats().nodes - nodes_before;
+    return value;
+}
+
 template <bool TRACK>
 int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta,
                 [[maybe_unused]] Hand* essential) {
     ++ctx.nodes;    best_move = NO_CARD;
     if constexpr (TRACK) *essential = 0;
     if (st.empty()) return 0;
+    if (ctx.dd_engine && st.trick_len == 0) {
+        int offset = 0;
+        if ((ctx.nil_mask & ~st.nils_broken) == 0 ||
+            ((ctx.opposing || ctx.multi_nil) && dd_pinned_offset(ctx, st, offset))) {
+            if constexpr (TRACK)
+                *essential = st.hands[0] | st.hands[1] | st.hands[2] | st.hands[3];
+            return dd_settled_value(ctx, st, best_move, alpha, beta, offset);
+        }
+    }
 
     // Item 79's sweep.  Null unless --opposed-stats asked for it, so this is a
     // predictable branch and nothing else.  Counted BEFORE any of the bounds
@@ -1955,6 +2068,14 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
     // every narrowing it performs is immediately followed by the cutoff that
     // makes it moot.
     ctx.narrow_window = opts.narrow_window;
+    {
+        // The handoff needs the default direction, where the far side's tricks
+        // carry a positive weight; see SearchOptions::dd_engine.
+        const int w_far = ctx.opposing ? weights.secondary : -weights.secondary;
+        ctx.dd_engine = opts.dd_engine && !ctx.conjunction && opts.mode == MODE_FULL && w_far > 0;
+        ctx.dd_weight = w_far;
+        ctx.dd_const_per_trick = ctx.opposing ? 0 : weights.secondary;
+    }
     // Which QUESTION this solve's values answer.  The key says which position an
     // entry is about; without this a two-nil value would be readable by a
     // one-nil search at the same cards, and the two are on different scales.

@@ -35,6 +35,7 @@ endforeach()
 add_library(nil_solver_core STATIC
   src/nil/cards.cpp
   src/nil/cooperative.cpp
+  src/nil/ddtricks.cpp
   src/nil/corpus.cpp
   src/nil/outcome_constraint.cpp
   src/nil/position.cpp
@@ -122,6 +123,16 @@ if(NIL_SOLVER_BUILD_TESTS)
   # About seven seconds.
   add_test(NAME duck_depth_property COMMAND duck_depth_property)
   set_tests_properties(duck_depth_property PROPERTIES TIMEOUT 300)
+
+  # The double-dummy engine (nil/ddtricks) against an independent brute-force
+  # minimax: exact counts, every zero-window target, and the reported lead, on
+  # random positions of up to six tricks with spades broken and unbroken.  The
+  # engine's table is never cleared between positions, so this also checks the
+  # claim that its entries are valid across deals.
+  add_executable(dd_property tools/dd_property.cpp)
+  target_link_libraries(dd_property PRIVATE nil_solver_core)
+  add_test(NAME dd_property COMMAND dd_property 1500 6 7)
+  set_tests_properties(dd_property PROPERTIES TIMEOUT 600)
 
   # The corpus is the accuracy regression test: answers came from
   # nil_oracle.py once, and replaying them needs neither Python nor the oracle.
@@ -338,6 +349,15 @@ if(NIL_SOLVER_BUILD_TESTS)
     # table hit from a position that only LOOKS the same, returning a value from
     # a line where different bids were already down.  Running the same rows with
     # the table off is what stands between that and a confidently wrong answer.
+    # THE CONTROL ARM FOR THE DOUBLE-DUMMY HANDOFF.  Every row here reaches
+    # positions with both bids down, which is where the handoff fires; with it
+    # off the general search answers them instead, and both must match the
+    # oracle's values AND principal variations.
+    add_test(NAME corpus_multinil_no_dd
+             COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-pv --no-dd-engine
+                     --quiet --slowest 0)
+    set_tests_properties(corpus_multinil_no_dd PROPERTIES TIMEOUT 900)
+
     add_test(NAME corpus_multinil_no_tt
              COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --cards-only 4
                      --no-memo --quiet --slowest 0)
