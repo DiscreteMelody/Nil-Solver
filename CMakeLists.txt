@@ -365,6 +365,15 @@ if(NIL_SOLVER_BUILD_TESTS)
                      --quiet --slowest 0)
     set_tests_properties(corpus_multinil_no_dd PROPERTIES TIMEOUT 900)
 
+    # THE CONTROL ARM FOR THE ONE-LIVE-BID BOUND.  Rows reach positions with
+    # one bid down and the other live, which is where it fires; with it off the
+    # search answers them unbounded, and both must match the oracle's values
+    # and principal variations.
+    add_test(NAME corpus_multinil_no_live_bounds
+             COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-pv --no-dd-live-bounds
+                     --quiet --slowest 0)
+    set_tests_properties(corpus_multinil_no_live_bounds PROPERTIES TIMEOUT 900)
+
     add_test(NAME corpus_multinil_no_tt
              COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --cards-only 4
                      --no-memo --quiet --slowest 0)

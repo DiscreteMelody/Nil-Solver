@@ -713,6 +713,14 @@ struct SearchOptions {
     // exact answer an optimal lead, so values and principal variations are
     // unchanged.  Off with --no-dd-engine / NIL_FLAG_NO_DD_ENGINE.
     bool dd_engine = true;
+
+    // With exactly one bid still live, bound the position by the plain
+    // double-dummy count of the live bidder's side (see dd_one_live_bound in
+    // search.cpp): surviving caps that side's tricks at the double-dummy
+    // count, being broken floors them there.  One or two engine probes per
+    // trick boundary, answer-neutral, cuts only.  Gated exactly as dd_engine
+    // is.  Off with --no-dd-live-bounds / NIL_FLAG_NO_DD_LIVE_BOUNDS.
+    bool dd_live_bounds = true;
 };
 
 // Who took what along a line.

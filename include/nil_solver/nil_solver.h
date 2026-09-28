@@ -444,6 +444,9 @@ extern "C" {
  * answer and principal variation, much slower; a control arm, like the other
  * NO_ flags. */
 #define NIL_FLAG_NO_DD_ENGINE 0x8000000u
+/* With one nil bid still live, do not bound positions by the plain double-dummy
+ * trick count of the live bidder's side.  Same answer, more nodes. */
+#define NIL_FLAG_NO_DD_LIVE_BOUNDS 0x10000000u
 
 #define NIL_FLAG_NO_SETTLED_GAINS 0x800000u
 

@@ -191,6 +191,7 @@ struct Ctx {
     // settled position scores dd_const_per_trick * t + dd_weight * F, where t
     // is the tricks left and F the far side's tricks from here.
     bool dd_engine = false;
+    bool dd_live_bounds = false;  // SearchOptions::dd_live_bounds, gated as dd_engine is
     int dd_weight = 0;
     int dd_const_per_trick = 0;
     bool opposed_reach = true;  // item 79's bound, spent rather than counted
@@ -847,6 +848,100 @@ int dd_settled_value(Ctx& ctx, const State& st, CardId& best_move, int alpha, in
     if (best_move == NO_CARD) best_move = first_legal_move(st);
     ctx.nodes += eng.stats().nodes - nodes_before;
     return value;
+}
+
+// ONE LIVE BID: BOUNDS FROM THE UNCONSTRAINED TRICK COUNT.
+//
+// Once exactly one bid L is still live and the primary is charged once per
+// bid, the packed value from a trick boundary is lexicographic in (does L
+// survive, how many tricks L's side takes):
+//
+//     survives:  C + W * F_far            broken:  C + W * F_far + delta
+//
+// with |delta| larger than any run of tricks can make up.  Let D be the most
+// tricks L's side can force in plain double dummy -- the engine's answer, with
+// the nil ignored.  Then:
+//
+//   * if L survives with L's side taking F, L's side had a strategy that
+//     guarantees survival AND F tricks against everything, so it guarantees F
+//     tricks in plain double dummy too: F <= D;
+//   * if L is broken with L's side taking F, the opponents had a strategy that
+//     holds L's side to F against everything: F >= D.
+//
+// So the value lies in {survive, F <= D} union {broken, F >= D}, and since the
+// bands are ordered by delta its whole range is an interval fixed by D alone.
+// Each end of it is compared against the window with ONE zero-window probe of
+// the engine, and a position whose range misses the window is answered by
+// that bound without searching.  Sound for any window; it only ever cuts.
+//
+// Returns true and sets `value` when it cuts.
+bool dd_one_live_bound(Ctx& ctx, const State& st, int alpha, int beta, int& value) {
+    const unsigned live = ctx.nil_mask & ~st.nils_broken;
+    if (!live || (live & (live - 1))) return false;  // exactly one live bid
+    int L = 0;
+    while (!(live & (1u << L))) ++L;
+
+    int delta = 0;
+    if (ctx.opposing) {
+        delta = ctx.primary_weight * (far_side_rank(st.nils_broken | live, ctx) -
+                                      far_side_rank(st.nils_broken, ctx));
+    } else {
+        delta = ctx.primary_weight;  // a pair that both bid: one more bid down
+    }
+    const bool owner_far = ((L ^ ctx.nil_seat) & 1) != 0;
+    // The owner dislikes the break: far side maximises, near side minimises.
+    if (owner_far ? delta >= 0 : delta <= 0) return false;
+
+    dd::Engine& eng = dd::engine();
+    const std::uint64_t nodes_before = eng.stats().nodes;
+    const int t = count_cards(st.hands[st.leader]);
+    const long long W = ctx.dd_weight;
+    const long long C = static_cast<long long>(ctx.dd_const_per_trick) * t;
+    const long long d = delta;
+    const bool owner_ns = (L & 1) == 0;
+    auto reach_owner = [&](long long x) -> bool {  // D >= x ?
+        if (x <= 0) return true;
+        if (x > t) return false;
+        const int xi = static_cast<int>(x);
+        if (owner_ns) return eng.ns_reach(st.hands, st.leader, st.broken, xi, nullptr);
+        return !eng.ns_reach(st.hands, st.leader, st.broken, t - xi + 1, nullptr);
+    };
+    auto floor_div = [](long long a, long long b) {
+        return a >= 0 ? a / b : -((-a + b - 1) / b);
+    };
+    auto ceil_div = [&](long long a, long long b) { return -floor_div(-a, b); };
+
+    auto clamp_t = [&](long long x) { return x < 0 ? 0 : (x > t ? t : x); };
+    bool cut = false;
+    if (owner_far) {
+        // hi = C + W*D (survive, F = D);  lo = C + delta + W*D (broken, F = D).
+        const long long m = floor_div(alpha - C, W);  // hi <= alpha  <=>  D <= m
+        if (!reach_owner(m + 1)) {
+            value = static_cast<int>(C + W * clamp_t(m));
+            cut = true;
+        } else {
+            const long long n = ceil_div(beta - C - d, W);  // lo >= beta  <=>  D >= n
+            if (reach_owner(n)) {
+                value = static_cast<int>(C + d + W * clamp_t(n));
+                cut = true;
+            }
+        }
+    } else {
+        // hi = C + delta + W*(t - D);  lo = C + W*(t - D).
+        const long long m = floor_div(alpha - C - d, W);  // hi <= alpha  <=>  D >= t - m
+        if (reach_owner(t - m)) {
+            value = static_cast<int>(C + d + W * clamp_t(m));
+            cut = true;
+        } else {
+            const long long n = ceil_div(beta - C, W);  // lo >= beta  <=>  D <= t - n
+            if (!reach_owner(t - n + 1)) {
+                value = static_cast<int>(C + W * clamp_t(n));
+                cut = true;
+            }
+        }
+    }
+    ctx.nodes += eng.stats().nodes - nodes_before;
+    return cut;
 }
 
 template <bool TRACK>
@@ -1639,6 +1734,16 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
         }
     }
 
+    if (ctx.dd_live_bounds && st.trick_len == 0) {
+        int bound = 0;
+        if (dd_one_live_bound(ctx, st, alpha, beta, bound)) {
+            best_move = first_legal_move(st);
+            if constexpr (TRACK)
+                *essential = st.hands[0] | st.hands[1] | st.hands[2] | st.hands[3];
+            return bound;
+        }
+    }
+
     const int seat = st.to_play();
     // The nil bidder and its partner minimise; the two opponents maximise.
     const bool maximizing = ((seat ^ ctx.nil_seat) & 1) != 0;
@@ -2075,6 +2180,7 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
         ctx.dd_engine = opts.dd_engine && !ctx.conjunction && opts.mode == MODE_FULL && w_far > 0;
         ctx.dd_weight = w_far;
         ctx.dd_const_per_trick = ctx.opposing ? 0 : weights.secondary;
+        ctx.dd_live_bounds = ctx.dd_engine && opts.dd_live_bounds && (ctx.opposing || ctx.multi_nil);
     }
     // Which QUESTION this solve's values answer.  The key says which position an
     // entry is about; without this a two-nil value would be readable by a

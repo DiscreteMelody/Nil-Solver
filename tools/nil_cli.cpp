@@ -72,6 +72,8 @@ void usage(const char* argv0) {
         << "  --no-ordering           try moves in canonical order rather than a\n"
         << "                          promising-first one (same answer, more nodes;\n"
         << "                          fast mode only)\n"
+        << "  --no-dd-live-bounds     with one bid live, do not bound positions by the\n"
+        << "                          double-dummy trick count (same answer, more nodes)\n"
         << "  --no-dd-engine          once no bid is live, keep searching with the\n"
         << "                          general search instead of the double-dummy\n"
         << "                          engine (same answer and PV, much slower)\n"
@@ -313,6 +315,8 @@ int main(int argc, char** argv) {
             opts.opposed_reach = false;
         } else if (arg == "--no-presolve") {
             opts.presolve_window = false;
+        } else if (arg == "--no-dd-live-bounds") {
+            opts.dd_live_bounds = false;
         } else if (arg == "--no-dd-engine") {
             opts.dd_engine = false;
         } else if (arg == "--no-canonical-pv") {
