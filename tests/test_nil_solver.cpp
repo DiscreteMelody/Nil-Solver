@@ -909,12 +909,44 @@ int main(int argc, char** argv) {
         check("a lower bound still MATCHES a window above it", matched(5, 6), true);
         check("but does not answer it", answers, false);
 
+        // A fresh generation, so the upper bound below is tested on its own:
+        // stored on top of the lower bound above it would MERGE with it (see
+        // TTEntry in tt.hpp), and two bounds at 5 are the exact value 5.
+        table.new_search();
         table.store(key, hash, 5, 3, 8, nil::BOUND_UPPER, nil::TAG_FAST);
         check("an upper bound answers a window it sits below", matched(5, 6), true);
         check("and says so", answers, true);
         check("an upper bound still MATCHES a window below it", matched(3, 4), true);
         check("but does not answer it", answers, false);
 
+        // Two one-sided stores into the same position within one search keep
+        // BOTH facts.  "At most 7" and then "at least 4" leave [4, 7], which
+        // answers a window above 7 and a window below 4 and neither inside it;
+        // the single-bound table kept only the second and answered one.
+        table.new_search();
+        table.store(key, hash, 7, 3, 8, nil::BOUND_UPPER, nil::TAG_FAST);
+        table.store(key, hash, 4, 3, 8, nil::BOUND_LOWER, nil::TAG_FAST);
+        check("a merged entry keeps its upper bound", matched(7, 9), true);
+        check("and answers above it", answers, true);
+        check("and keeps its lower bound", matched(1, 4), true);
+        check("and answers below it", answers, true);
+        check("a merged entry still matches inside [4, 7]", matched(4, 7), true);
+        check("and does not answer there", answers, false);
+        // Bounds that meet are an exact value.
+        table.store(key, hash, 7, 3, 8, nil::BOUND_LOWER, nil::TAG_FAST);
+        check("bounds that meet answer any window", matched(0, 1), true);
+        check("and say so", answers, true);
+        // With merging off the table is the single-bound one it replaced: the
+        // last store is all it knows.
+        table.set_merge(false);
+        table.new_search();
+        table.store(key, hash, 7, 3, 8, nil::BOUND_UPPER, nil::TAG_FAST);
+        table.store(key, hash, 4, 3, 8, nil::BOUND_LOWER, nil::TAG_FAST);
+        check("unmerged, the earlier upper bound is gone", matched(7, 9), true);
+        check("and answers nothing above it", answers, false);
+        table.set_merge(true);
+
+        table.new_search();
         table.store(key, hash, 5, 3, 8, nil::BOUND_EXACT, nil::TAG_FAST);
         check("an exact value answers any window", matched(0, 1), true);
         check("and says so", answers, true);

@@ -83,6 +83,7 @@ public:
     // `best` is non-null it receives an optimal lead for the side on lead.
     int ns_exact(const Hand hands[4], int leader, bool broken, int lo, int hi, CardId* best);
 
+    void set_mru(bool on) { mru_ = on; }
     const DDStats& stats() const { return stats_; }
     void reset_stats() { stats_ = DDStats(); }
     DDStats& mutable_stats() { return stats_; }
@@ -131,7 +132,9 @@ private:
         unsigned all[4];         // rank bits present, per suit
     };
 
-    bool search(const Pos& p, int target, CardId* witness, unsigned rel[4]);
+    // `forb` receives, per suit, the rank ranges of classes the proof refuted
+    // through one representative; see the comment at the end of search().
+    bool search(const Pos& p, int target, CardId* witness, unsigned rel[4], unsigned forb[4]);
     // Answers when a stored fact decides `target`; `pat_out` receives the
     // matching fact's patterns so the caller can report what it relied on.
     bool probe(const Key& key, int target, bool& result, CardId& move, const Hand h[4],
@@ -147,6 +150,7 @@ private:
     std::vector<Header> headers_;
     std::size_t hmask_ = 0;
     std::size_t megabytes_ = 0;
+    bool mru_ = true;
     DDStats stats_;
 };
 

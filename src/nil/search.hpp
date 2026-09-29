@@ -719,8 +719,86 @@ struct SearchOptions {
     // search.cpp): surviving caps that side's tricks at the double-dummy
     // count, being broken floors them there.  One or two engine probes per
     // trick boundary, answer-neutral, cuts only.  Gated exactly as dd_engine
-    // is.  Off with --no-dd-live-bounds / NIL_FLAG_NO_DD_LIVE_BOUNDS.
-    bool dd_live_bounds = true;
+    // is.
+    //
+    // OFF BY DEFAULT since the performance pass of Sept 2026, and the
+    // measurement is two-sided, which is why it is parked rather than
+    // deleted.  On 50 random and corpus 13-card deals under per-card scoring
+    // it wins big on some -- 1.5x to 2.6x on mid-sized opposed and partner
+    // deals, where it cuts 15-28% of the boundaries it is asked about -- and
+    // loses big on exactly the deals that matter most: the slowest single-nil
+    // deal measured goes 94 s -> 215 s with it on, the slowest opposed deal
+    // 75 s -> 120 s, the corpus's hard opposed deal 15 s -> 16.5 s.  There its
+    // cut rate is 3-10% and the probes cost more than the cuts save.  Neither
+    // a per-depth adaptive gate on the observed cut rate, a node budget per
+    // probe, nor screening the probe with the static trick floors in
+    // bounds.hpp closed that gap; the monsters still lost 9-50%.  Re-measured
+    // with the whole pass in place, on its ten hardest deals: 156 s -> 239 s
+    // in all with it on -- the slowest single-nil deal 50 s -> 97 s, the
+    // slowest opposed deal 64 s -> 96 s -- against wins of 3.2 s -> 1.5 s and
+    // 4.5 s -> 3.8 s on two mid-sized opposed deals.  On with
+    // --dd-live-bounds for callers whose deals are the kind it wins on; the ABI
+    // has no bit to spare for an opt-in, and NIL_FLAG_NO_DD_LIVE_BOUNDS keeps
+    // meaning what it says (off), which is now the default.
+    bool dd_live_bounds = false;
+
+    // Run the root search before scoring the cards in MODE_FULL's
+    // solve_moves(), as it did before the performance pass of Sept 2026.  Off
+    // by default: every row owes an exact value, so the per-card loop proves
+    // each card from both sides whatever the root search did, and the root's
+    // value is the extremum of the rows, which the loop computes anyway (see
+    // solve_moves in search.cpp).  MODE_FAST always runs it -- there the root
+    // search IS the answer.  On with --moves-root-search; NIL_FLAG_NO_ROW_MTD
+    // turns it on together with moves_aspiration off, which restores the old
+    // per-card path whole.
+    bool moves_root_search = false;
+
+    // A seat with no live bid, following suit while a non-bidding opponent
+    // holds the trick, tries the cheapest card that takes it first (see
+    // cheap_win_card in search.cpp).  Ordering only, MODE_FULL only; rides on
+    // live_order, so NIL_FLAG_NO_LIVE_ORDER turns it off too.  Off with
+    // --no-win-order.
+    bool win_order = true;
+
+    // Charge a live bid's primary the moment nil_must_take_a_trick proves it
+    // breaks down every line, instead of on the trick where it happens (see
+    // charge_for_mask in search.cpp).  The value is unchanged -- the primary is
+    // charged once per bid whenever it lands -- but the bid's bit enters the
+    // broken mask early, so the one-live-bid and settled machinery apply to a
+    // doomed bid's whole subtree.  Full mode only.  Off with --no-doom-charge
+    // (CLI and nil_bench; no ABI bit -- see NIL_FLAG_NO_ROW_MTD's note on the
+    // flag word).
+    bool doom_charge = true;
+
+    // Point the seat-specific ordering rules at the bids that are still LIVE --
+    // every live bidder sheds, every seat on lead attacks a live bid opposite --
+    // rather than at `nil_seat` alone (see live_bid_promotion in search.cpp).
+    // Identical to the old rules while exactly one single-nil bid is live.
+    // Ordering only.  Off with --no-live-order / NIL_FLAG_NO_LIVE_ORDER, which
+    // also turns off win_order below.
+    bool live_order = true;
+
+    // Recover lines by asking each step whether it is worth the value the line
+    // already says it is -- a (v - 1, v + 1) window -- instead of re-deriving
+    // that value under the caller's window (see canonical_move_for and walk_pv
+    // in search.cpp).  The same exact values are compared, so the same
+    // canonical line comes back.  Off with --no-tight-pv (CLI and nil_bench; no
+    // ABI bit).
+    bool tight_pv = true;
+
+    // Score each card in solve_moves() by a sequence of null-window searches
+    // (MTD(f)), seeded with the best row so far, instead of one search under the
+    // sentinels (see solve_moves in search.cpp).  Every row still gets its exact
+    // value.  Full mode only.  Off with --no-moves-aspiration;
+    // NIL_FLAG_NO_ROW_MTD turns it off together with moves_root_search on.
+    bool moves_aspiration = true;
+
+    // Keep a lower AND an upper bound per transposition-table entry, merging a
+    // new store into what the table already holds for the position instead of
+    // overwriting it (see TTEntry in tt.hpp).  Memoisation only: same values,
+    // same lines.  Off with --no-tt-two-bounds (CLI and nil_bench; no ABI
+    // bit), which restores the single-bound table node for node.
+    bool tt_two_bounds = true;
 };
 
 // Who took what along a line.

@@ -149,17 +149,59 @@ enum ValueTag : std::uint8_t {
     TAG_CONJUNCTION = 5,
 };
 
-// 24 bytes, no padding on any sane ABI.
+// BOTH BOUNDS, NOT ONE (SearchOptions::tt_two_bounds).
+//
+// An entry used to hold one value and one Bound saying which side of it the
+// truth lay on, so a position searched twice under two different windows kept
+// only the second answer: "at least 40" from a fail-high was overwritten by "at
+// most 70" from a later fail-low, and the next probe knew less than the table
+// had been told.  This is the single-bound table DDS section 6 warns against,
+// and the pattern that produces it is everywhere in MODE_FULL -- the root
+// narrows its window move by move, solve_moves() then asks each card again
+// under a different one, and the principal-variation walk asks a third time.
+//
+// So an entry now keeps `lower` and `upper`, and a store into a position the
+// table already holds for this solve MERGES rather than overwrites: the lower
+// bound can only rise and the upper only fall.  Merging is sound because every
+// bound stored is a true statement about one number -- the position's value,
+// which the key and tag pin within a generation -- so their intersection is
+// too.  An entry is EXACT when the two meet, whether one exact store put them
+// there or two one-sided ones closed on each other.
+//
+// The stored move is only taken from a store that WITNESSES the bound it
+// sets: an exact result, a maximiser's fail-high or a minimiser's fail-low.
+// A fail-low at a maximiser names the least bad of a set of losing moves, and
+// letting it overwrite a real witness would let an entry that later becomes
+// exact hand back a move that does not achieve its value.  store() is told
+// which side of the node it is on for exactly that reason.
+//
+// Still 24 bytes, which is not free: `depth` gave up its byte and is read back
+// out of the key instead (key_card_count), and `tag` shares a byte with `need`.
+// With merging switched off every store overwrites both bounds, which is the
+// old single-bound table to the node.
 struct TTEntry {
     std::uint64_t lo = 0;
     std::uint64_t hi = 0;
-    std::int16_t value = 0;
+    std::int16_t lower = 0;        // the value is at least this
+    std::int16_t upper = 0;        // the value is at most this
     std::uint16_t generation = 0;  // 0 means "never written"
     std::uint8_t move = REL_NO_MOVE;
-    std::uint8_t depth = 0;  // cards still in hands; the replacement priority
-    std::uint8_t bound = BOUND_EXACT;
-    std::uint8_t tag = TAG_NONE;
+    std::uint8_t meta = 0;         // tag in bits 0-2, `need` in bits 3-6
+
+    std::uint8_t tag() const { return meta & 7u; }
+    int need() const { return (meta >> 3) & BOUND_NEED_MAX; }
+    bool exact() const { return lower == upper; }
+    // What a probe that ANSWERS may return: the value when the entry is exact,
+    // otherwise whichever bound lies outside the window.
+    int answer(int alpha, int beta) const {
+        (void)beta;
+        if (lower == upper) return lower;
+        return upper <= alpha ? upper : lower;
+    }
 };
+
+inline constexpr std::int16_t TT_NO_LOWER = -32768;
+inline constexpr std::int16_t TT_NO_UPPER = 32767;
 
 struct TTStats {
     std::uint64_t probes = 0;
@@ -198,8 +240,14 @@ public:
     const TTEntry* probe(const StateKey& key, std::uint64_t hash, std::uint8_t tag, int alpha,
                          int beta, bool& answers);
 
+    // `maximizing` says which side of the node the value was computed at, so
+    // that only a witnessing store replaces the stored move -- see TTEntry.
     void store(const StateKey& key, std::uint64_t hash, int value, RelMove move, int depth,
-               std::uint8_t bound, std::uint8_t tag);
+               std::uint8_t bound, std::uint8_t tag, bool maximizing = true);
+
+    // Merge bounds into an entry the table already holds (the default), or
+    // overwrite it as the single-bound table did.  See TTEntry.
+    void set_merge(bool on) { merge_ = on; }
 
     const TTStats& stats() const { return stats_; }
     void reset_stats() { stats_ = TTStats(); }
@@ -209,6 +257,7 @@ private:
     std::size_t buckets_ = 0;
     std::size_t mask_ = 0;
     std::uint16_t generation_ = 0;
+    bool merge_ = true;
     TTStats stats_;
 };
 

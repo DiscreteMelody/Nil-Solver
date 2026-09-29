@@ -57,6 +57,23 @@ else()
   target_compile_options(nil_solver_core PUBLIC -Wall -Wextra -Wpedantic)
 endif()
 
+# POPCNT.  Population counts are all over the search -- the key encoder, the
+# move generator, most of the bounds -- and GCC and Clang only emit the
+# instruction when told the CPU has it; otherwise every count is a call into
+# libgcc.  MSVC needs no flag: nil/cards.hpp uses __popcnt64 on x64, which the
+# double-dummy engine already relied on.  Every x86-64 CPU since 2008 has
+# POPCNT (Windows 11 requires it), and the measured gain on the hard 13-card
+# deals is about 5%.  Turn this off to build for an older x86-64 CPU; the code
+# falls back to a portable count and gives the same answers.
+option(NIL_SOLVER_POPCNT "Compile for x86-64 CPUs with the POPCNT instruction (GCC/Clang)" ON)
+if(NIL_SOLVER_POPCNT AND NOT MSVC AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+  include(CheckCXXCompilerFlag)
+  check_cxx_compiler_flag(-mpopcnt NIL_SOLVER_HAVE_MPOPCNT)
+  if(NIL_SOLVER_HAVE_MPOPCNT)
+    target_compile_options(nil_solver_core PUBLIC -mpopcnt)
+  endif()
+endif()
+
 # ---------------------------------------------------------------------------
 # The shared library: nil_solver.dll on Windows, libnil_solver.so elsewhere.
 # ---------------------------------------------------------------------------
@@ -140,6 +157,15 @@ if(NIL_SOLVER_BUILD_TESTS)
   set_tests_properties(dd_property PROPERTIES TIMEOUT 300)
   add_test(NAME dd_property_deep COMMAND dd_property 100 6 11)
   set_tests_properties(dd_property_deep PROPERTIES TIMEOUT 300)
+  # The same check on positions the table GENERALIZES to: each position is
+  # followed by eight variants that keep the suit lengths and the owners of the
+  # top cards of each suit and deal the low cards out again (see the header of
+  # tools/dd_property.cpp).  Independent random positions almost never land on
+  # a stored fact's generalization, which is how a refuted class of equal cards
+  # straddling the pinned ranks went unnoticed; the engine before that fix fails
+  # five of these 9000 positions.  About eight seconds.
+  add_test(NAME dd_property_variants COMMAND dd_property 1000 5 1 8)
+  set_tests_properties(dd_property_variants PROPERTIES TIMEOUT 300)
 
   # The corpus is the accuracy regression test: answers came from
   # nil_oracle.py once, and replaying them needs neither Python nor the oracle.
@@ -330,6 +356,42 @@ if(NIL_SOLVER_BUILD_TESTS)
              COMMAND nil_bench --corpus "${NIL_CORPUS}" --mode fast --tt-all-plies --quiet
                      --slowest 0)
     set_tests_properties(corpus_tt_plies_fast PROPERTIES TIMEOUT 900)
+
+    # THE SEPT 2026 PERFORMANCE PASS'S CONTROL ARMS.  Every change in it is
+    # claimed exact -- same values, same principal variations, same per-card
+    # rows -- so each arm turns one off and must still land on the oracle's
+    # values AND lines, with the per-card list checked against the position
+    # wherever the change touches it.  The default runs above are the other
+    # half of each pair.  Under a second each.
+    #
+    #   --no-row-mtd       the per-card rows as they were scored before: the
+    #                      root search first, one windowed search per card;
+    #   --no-tight-pv      each line step re-derived under the caller's window;
+    #   --no-tt-two-bounds one bound per table entry, overwritten on store;
+    #   --no-doom-charge   a doomed bid charged on the trick it breaks;
+    #   --no-live-order    the ordering keyed to the nil seat, and no cheapest-
+    #                      winning-card-first rule (ordering only, but full mode
+    #                      re-derives its lines canonically, so --check-pv holds).
+    add_test(NAME corpus_moves_no_row_mtd
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --check-moves --check-pv --no-row-mtd
+                     --quiet --slowest 0)
+    set_tests_properties(corpus_moves_no_row_mtd PROPERTIES TIMEOUT 900)
+    add_test(NAME corpus_no_tight_pv
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --check-moves --check-pv --no-tight-pv
+                     --quiet --slowest 0)
+    set_tests_properties(corpus_no_tight_pv PROPERTIES TIMEOUT 900)
+    add_test(NAME corpus_no_tt_two_bounds
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --check-moves --check-pv
+                     --no-tt-two-bounds --quiet --slowest 0)
+    set_tests_properties(corpus_no_tt_two_bounds PROPERTIES TIMEOUT 900)
+    add_test(NAME corpus_no_doom_charge
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --check-moves --check-pv --no-doom-charge
+                     --quiet --slowest 0)
+    set_tests_properties(corpus_no_doom_charge PROPERTIES TIMEOUT 900)
+    add_test(NAME corpus_no_live_order
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --check-moves --check-pv --no-live-order
+                     --quiet --slowest 0)
+    set_tests_properties(corpus_no_live_order PROPERTIES TIMEOUT 900)
   endif()
 
   # TWO NILS ON ONE SIDE.  A separate corpus because it is a separate question:
@@ -366,13 +428,41 @@ if(NIL_SOLVER_BUILD_TESTS)
     set_tests_properties(corpus_multinil_no_dd PROPERTIES TIMEOUT 900)
 
     # THE CONTROL ARM FOR THE ONE-LIVE-BID BOUND.  Rows reach positions with
-    # one bid down and the other live, which is where it fires; with it off the
-    # search answers them unbounded, and both must match the oracle's values
-    # and principal variations.
-    add_test(NAME corpus_multinil_no_live_bounds
-             COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-pv --no-dd-live-bounds
+    # one bid down and the other live, which is where it fires; with it on the
+    # search is bounded there, and both must match the oracle's values and
+    # principal variations.  The arm is now the ON side: the bound has been off
+    # by default since the Sept 2026 performance pass (see
+    # SearchOptions::dd_live_bounds), so the default run above is the
+    # unbounded half of the pair.
+    add_test(NAME corpus_multinil_live_bounds
+             COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-pv --dd-live-bounds
                      --quiet --slowest 0)
-    set_tests_properties(corpus_multinil_no_live_bounds PROPERTIES TIMEOUT 900)
+    set_tests_properties(corpus_multinil_live_bounds PROPERTIES TIMEOUT 900)
+
+    # The Sept 2026 pass's control arms on two nils, where doom charging and
+    # the live-bid ordering do most of their work -- see the positions.txt
+    # block for what each arm turns off.  corpus_multinil_moves is the default
+    # half for the per-card rows, which corpus_multinil does not score.
+    add_test(NAME corpus_multinil_moves
+             COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-moves --check-pv
+                     --quiet --slowest 0)
+    set_tests_properties(corpus_multinil_moves PROPERTIES TIMEOUT 900)
+    add_test(NAME corpus_multinil_moves_no_row_mtd
+             COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-moves --check-pv
+                     --no-row-mtd --quiet --slowest 0)
+    set_tests_properties(corpus_multinil_moves_no_row_mtd PROPERTIES TIMEOUT 900)
+    add_test(NAME corpus_multinil_no_doom_charge
+             COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-moves --check-pv
+                     --no-doom-charge --quiet --slowest 0)
+    set_tests_properties(corpus_multinil_no_doom_charge PROPERTIES TIMEOUT 900)
+    add_test(NAME corpus_multinil_no_live_order
+             COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-moves --check-pv
+                     --no-live-order --quiet --slowest 0)
+    set_tests_properties(corpus_multinil_no_live_order PROPERTIES TIMEOUT 900)
+    add_test(NAME corpus_multinil_no_tt_two_bounds
+             COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-moves --check-pv
+                     --no-tt-two-bounds --quiet --slowest 0)
+    set_tests_properties(corpus_multinil_no_tt_two_bounds PROPERTIES TIMEOUT 900)
 
     add_test(NAME corpus_multinil_no_tt
              COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --cards-only 4

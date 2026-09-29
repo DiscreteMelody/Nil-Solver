@@ -60,7 +60,28 @@ inline constexpr int card_rank(CardId c) { return (c & 15) + 2; }
 inline constexpr CardId make_card(int suit, int rank) { return suit * 16 + (rank - 2); }
 inline constexpr Hand card_bit(CardId c) { return 1ull << c; }
 
-inline int count_cards(Hand h) { return static_cast<int>(std::bitset<64>(h).count()); }
+// A population count, inline on every compiler.
+//
+// This used to be std::bitset<64>::count(), which is portable and, on GCC and
+// Clang without -mpopcnt, a CALL into libgcc's __popcountdi2 on every use.
+// Profiled on the hard 13-card deals that call was 5% of wall time -- it sits
+// inside the key encoder, the move generator and most of the bounds.  MSVC on
+// x64 gets the POPCNT instruction the double-dummy engine already relies on;
+// a GCC or Clang build told the CPU has one (-mpopcnt, -march=native) gets it
+// from the builtin; everything else gets the classic SWAR count, which is a
+// dozen register operations and no call.  Same number in every case.
+inline int count_cards(Hand h) {
+#if defined(_MSC_VER) && defined(_M_X64)
+    return static_cast<int>(__popcnt64(h));
+#elif (defined(__GNUC__) || defined(__clang__)) && defined(__POPCNT__)
+    return __builtin_popcountll(h);
+#else
+    h = h - ((h >> 1) & 0x5555555555555555ull);
+    h = (h & 0x3333333333333333ull) + ((h >> 2) & 0x3333333333333333ull);
+    h = (h + (h >> 4)) & 0x0F0F0F0F0F0F0F0Full;
+    return static_cast<int>((h * 0x0101010101010101ull) >> 56);
+#endif
+}
 
 // Index of the lowest set bit; h must be non-zero.
 inline int lowest_card(Hand h) {

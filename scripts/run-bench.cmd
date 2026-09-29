@@ -38,13 +38,25 @@ if errorlevel 1 goto :fail
 
 if "%NIL_SKIP_WORST%"=="1" goto :skip_worst
 echo.
-echo === Worst case (13 cards, ~163M nodes, under half a minute) ===
+echo === Worst case (13 cards, ~15M nodes, a few seconds) ===
 rem --cards-only 13 selects the three 13-card rows and nothing else.  Their
 rem answers are PINNED FROM THIS SOLVER, not from nil_oracle.py, which cannot
 rem reach 13 cards: a mismatch here means something CHANGED, not necessarily
 rem that something broke.  Investigate rather than assume either way.
 rem
 rem Baselines to compare against, deterministic and machine independent.
+rem Re-banked at the Sept 2026 performance pass, which is the second move since
+rem patch 105: HEAD c35614b already read 5,964,148 / 671,379 / 876,499
+rem (7,512,026) -- the double-dummy handoff, the one-live-bid bound and the
+rem charge-once rule, none of which re-banked here.  The pass moves c13-0000 UP,
+rem because it turns the one-live-bid bound off by default; see ROADMAP.md.
+rem   c13-0000     13,169,403 nodes   ^<- the largest of the three now
+rem   c13-0001        669,528 nodes
+rem   c13-0002        853,573 nodes
+rem   ---------------------------
+rem   total        14,692,504 nodes
+rem
+rem The patch-105 figures, for the record:
 rem Re-banked at patch 105; the figures that used to sit here were
 rem 60,020,405 / 71,253,358 / 32,230,695, summing to 163,504,458.  That total
 rem EXCEEDS the whole-file figure patch 95 recorded before it raised the table,
@@ -52,7 +64,7 @@ rem so these had already drifted when patch 95 re-banked around them -- at
 rem least two re-banks stale.  Nothing was wrong with the solver; the numbers
 rem simply lived where no re-bank looked.
 rem   c13-0000     59,483,222 nodes
-rem   c13-0001     70,957,819 nodes   ^<- the hardest deal in the repo
+rem   c13-0001     70,957,819 nodes
 rem   c13-0002     32,058,737 nodes
 rem   ---------------------------
 rem   total       162,499,778 nodes

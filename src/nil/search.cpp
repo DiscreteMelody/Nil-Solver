@@ -192,6 +192,12 @@ struct Ctx {
     // is the tricks left and F the far side's tricks from here.
     bool dd_engine = false;
     bool dd_live_bounds = false;  // SearchOptions::dd_live_bounds, gated as dd_engine is
+    bool doom_charge = false;     // SearchOptions::doom_charge; see charge_for_mask
+    bool live_order = false;      // SearchOptions::live_order; see live_bid_promotion
+    bool tight_pv = false;        // SearchOptions::tight_pv; see canonical_move_for
+    bool win_order = false;       // SearchOptions::win_order; see cheap_win_card
+    bool want_move = false;       // the next node's caller reads its best move
+    bool moves_aspiration = false;  // SearchOptions::moves_aspiration; see solve_moves
     int dd_weight = 0;
     int dd_const_per_trick = 0;
     bool opposed_reach = true;  // item 79's bound, spent rather than counted
@@ -820,7 +826,9 @@ bool dd_pinned_offset(const Ctx& ctx, const State& st, int& offset) {
     unsigned final_mask = st.nils_broken;
     for (int seat = 0; seat < 4; ++seat) {
         if (!(live & (1u << seat))) continue;
-        if (nil_must_take_a_trick(st.hands, seat)) {
+        // With doomed bids charged on arrival (charge_for_mask) no live bid
+        // reaching here is doomed -- search_impl has already asked.
+        if (!ctx.doom_charge && nil_must_take_a_trick(st.hands, seat)) {
             final_mask |= 1u << seat;
         } else if (!((st.hands[seat] & suit_mask(SUIT_SPADES)) == 0 &&
                      nil_cannot_be_forced(st.hands, seat, st.leader == seat))) {
@@ -879,13 +887,21 @@ int dd_settled_value(Ctx& ctx, const State& st, CardId& best_move, int alpha, in
 
     int value = 0;
     best_move = NO_CARD;
+    // Under a null window -- every step of an MTD(f) row, and every node a
+    // fail-soft cutoff hands one to -- `need` is `cap + 1`, so the two probes
+    // below ask the engine the SAME question.  The first answer is kept and the
+    // second probe skipped: a "no" to F >= need is already F <= cap.
+    bool need_asked = false;
+    bool need_reached = false;
     if (need <= 0) {
         value = static_cast<int>(C);
     } else if (cap >= t) {
         value = static_cast<int>(C + W * t);
-    } else if (need <= t && reach_far(static_cast<int>(need))) {
+    } else if (need <= t && (need_asked = true, need_reached = reach_far(static_cast<int>(need)))) {
         value = static_cast<int>(C + W * need);
-    } else if (cap >= 0 && !reach_far(static_cast<int>(cap) + 1)) {
+    } else if (cap >= 0 &&
+               !(need_asked && cap + 1 == need ? need_reached
+                                               : reach_far(static_cast<int>(cap) + 1))) {
         value = static_cast<int>(C + W * cap);
     } else {
         const int flo = static_cast<int>(cap + 1 > 0 ? cap + 1 : 0);
@@ -1004,11 +1020,231 @@ bool dd_one_live_bound(Ctx& ctx, const State& st, int alpha, int beta, int& valu
     return cut;
 }
 
+// WIN THE TRICK CHEAPLY, WHEN IT IS THE OPPONENTS' TO LOSE.
+//
+// The live-bid rules below say what a live bidder plays and what a seat on lead
+// plays against one.  They say nothing about a seat with no live bid following
+// to a trick, and that seat then tries its cards in canonical order -- lowest
+// first, which is a duck.  In the nil objective the duck is usually right for
+// the SECOND hand and wrong for the third and fourth when a non-bidding
+// opponent holds the trick: the trick goes to a side that wanted it, for
+// nothing, and the search has to come back and find the covering card on the
+// second or third try.  DDS orders exactly this case the other way (its third-
+// and fourth-hand rules play the cheapest card that wins when partner is not
+// already winning), and the double-dummy engine here already does the same.
+//
+// So a seat with no live bid, following suit, with an opponent winning the
+// trick, tries first the cheapest card that takes it -- unless:
+//
+//   * its partner is winning: then the canonical duck is the natural play;
+//   * the card winning is a LIVE BID's: letting a live nil take the trick is
+//     what the other side is trying to do, and 6b's attack reads the same way;
+//   * the trick has been ruffed: no card of the led suit can win it;
+//   * it is second hand and its partner, fourth to play, can beat the card led
+//     (a higher card of the suit, or a spade to ruff it with): second hand low,
+//     and the partner covers.  When the partner cannot, second hand is the last
+//     chance the side has to take the trick, and it takes it.
+//
+// A void seat, and a seat on lead, keep the canonical order.  MODE_FULL only
+// (see configure): the nil question does not care who else wins a trick.
+//
+// Ordering only, so answer-neutral: the same moves are searched and MODE_FULL
+// re-derives its line canonically.  Measured on 46 random and corpus 13-card
+// deals, full per-card scoring: 207 s to 188 s in all, the example 13-card
+// opposed-nil deal 10.3 s to 8.8 s, and a 69 s single-nil deal 49 s.  The
+// hardest opposed deal of the set LOSES, 57 s to 65 s, and 15 of the 46 are
+// slower, by up to 25% (several within timing noise) -- a heuristic, not a
+// proof.  Applying it to second hand unconditionally, or to third and fourth
+// hand only, measured worse in total than the rule above.  Off with
+// --no-win-order, and with NIL_FLAG_NO_LIVE_ORDER, which turns off the
+// live-bid ordering as a whole.
+inline CardId cheap_win_card(const State& st, int seat, unsigned live, Hand moves) {
+    const CardId lead = st.trick[0];
+    const int led = card_suit(lead);
+    if (moves & ~suit_mask(led)) return NO_CARD;  // void: canonical
+    if (st.trick_len == 1) {
+        const Hand partner = st.hands[seat ^ 2];
+        const Hand follow = partner & suit_mask(led);
+        const bool partner_beats =
+            follow ? highest_card(follow) > lead
+                   : led != SUIT_SPADES && (partner & suit_mask(SUIT_SPADES)) != 0;
+        if (partner_beats) return NO_CARD;  // second hand low
+    }
+    int win = 0;
+    for (int i = 1; i < st.trick_len; ++i) {
+        if (beats(st.trick[i], st.trick[win])) win = i;
+    }
+    const int win_seat = (st.leader + win) & 3;
+    if (((win_seat ^ seat) & 1) == 0) return NO_CARD;  // partner winning
+    if (live & (1u << win_seat)) return NO_CARD;       // a live bid is winning
+    const CardId best = st.trick[win];
+    if (card_suit(best) != led) return NO_CARD;        // ruffed
+    return cheapest_cover_above(moves, best);
+}
+
+// ORDERING BY WHICH BIDS ARE STILL LIVE (items 6a, 6b and 6d, generalised).
+//
+// The three seat rules above were written for ONE nil, and they find their
+// seats by `ctx.nil_seat` and by the maximising test: the nil bidder sheds, the
+// opponents attack it on lead.  That is the right reading of a single nil and
+// the wrong one of every shape with two bids, in two ways that cost nodes and
+// never answers.
+//
+//   * A bid on the FAR side gets nothing.  With one bid per side, East's nil is
+//     exactly as much a nil as North's -- it wants to shed the highest card that
+//     still loses, and North-South on lead want to attack it -- but East is not
+//     `ctx.nil_seat`, so it plays in canonical order and nobody attacks it.
+//   * A bid that is already BROKEN keeps its rules.  Once North has taken its
+//     trick there is nothing left for it to shed and nothing for East-West to
+//     attack, yet North goes on ducking and East-West go on leading into its
+//     short suits.  With a doomed bid charged on arrival (charge_for_mask) that
+//     is from the very first trick: one measured 13-card deal spent 1.26
+//     billion nodes with North's AKQ94 of spades charged from the root and every
+//     ordering rule still pointed at it.
+//
+// So the rules are keyed to the LIVE bids instead.  A seat holding a live bid
+// sheds (6a) or discards (6d) as the nil bidder always has; a seat on lead
+// attacks (6b) a live bid on the other side, choosing the shallower of two when
+// a pair both bid; a covering partner of a live bid may duck it short (C5) as
+// before.  With one live nil -- every single-nil search until its bid breaks --
+// this is the old rule to the card: the bidder is the one live seat, the
+// opponents are the ones with a live bid opposite, and the cover has none.
+//
+// Ordering only, so answer-neutral in both modes: the same moves are searched
+// and MODE_FULL's line is re-derived canonically.  Off with
+// --no-live-order / NIL_FLAG_NO_LIVE_ORDER, which restores the seat rules above.
+inline CardId live_bid_promotion(const Ctx& ctx, const State& st, int seat, Hand moves) {
+    const unsigned live = ctx.nil_mask & ~st.nils_broken;
+    if (!live) return NO_CARD;
+    if (live & (1u << seat)) {
+        if (st.trick_len == 0) return NO_CARD;  // on lead: canonical, as before
+        return (moves & ~suit_mask(card_suit(st.trick[0])))
+                   ? nil_bidder_discard(st, seat, moves)  // 6d
+                   : nil_bidder_shed(st, moves);          // 6a
+    }
+    if (st.trick_len != 0) {
+        return ctx.win_order ? cheap_win_card(st, seat, live, moves) : NO_CARD;
+    }
+    // Live bids on the other side from `seat`: seats of the opposite parity.
+    const unsigned targets = live & ((seat & 1) ? 0x5u : 0xAu);
+    if (targets) {
+        if (!(targets & (targets - 1))) {
+            return opponent_attack_lead(st, lowest_card(static_cast<Hand>(targets)), moves);
+        }
+        // Two bidders on the other side: attack whichever runs short of covers
+        // soonest, which is the comparison 6b already makes across suits.
+        CardId best_card = NO_CARD;
+        int best_depth = SUIT_COVERED;
+        for (unsigned rest = targets; rest; rest &= rest - 1) {
+            const int target = lowest_card(static_cast<Hand>(rest));
+            const Hand nil_hand = st.hands[target];
+            const Hand outstanding = relevant_cards(st.hands, NO_CARD) & ~nil_hand;
+            for (int suit = 0; suit < 4; ++suit) {
+                const Hand mine = nil_hand & suit_mask(suit);
+                if (!mine || !(moves & suit_mask(suit))) continue;
+                const int depth =
+                    cover_deficit_depth(mine, outstanding & suit_mask(suit), suit);
+                if (depth < best_depth) {
+                    best_depth = depth;
+                    best_card = lowest_card(moves & suit_mask(suit));
+                }
+            }
+        }
+        return best_card;
+    }
+    if (ctx.cover_duck_short && (live & (1u << (seat ^ 2)))) {
+        return cover_partner_duck_short(st, seat ^ 2, moves);  // C5
+    }
+    return NO_CARD;
+}
+
+// DOOMED BIDS ARE CHARGED ON ARRIVAL.
+//
+// The primary is charged once per bid, on its first trick, and it is charged as
+// a function of WHICH bids end the deal broken -- a count for a pair that both
+// bid, a rank for one bid per side, an indicator for a single nil.  Not of
+// WHEN.  So a bid that `nil_must_take_a_trick` proves will break down EVERY
+// line -- a spade it cannot get covered, which is a fact about the cards and
+// not about anybody's strategy -- contributes the same primary to every line
+// from here, and charging it now rather than on the trick where it happens
+// changes no line's value.  What it changes is the STATE: the bid's bit goes
+// into `nils_broken` a few tricks early, and everything downstream that reads
+// the mask gets to act on it.
+//
+// That is a lot of machinery.  With one of two bids charged the position is a
+// one-live-bid position, so item 79's reach bound, `dd_one_live_bound` and the
+// transposition table's mask-keyed entries all see the smaller question; with
+// every bid charged it is a settled position and goes to the double-dummy
+// engine outright.  Without this the search walks a doomed bid's subtree with
+// the full two-bid objective until the bid happens to take its trick, and on a
+// deal where a nil bidder holds the top spades that is the WHOLE tree: measured
+// at 1.26 billion nodes on one random 13-card opposed deal whose North bid nil
+// holding AKQ94 of spades.
+//
+// `dd_pinned_offset` already made this argument, for the case where EVERY live
+// bid is pinned and the engine can take over.  This is the partial case: pin
+// what is pinned, keep searching what is not.
+//
+// Exactness.  The returned value is the offset plus the normalized position's
+// value, and the normalized position's value differs from this one's by exactly
+// that offset on every line, so the minimax values agree and so do the optimal
+// moves.  The window is shifted by the offset on the way down, exactly as
+// value_after() shifts it by a trick's gain.  A trick boundary only, which is
+// where nil_must_take_a_trick's own precondition holds.  Not in MODE_FAST,
+// whose single-nil value is the static proof's own return and needs nothing
+// from the mask, and not under the conjunction probe, whose indicator is
+// answered by its own search.
+inline int charge_for_mask(const Ctx& ctx, unsigned before, unsigned after) {
+    if (ctx.opposing) {
+        return ctx.primary_weight * (far_side_rank(after, ctx) - far_side_rank(before, ctx));
+    }
+    return ctx.primary_weight * count_cards(static_cast<Hand>(after & ~before));
+}
+
+template <bool TRACK>
+int search_core(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta,
+                [[maybe_unused]] Hand* essential);
+
 template <bool TRACK>
 int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta,
                 [[maybe_unused]] Hand* essential) {
+    if (ctx.doom_charge && st.trick_len == 0) {
+        const unsigned live = ctx.nil_mask & ~st.nils_broken;
+        unsigned doomed = 0;
+        for (unsigned rest = live; rest; rest &= rest - 1) {
+            const int seat = lowest_card(static_cast<Hand>(rest));
+            if (nil_must_take_a_trick(st.hands, seat)) doomed |= 1u << seat;
+        }
+        if (doomed) {
+            State charged = st;
+            charged.nils_broken = static_cast<unsigned char>(st.nils_broken | doomed);
+            const int offset = charge_for_mask(ctx, st.nils_broken, charged.nils_broken);
+            const int value = offset + search_core<TRACK>(ctx, charged, best_move, alpha - offset,
+                                                          beta - offset, essential);
+            if constexpr (TRACK) {
+                for (unsigned rest = doomed; rest; rest &= rest - 1) {
+                    *essential |= ranks_read_by_set_proof(
+                        st.hands, lowest_card(static_cast<Hand>(rest)));
+                }
+            }
+            return value;
+        }
+    }
+    return search_core<TRACK>(ctx, st, best_move, alpha, beta, essential);
+}
+
+template <bool TRACK>
+int search_core(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta,
+                [[maybe_unused]] Hand* essential) {
     ++ctx.nodes;    best_move = NO_CARD;
     if constexpr (TRACK) *essential = 0;
+    // Does the caller read `best_move`?  Only an entry point does -- search()
+    // sets the flag and the first node to see it clears it -- because every
+    // recursive caller discards the move its child reports.  What that buys is
+    // skipping from_relative() on the table hits deep in the tree, which is
+    // where nearly all of them are.
+    const bool want_move = ctx.want_move;
+    ctx.want_move = false;
     if (st.empty()) return 0;
     if (ctx.dd_engine && st.trick_len == 0) {
         int offset = 0;
@@ -1751,16 +1987,16 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
                 [[maybe_unused]] Hand entry_essential = 0;
                 if constexpr (TRACK) {
                     KeepVector keep = 0;
-                    const int need = bound_need(hit->bound);
+                    const int need = hit->need();
                     for (int su = 0; su < 4; ++su) keep = keep_set(keep, su, need);
                     entry_essential = keep_to_essential(keep, profile);
                 }
                 if (answers) {
-                    best_move = from_relative(hit->move, profile);
+                    if (want_move) best_move = from_relative(hit->move, profile);
                     // The answer is the stored subtree's, so the essential set
                     // is its too.
                     if constexpr (TRACK) *essential = entry_essential;
-                    return hit->value;
+                    return hit->answer(alpha, beta);
                 }
                 // PARTIAL (roadmap item 41).  The entry bounds the value on one
                 // side without settling the window.  Spend it on the CUTOFF
@@ -1784,11 +2020,14 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
                 // other is exactly the one whose only effect would have been to
                 // propagate.  Hence one test rather than two.
                 if (ctx.tt_narrow) {
-                    const int value = hit->value;
-                    const std::uint8_t kind = bound_kind(hit->bound);
+                    // Only the bound on the node's own cutting side is of use:
+                    // an upper bound at a maximiser, a lower one at a minimiser.
+                    // A two-bound entry may hold both; a single-bound one held
+                    // at most one, and the other reads as unbounded.
                     const bool max_here = ((st.to_play() ^ ctx.nil_seat) & 1) != 0;
-                    if (max_here ? (kind == BOUND_UPPER && value < beta)
-                                 : (kind == BOUND_LOWER && value > alpha)) {
+                    const int value = max_here ? hit->upper : hit->lower;
+                    if (max_here ? (hit->upper != TT_NO_UPPER && value < beta)
+                                 : (hit->lower != TT_NO_LOWER && value > alpha)) {
                         cut_bound = value;
                         have_cut_bound = true;
                         if constexpr (TRACK) narrow_essential = entry_essential;
@@ -1856,7 +2095,10 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
     // costs a `take_lowest` per move today, and both optimisations this project
     // has rejected lost on throughput rather than on nodes.
     CardId promoted = NO_CARD;
-    if (ctx.order_moves) {
+    if (ctx.order_moves && ctx.live_order) {
+        promoted = live_bid_promotion(ctx, st, seat, moves);
+        if (promoted != NO_CARD) moves &= ~card_bit(promoted);
+    } else if (ctx.order_moves) {
         if (seat == ctx.nil_seat) {
             // 6a.  Off-suit is 6d and is not written yet, so a discarding nil
             // bidder keeps the canonical order.
@@ -2031,12 +2273,14 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
                 if (ctx.rank_stats) ctx.rank_stats->record(keep, profile.total);
             }
         }
-        ctx.tt->store(key, hash, best, rel, profile.total, pack_bound(kind, need), ctx.tt_tag);
+        ctx.tt->store(key, hash, best, rel, profile.total, pack_bound(kind, need), ctx.tt_tag,
+                      maximizing);
     }
     return best;
 }
 
 int search(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta) {
+    ctx.want_move = true;
     if (ctx.track_ranks) {
         Hand essential = 0;
         return search_impl<true>(ctx, st, best_move, alpha, beta, &essential);
@@ -2188,6 +2432,10 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
         !ctx.conjunction && weights.primary == 1 && weights.secondary == 0;
     ctx.static_bounds = opts.use_static_bounds;
     ctx.full_static_bounds = opts.full_static_bounds;
+    // Charging a doomed bid early is a statement about the objective's primary
+    // level, which MODE_FAST's single-nil value and the conjunction's indicator
+    // answer by other means -- see charge_for_mask.
+    ctx.doom_charge = opts.doom_charge && !ctx.conjunction && !ctx.value_is_nil_tricks;
     // Both halves matter.  MODE_FULL never reorders whatever the caller asked
     // for, because it cannot gain from it and would lose the oracle check by
     // doing it; and within MODE_FAST the caller can still switch ordering off
@@ -2212,6 +2460,15 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
     // not constrain how nil_side_tricks splits, and re-deriving the LINE pins
     // the split regardless of what the value says.
     ctx.order_moves = opts.order_moves;
+    ctx.live_order = opts.live_order;
+    ctx.tight_pv = opts.tight_pv;
+    // MODE_FULL only.  The nil question asks whether a bidder can be made to
+    // take a trick, and who else wins which trick is no part of it; measured,
+    // the rule cost MODE_FAST 37% of its nodes on large.txt and 1.6% on the
+    // corpus, and MODE_FAST is also the presolve every single-nil full solve
+    // spends first.
+    ctx.win_order = opts.win_order && opts.mode == MODE_FULL;
+    ctx.moves_aspiration = opts.moves_aspiration;
     ctx.last_trick = opts.last_trick_eval;
     ctx.tt_boundaries_only = opts.tt_boundaries_only;
     ctx.target_bounds = opts.target_bounds;
@@ -2307,6 +2564,7 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
         TranspositionTable& table = shared_table();
         table.resize(table_mb);  // a no-op at the size it already is
         table.new_search();               // this solve may not see the last one's values
+        table.set_merge(opts.tt_two_bounds);
         ctx.tt = &table;
     }
 
@@ -2366,6 +2624,22 @@ CardId canonical_move_for(Ctx& ctx, const State& st, int value, int alpha, int b
         moves = distinct_moves(moves,
                                relevant_cards(st.hands, trick_best_card(st.trick, st.trick_len)));
     }
+    // THE QUESTION IS EQUALITY, SO ASK ONLY THAT (tight_pv).  A candidate is
+    // wanted exactly when it is worth `value`, and a window of (value - 1,
+    // value + 1) answers that and nothing more: a fail-soft search under it
+    // returns `value` precisely when the candidate is worth `value` -- the one
+    // integer strictly inside is then the exact answer -- and something at or
+    // beyond an edge otherwise, which is a bound on the far side of `value`
+    // either way.  The same test as before, against the same exact `value`, so
+    // the same card is found.  What changes is the cost of the misses: every
+    // canonically lower card that is NOT the answer used to be re-searched to
+    // its exact value under the caller's window -- the sentinels, on every
+    // per-card line solve_moves() walks -- and is now refuted by a null-width
+    // probe the table has usually seen already.
+    if (ctx.tight_pv) {
+        if (alpha < value - 1) alpha = value - 1;
+        if (beta > value + 1) beta = value + 1;
+    }
     for (Hand h = moves; h;) {
         const CardId card = take_lowest(h);
         if (value_after(ctx, st, card, alpha, beta, nullptr) == value) return card;
@@ -2408,9 +2682,22 @@ CardId canonical_move_for(Ctx& ctx, const State& st, int value, int alpha, int b
 // `v` lies strictly inside and comes back exact. No false match is available in
 // either direction, so the canonically lowest matching move is still the one
 // found.
+// `start_value` is the exact value of `st` itself, when the caller has it.  The
+// line then carries its own answer: every position on it is worth `start_value`
+// less what the line has banked on the way, because each move on it is one the
+// search chose for achieving exactly that.  So each step can be asked the
+// equality question canonical_move_for() asks -- (expected - 1, expected + 1)
+// -- rather than re-deriving a value it already knows under a wide window.  A
+// step that disagrees with the arithmetic is an internal inconsistency and is
+// reported as one, which makes the walk its own check on every step rather than
+// only at the replay that follows it.
+constexpr int NO_START_VALUE = WINDOW_MIN;
+
 bool walk_pv(Ctx& ctx, State st, CardId first, std::vector<Play>& pv_out, std::string& err,
-             int pv_alpha = WINDOW_MIN, int pv_beta = WINDOW_MAX) {
+             int pv_alpha = WINDOW_MIN, int pv_beta = WINDOW_MAX,
+             int start_value = NO_START_VALUE) {
     CardId move = first;
+    const bool tight = ctx.tight_pv && start_value != NO_START_VALUE;
     // What the line has banked so far.  Bounded by a few hundred against a
     // sentinel of 2^29, so shifting the window by it cannot overflow -- the same
     // headroom argument WINDOW_MIN was halved for.
@@ -2425,9 +2712,38 @@ bool walk_pv(Ctx& ctx, State st, CardId first, std::vector<Play>& pv_out, std::s
         gained += advance(ctx, st, move, next);
         st = next;
         if (st.empty()) break;
-        const int step_alpha = pv_alpha - gained;
-        const int step_beta = pv_beta - gained;
+        int step_alpha = pv_alpha - gained;
+        int step_beta = pv_beta - gained;
+        const int expected = start_value - gained;
+        if (tight) {
+            if (step_alpha < expected - 1) step_alpha = expected - 1;
+            if (step_beta > expected + 1) step_beta = expected + 1;
+        }
+        if (tight && ctx.canonicalise) {
+            // The value is known and the move is going to be re-derived
+            // canonically anyway, so the search that used to precede that
+            // re-derivation -- whose only product was the value and a move
+            // about to be thrown away -- is skipped.  canonical_move_for() asks
+            // each candidate the equality question directly; finding none is
+            // the same inconsistency the value check below reports.
+            move = canonical_move_for(ctx, st, expected, step_alpha, step_beta);
+            if (move == NO_CARD) {
+                std::ostringstream os;
+                os << "internal inconsistency: no move keeps a principal-variation step at "
+                   << expected;
+                err = os.str();
+                return false;
+            }
+            continue;
+        }
         const int v = search(ctx, st, move, step_alpha, step_beta);
+        if (tight && v != expected) {
+            std::ostringstream os;
+            os << "internal inconsistency: a principal-variation step is worth " << v
+               << " where the line says " << expected;
+            err = os.str();
+            return false;
+        }
         if (ctx.canonicalise) {
             const CardId c = canonical_move_for(ctx, st, v, step_alpha, step_beta);
             if (c != NO_CARD) move = c;
@@ -3195,7 +3511,7 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
     // one of them re-searches.
     const int pv_alpha = opts.pv_shift_window ? root_alpha : WINDOW_MIN;
     const int pv_beta = opts.pv_shift_window ? root_beta : WINDOW_MAX;
-    if (!walk_pv(ctx, st, move, out.pv, err, pv_alpha, pv_beta)) return false;
+    if (!walk_pv(ctx, st, move, out.pv, err, pv_alpha, pv_beta, value)) return false;
 
     // A solver that lies is worse than no solver.  Replaying recovers the trick
     // counts independently; re-packing them must land back on the search value.
@@ -3383,9 +3699,13 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
     // different obligation, so it is a separate item rather than a second half
     // of this one.  `--moves` on an opposed deal keeps exactly the behaviour it
     // has today: correct, and without the new window.
+    //
+    // Not when the rows are scored by null windows (moves_aspiration): that
+    // sequence never reads `beta`, so the presolve would be paid for and
+    // thrown away.
     int tight_beta = beta;
-    if (!fast && opts.presolve_window && !roles.nil_already_set() && nil_count(roles) == 1 &&
-        pos.tricks_remaining() >= PRESOLVE_MIN_TRICKS) {
+    if (!fast && !ctx.moves_aspiration && opts.presolve_window && !roles.nil_already_set() &&
+        nil_count(roles) == 1 && pos.tricks_remaining() >= PRESOLVE_MIN_TRICKS) {
         SearchOptions probe_opts = opts;
         probe_opts.mode = MODE_FAST;
         // The nested solve inherits the parent's size, which is what
@@ -3408,8 +3728,22 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
     // position's own answer -- ordering and cutoffs still apply to it -- and it
     // warms the shared table, so the per-move searches below spend much of
     // their time reading back work this one already did.
+    //
+    // IN MODE_FULL IT NO LONGER RUNS (moves_root_search).  Every row owes an
+    // exact value, so the loop below proves each card's value from both sides
+    // whatever the root search did first -- and what the root search did for
+    // all but its first card was prove ONE side, under a window narrowed by
+    // the cards before it, which the loop then has to finish anyway.  Its value
+    // is the extremum of the rows, which the loop computes for free.  With the
+    // two-bound table and each row asked the running best's question first
+    // (moves_aspiration below) the per-card loop alone is 10-30% cheaper on the
+    // hard 13-card deals than the root search plus the loop: 13.1 s -> 11.6 s
+    // on the corpus's hard opposed deal, 82 s -> 71 s on the slowest single-nil
+    // deal measured.  MODE_FAST keeps it: there the root search IS the answer,
+    // and the rows are only asked for booleans.  --moves-root-search restores it.
     CardId root_move = NO_CARD;
-    const int root_value = search(ctx, root, root_move, alpha, beta);
+    const bool root_first = fast || opts.moves_root_search;
+    int root_value = root_first ? search(ctx, root, root_move, alpha, beta) : 0;
 
     int best_value = 0;
     bool have_best = false;
@@ -3423,14 +3757,55 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
         // would make later entries bounds relative to earlier ones rather than
         // answers about themselves, and a move list whose entries are not
         // comparable with each other is not a move list.
-        ms.value = value_after(ctx, root, card, alpha, beta, nullptr);
-        // Fail-high means this card is on the far side of the presolve's
-        // threshold -- it loses the nil -- so the number above is a bound and
-        // not this row's answer.  Re-search it against the sentinels.  The
-        // table is warm by now, and there is one of these per losing card
-        // rather than one per card.
-        if (beta != WINDOW_MAX && ms.value >= beta) {
-            ms.value = value_after(ctx, root, card, WINDOW_MIN, WINDOW_MAX, nullptr);
+        if (!fast && ctx.moves_aspiration) {
+            // EACH ROW BY NULL WINDOWS: MTD(f) (Plaat et al.), seeded with the
+            // best row so far.
+            //
+            // A row owes an exact value, and the expensive way to get one is
+            // to search under the sentinels: every node then has to pin its
+            // own value down from both sides.  The cheap way is to ask
+            // yes-or-no questions -- "is it above g?" -- each of which a
+            // null-window search answers with a one-sided proof and a
+            // fail-soft bound, and to move g to the bound until the two sides
+            // meet.  With the two-bound table every answer stays in the table
+            // for the next question, which is what makes the sequence cost
+            // less than the one wide search it replaces.  Measured on the
+            // corpus's hard opposed deal, the first row alone: 41.7 million
+            // nodes under the sentinels, 10.2 million by null windows.
+            //
+            // The first guess is the extremum of the rows already scored --
+            // every card that is one of the best is worth exactly that, and
+            // two questions settle it -- or the root's value when a root
+            // search ran, or zero for the first row, which is a value in the
+            // middle of every objective's range.  A card that is not worth the
+            // guess comes back as a bound on its own side, and the sequence
+            // walks from there.  The value is exact when the loop ends, which
+            // is the obligation the comment above describes; the windows
+            // differ, not the answers.
+            int g = have_best ? best_value : (root_first ? root_value : 0);
+            int lo = WINDOW_MIN;
+            int hi = WINDOW_MAX;
+            while (lo < hi) {
+                const int bound = g == lo ? g + 1 : g;
+                const int r = value_after(ctx, root, card, bound - 1, bound, nullptr);
+                if (r < bound) {
+                    hi = r;  // at most r
+                } else {
+                    lo = r;  // at least r
+                }
+                g = r;
+            }
+            ms.value = lo;
+        } else {
+            ms.value = value_after(ctx, root, card, alpha, beta, nullptr);
+            // Fail-high means this card is on the far side of the presolve's
+            // threshold -- it loses the nil -- so the number above is a bound
+            // and not this row's answer.  Re-search it against the sentinels.
+            // The table is warm by now, and there is one of these per losing
+            // card rather than one per card.
+            if (beta != WINDOW_MAX && ms.value >= beta) {
+                ms.value = value_after(ctx, root, card, WINDOW_MIN, WINDOW_MAX, nullptr);
+            }
         }
         if (!have_best || (maximizing ? ms.value > best_value : ms.value < best_value)) {
             have_best = true;
@@ -3459,6 +3834,11 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
             err = os.str();
             return false;
         }
+    } else if (!root_first) {
+        // No root search to hold the rows against; the position's value is
+        // their extremum, and each row is still checked by replaying its line
+        // below.
+        root_value = best_value;
     } else if (best_value != root_value) {
         std::ostringstream os;
         os << "internal inconsistency: the position scores " << root_value
@@ -3483,19 +3863,49 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
         // the counting -- replay_pv -- rather than adding a second that would
         // have to remember to credit the trick this card completes.
         State child;
-        advance(ctx, root, ms.card, child);
+        const int card_gain = advance(ctx, root, ms.card, child);
         CardId next_move = NO_CARD;
-        if (!child.empty()) {
-            const int cv = search(ctx, child, next_move, WINDOW_MIN, WINDOW_MAX);
+        // The child is worth this row's value less what the card itself banked,
+        // and the row's value is exact -- so, as in walk_pv(), the child is
+        // asked the equality question rather than searched wide (tight_pv).
+        const int child_value = ms.value - card_gain;
+        int child_alpha = WINDOW_MIN;
+        int child_beta = WINDOW_MAX;
+        if (ctx.tight_pv) {
+            child_alpha = child_value - 1;
+            child_beta = child_value + 1;
+        }
+        if (!child.empty() && ctx.tight_pv && ctx.canonicalise) {
+            // As in walk_pv(): the child's value is known and its move is about
+            // to be re-derived canonically, so no search precedes that.
+            next_move = canonical_move_for(ctx, child, child_value, child_alpha, child_beta);
+            if (next_move == NO_CARD) {
+                std::ostringstream os;
+                os << "internal inconsistency: no reply to " << card_to_string(ms.card)
+                   << " keeps its score of " << ms.value;
+                err = os.str();
+                return false;
+            }
+        } else if (!child.empty()) {
+            const int cv = search(ctx, child, next_move, child_alpha, child_beta);
+            if (ctx.tight_pv && cv != child_value) {
+                std::ostringstream os;
+                os << "internal inconsistency: " << card_to_string(ms.card) << " scores "
+                   << ms.value << " and the position after it " << cv;
+                err = os.str();
+                return false;
+            }
             if (ctx.canonicalise) {
-                const CardId c = canonical_move_for(ctx, child, cv, WINDOW_MIN, WINDOW_MAX);
+                const CardId c = canonical_move_for(ctx, child, cv, child_alpha, child_beta);
                 if (c != NO_CARD) next_move = c;
             }
         }
 
         std::vector<Play> line;
         line.push_back(Play{seat, ms.card});
-        if (!child.empty() && !walk_pv(ctx, child, next_move, line, err)) return false;
+        if (!child.empty() &&
+            !walk_pv(ctx, child, next_move, line, err, WINDOW_MIN, WINDOW_MAX, child_value))
+            return false;
 
         Tally tally;
         if (!replay_pv(pos, line, roles, tally, err)) {

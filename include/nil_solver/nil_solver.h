@@ -445,8 +445,40 @@ extern "C" {
  * NO_ flags. */
 #define NIL_FLAG_NO_DD_ENGINE 0x8000000u
 /* With one nil bid still live, do not bound positions by the plain double-dummy
- * trick count of the live bidder's side.  Same answer, more nodes. */
+ * trick count of the live bidder's side.  Same answer.
+ *
+ * INERT SINCE THE PERFORMANCE PASS OF SEPT 2026, because the bound is now off
+ * by default: measured on 13-card deals under per-card scoring it wins on some
+ * and loses badly on the slowest ones (see SearchOptions::dd_live_bounds).  The
+ * bit keeps its meaning -- off -- so a caller that sets it gets what it asked
+ * for; there is no ABI bit to turn the bound on (nil_cli and nil_bench take
+ * --dd-live-bounds). */
 #define NIL_FLAG_NO_DD_LIVE_BOUNDS 0x10000000u
+
+/* Score each card of nil_solve_moves' full mode the way it was scored before
+ * the performance pass of Sept 2026: run the root search first, then search
+ * each card once under the presolve's window, re-searching wide the cards that
+ * fall outside it.  By default the root search is skipped -- the rows' extremum
+ * IS its value -- and each card is scored by a short sequence of null-window
+ * searches seeded with the best row so far (MTD(f)), which the two-bound
+ * transposition table makes cheaper than one wide search.  Same values, same
+ * lines, same trick counts; a control arm.  Inert under NIL_FLAG_FAST_MODE and
+ * outside nil_solve_moves.
+ *
+ * THE FLAG WORD IS NEARLY FULL.  After this bit and NIL_FLAG_NO_LIVE_ORDER
+ * below, 0x80000000u is the last unassigned bit (0x2u, 0x8u and 0x20u are
+ * burned).  The pass's other exact changes -- charging a doomed bid on arrival,
+ * the tight principal-variation windows, the two-bound table -- have control
+ * arms in nil_cli, nil_bench and ctest, but not here; a wider flag word or an
+ * options struct is the way to give them one. */
+#define NIL_FLAG_NO_ROW_MTD 0x20000000u
+
+/* Key the seat-specific move ordering to the bids that are still LIVE and not
+ * to the one nil seat, and have a seat with no live bid win a trick cheaply
+ * from a non-bidding opponent -- turned off, restoring the ordering from
+ * before the performance pass of Sept 2026.  Ordering only: same values; in
+ * full mode, the same principal variation.  A control arm. */
+#define NIL_FLAG_NO_LIVE_ORDER 0x40000000u
 
 #define NIL_FLAG_NO_SETTLED_GAINS 0x800000u
 
@@ -724,14 +756,21 @@ typedef struct nil_move {
  * `*moves_len` is zero.
  *
  * WHAT IT COSTS.  Less than it looks, and the reason is worth knowing before
- * budgeting for it.  The position is solved first and every card is then scored
- * against the same transposition table, so the per-card searches spend most of
- * their time reading back work the first search already did.  Measured over
- * twelve random thirteen-card deals in fast mode it came to 1.0x the nodes and
- * +0.4% of the wall time of the plain call.  The cases that cost anything are
- * the ones the plain call answered by proof without looking at a card: there
- * the position is free and the move list is not, though at 1 node against 79
- * that is not a number anybody has to plan around.
+ * budgeting for it.  In fast mode the position is solved first and every card
+ * is then scored against the same transposition table, so the per-card
+ * searches spend most of their time reading back work the first search
+ * already did.  Measured over twelve random thirteen-card deals in fast mode it
+ * came to 1.0x the nodes and +0.4% of the wall time of the plain call.  The
+ * cases that cost anything are the ones the plain call answered by proof
+ * without looking at a card: there the position is free and the move list is
+ * not, though at 1 node against 79 that is not a number anybody has to plan
+ * around.
+ *
+ * In full mode, since the performance pass of Sept 2026, there is no separate
+ * solve of the position: its value is the best row's, and each card is scored
+ * by a short sequence of null-window searches seeded with the best row so far
+ * (see NIL_FLAG_NO_ROW_MTD, which restores the old order).  On 46 thirteen-card
+ * deals the per-card call took 188 s in all, against 882 s before the pass.
  *
  * Returns NIL_OK or a negative NIL_ERR_* code. */
 NIL_SOLVER_API int32_t NIL_SOLVER_CALL nil_solve_moves(const char* pbn, int32_t leader,

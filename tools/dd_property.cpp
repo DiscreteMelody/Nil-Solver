@@ -1,7 +1,7 @@
 // Property test for nil/ddtricks: the double-dummy engine against an
 // independent brute-force minimax, on random positions.
 //
-//   dd_property <cases> <max tricks per hand> <seed>
+//   dd_property <cases> <max tricks per hand> <seed> [variants]
 //
 // What it checks, for every position:
 //   * ns_exact returns the brute-force N/S trick count;
@@ -18,6 +18,18 @@
 // Deals are drawn from a shrunken deck (a random subset of ranks per suit) so
 // that small hands still see long suits, voids, ruffs, and spades both broken
 // and unbroken.
+//
+// VARIANTS.  With a fourth argument, each position is followed by that many
+// variants that keep every hand's suit lengths and the owners of the top few
+// cards of each suit (a random number per suit) and deal the cards below them
+// out again among the same hands.  Those are exactly the positions a stored
+// fact may be read back on -- the engine's table generalizes over low cards,
+// DDS's "winning ranks" -- so the variants are checked the same way, against a
+// fresh brute force each.  Independent random positions almost never share
+// suit lengths and top cards with something already in the table, which is how
+// an unsound generalization (a refuted class of equal cards straddling the
+// pinned ranks; see the end of Engine::search) survived this test without the
+// variants.
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -129,17 +141,77 @@ int reference(const RefPos& p) {
     return best;
 }
 
+// One position against the reference: the exact count, every zero-window
+// target, and the reported lead.  `got`, `want` and `best` are for the report.
+bool check_position(const Hand h[4], int leader, bool broken, int t, int& got, int& want,
+                    CardId& best) {
+    RefPos p{};
+    for (int s = 0; s < 4; ++s) p.h[s] = h[s];
+    p.leader = leader;
+    p.len = 0;
+    p.broken = broken;
+    memo_new_position();
+    want = reference(p);
+
+    best = NO_CARD;
+    got = dd::engine().ns_exact(h, leader, broken, 0, t, &best);
+    if (got != want) return false;
+    for (int target = 0; target <= t + 1; ++target) {
+        if (dd::engine().ns_reach(h, leader, broken, target, nullptr) != (want >= target)) {
+            return false;
+        }
+    }
+    const Hand legal = legal_moves(h[leader], 0, -1, broken);
+    if (best == NO_CARD || !(legal & card_bit(best))) return false;
+    RefPos q = p;
+    q.h[leader] &= ~card_bit(best);
+    q.broken = spades_broken_after(broken, card_suit(best));
+    q.trick[0] = best;
+    q.len = 1;
+    return reference(q) == want;
+}
+
+// A variant of `h`: the top `keep` cards of each suit (a random number per
+// suit) stay with their owners, and the cards below them are dealt out again
+// among the same hands, each hand keeping its count of them.
+void deal_low_cards_again(const Hand h[4], Hand out[4], std::mt19937& rng) {
+    for (int s = 0; s < 4; ++s) out[s] = h[s];
+    const Hand all = h[0] | h[1] | h[2] | h[3];
+    for (int suit = 0; suit < 4; ++suit) {
+        std::vector<CardId> live;  // highest first
+        for (int r = 14; r >= 2; --r) {
+            if (all & card_bit(make_card(suit, r))) live.push_back(make_card(suit, r));
+        }
+        const std::size_t keep = rng() % (live.size() + 1);
+        std::vector<int> owners;
+        for (std::size_t i = keep; i < live.size(); ++i) {
+            for (int seat = 0; seat < 4; ++seat) {
+                if (out[seat] & card_bit(live[i])) {
+                    owners.push_back(seat);
+                    out[seat] &= ~card_bit(live[i]);
+                }
+            }
+        }
+        std::shuffle(owners.begin(), owners.end(), rng);
+        for (std::size_t i = keep; i < live.size(); ++i) {
+            out[owners[i - keep]] |= card_bit(live[i]);
+        }
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     const int cases = argc > 1 ? std::atoi(argv[1]) : 2000;
     const int max_tricks = argc > 2 ? std::atoi(argv[2]) : 5;
     const unsigned seed = argc > 3 ? static_cast<unsigned>(std::atoi(argv[3])) : 7u;
+    const int variants = argc > 4 ? std::atoi(argv[4]) : 0;
     std::mt19937 rng(seed);
     dd::engine().resize(16);
 
     int failures = 0;
     int unbroken_positions = 0;
+    int variant_positions = 0;
     for (int it = 0; it < cases; ++it) {
         const int t = 1 + static_cast<int>(rng() % max_tricks);
         // A shrunken deck: pick 4t distinct cards, biased toward few suits.
@@ -159,47 +231,29 @@ int main(int argc, char** argv) {
             }
         }
         std::shuffle(deck.begin(), deck.end(), rng);
-        Hand h[4] = {0, 0, 0, 0};
+        Hand dealt[4] = {0, 0, 0, 0};
         for (int seat = 0; seat < 4; ++seat)
-            for (int k = 0; k < t; ++k) h[seat] |= card_bit(deck[seat * t + k]);
+            for (int k = 0; k < t; ++k) dealt[seat] |= card_bit(deck[seat * t + k]);
         const int leader = static_cast<int>(rng() % 4);
         const bool broken = (rng() % 2) == 0;
         if (!broken) ++unbroken_positions;
 
-        RefPos p{};
-        for (int s = 0; s < 4; ++s) p.h[s] = h[s];
-        p.leader = leader;
-        p.len = 0;
-        p.broken = broken;
-        memo_new_position();
-        const int want = reference(p);
-
-        CardId best = NO_CARD;
-        const int got = dd::engine().ns_exact(h, leader, broken, 0, t, &best);
-        bool ok = got == want;
-        for (int target = 0; target <= t + 1 && ok; ++target) {
-            if (dd::engine().ns_reach(h, leader, broken, target, nullptr) != (want >= target)) {
-                ok = false;
-            }
-        }
-        if (ok) {
-            const Hand legal = legal_moves(h[leader], 0, -1, broken);
-            if (best == NO_CARD || !(legal & card_bit(best))) {
-                ok = false;
+        for (int v = 0; v <= variants; ++v) {
+            Hand h[4];
+            if (v == 0) {
+                for (int s = 0; s < 4; ++s) h[s] = dealt[s];
             } else {
-                RefPos q = p;
-                q.h[leader] &= ~card_bit(best);
-                q.broken = spades_broken_after(broken, card_suit(best));
-                q.trick[0] = best;
-                q.len = 1;
-                if (reference(q) != want) ok = false;
+                deal_low_cards_again(dealt, h, rng);
+                ++variant_positions;
             }
-        }
-        if (!ok) {
+            int got = 0, want = 0;
+            CardId best = NO_CARD;
+            if (check_position(h, leader, broken, t, got, want, best)) continue;
             ++failures;
             if (failures <= 10) {
-                std::printf("FAIL case %d: leader %c broken %d engine %d reference %d best %s\n  ",
-                            it, SEAT_CHARS[leader], broken ? 1 : 0, got, want,
+                std::printf("FAIL case %d variant %d: leader %c broken %d engine %d reference %d "
+                            "best %s\n  ",
+                            it, v, SEAT_CHARS[leader], broken ? 1 : 0, got, want,
                             best == NO_CARD ? "--" : card_to_string(best).c_str());
                 for (int s = 0; s < 4; ++s)
                     std::printf("%c: %s  ", SEAT_CHARS[s], hand_to_string(h[s]).c_str());
@@ -207,7 +261,8 @@ int main(int argc, char** argv) {
             }
         }
     }
-    std::printf("dd_property: %d positions up to %d tricks (%d with spades unbroken), %d failures\n",
-                cases, max_tricks, unbroken_positions, failures);
+    std::printf("dd_property: %d positions up to %d tricks (%d with spades unbroken) and %d "
+                "variants, %d failures\n",
+                cases, max_tricks, unbroken_positions, variant_positions, failures);
     return failures == 0 ? 0 : 1;
 }

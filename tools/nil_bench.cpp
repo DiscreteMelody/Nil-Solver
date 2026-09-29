@@ -443,6 +443,20 @@ void usage(const char* argv0) {
               << "                    roadmap item 44, off by default)\n"
               << "  --no-quick-tricks   do not spend the opponents' can-cash\n"
               << "                    floor (same answer, more nodes; full only)\n"
+              << "  --dd-live-bounds  with one bid live, bound positions by the plain\n"
+              << "                    double-dummy count (off by default since Sept 2026)\n"
+              << "  --no-row-mtd      score --check-moves rows as before the Sept 2026\n"
+              << "                    pass: root search, then one windowed search a card\n"
+              << "  --no-moves-aspiration  score those rows under one wide window\n"
+              << "  --moves-root-search  run the root search before those rows\n"
+              << "  --no-doom-charge  charge a doomed bid when it breaks, not on arrival\n"
+              << "  --no-live-order   key the ordering rules to the nil seat, not the\n"
+              << "                    live bids (also turns off the next one)\n"
+              << "  --no-win-order    no cheapest-winning-card-first for a seat with\n"
+              << "                    no live bid\n"
+              << "  --no-tight-pv     re-derive lines under the caller's window\n"
+              << "  --no-tt-two-bounds  one bound per table entry\n"
+              << "                    (all of these: same answers, different nodes)\n"
               << "  --quick-tricks-stats  also report how often each later-tricks\n"
               << "                    arm's gate opens and how often it cuts\n"
               << "  --quiet           only print the summary and any failures\n"
@@ -501,6 +515,17 @@ std::string memo_label(const nil::SearchOptions& opts) {
     if (!opts.narrow_window && opts.mode == nil::MODE_FULL) suffix += "+nonarrow";
     if (!opts.presolve_window && opts.mode == nil::MODE_FULL) suffix += "+nopresolve";
     if (!opts.canonical_pv && opts.mode == nil::MODE_FULL) suffix += "+ordered";
+    // The Sept 2026 performance pass's control arms.  Each moves node counts,
+    // so each gets its own group.  The row-scoring pair and the tight windows
+    // only exist in full mode; the ordering and table arms run in both.
+    if (opts.dd_live_bounds && opts.dd_engine) suffix += "+ddlivebounds";
+    if (!opts.moves_aspiration && opts.mode == nil::MODE_FULL) suffix += "+nomovesmtd";
+    if (opts.moves_root_search && opts.mode == nil::MODE_FULL) suffix += "+movesroot";
+    if (!opts.doom_charge && opts.mode == nil::MODE_FULL) suffix += "+nodoomcharge";
+    if (!opts.live_order) suffix += "+noliveorder";
+    if (!opts.win_order && opts.live_order) suffix += "+nowinorder";
+    if (!opts.tight_pv && opts.mode == nil::MODE_FULL) suffix += "+notightpv";
+    if (!opts.tt_two_bounds) suffix += "+nottbounds";
     if (!opts.use_memo || opts.tt_megabytes == 0) return "off" + suffix;
     // TT_AUTO is a sentinel, not a size.  Printing it raw put
     // "18446744073709551615mb" in the history file's memo column, which is the
@@ -692,6 +717,25 @@ int main(int argc, char** argv) {
             check_pv = true;
         } else if (arg == "--no-dd-live-bounds") {
             opts.dd_live_bounds = false;
+        } else if (arg == "--dd-live-bounds") {
+            opts.dd_live_bounds = true;
+        } else if (arg == "--no-row-mtd") {
+            opts.moves_aspiration = false;
+            opts.moves_root_search = true;
+        } else if (arg == "--no-moves-aspiration") {
+            opts.moves_aspiration = false;
+        } else if (arg == "--moves-root-search") {
+            opts.moves_root_search = true;
+        } else if (arg == "--no-doom-charge") {
+            opts.doom_charge = false;
+        } else if (arg == "--no-live-order") {
+            opts.live_order = false;
+        } else if (arg == "--no-win-order") {
+            opts.win_order = false;
+        } else if (arg == "--no-tight-pv") {
+            opts.tight_pv = false;
+        } else if (arg == "--no-tt-two-bounds") {
+            opts.tt_two_bounds = false;
         } else if (arg == "--no-dd-engine") {
             opts.dd_engine = false;
         } else if (arg == "--no-settled-tricks") {

@@ -132,7 +132,13 @@ std::int32_t prepare(const char* pbn, std::int32_t leader, const char* current_t
     opts.narrow_window = (flags & NIL_FLAG_NO_NARROW) == 0;
     opts.presolve_window = (flags & NIL_FLAG_NO_PRESOLVE) == 0;
     opts.dd_engine = (flags & NIL_FLAG_NO_DD_ENGINE) == 0;
-    opts.dd_live_bounds = (flags & NIL_FLAG_NO_DD_LIVE_BOUNDS) == 0;
+    // Off by default since the Sept 2026 pass; the flag can only keep it off.
+    if (flags & NIL_FLAG_NO_DD_LIVE_BOUNDS) opts.dd_live_bounds = false;
+    if (flags & NIL_FLAG_NO_ROW_MTD) {
+        opts.moves_aspiration = false;
+        opts.moves_root_search = true;
+    }
+    opts.live_order = (flags & NIL_FLAG_NO_LIVE_ORDER) == 0;
     opts.tt_megabytes = g_table_megabytes;
     opts.minimise_own_tricks = (flags & NIL_FLAG_MINIMISE_OWN_TRICKS) != 0;
     opts.mode = (flags & NIL_FLAG_FAST_MODE) != 0 ? nil::MODE_FAST : nil::MODE_FULL;

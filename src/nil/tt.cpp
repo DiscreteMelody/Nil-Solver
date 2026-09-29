@@ -50,16 +50,13 @@ const TTEntry* TranspositionTable::probe(const StateKey& key, std::uint64_t hash
     const TTEntry* bucket = &table_[(hash & mask_) * WAYS];
     for (int i = 0; i < WAYS; ++i) {
         const TTEntry& e = bucket[i];
-        if (e.generation != generation_ || e.tag != tag || e.lo != key.lo || e.hi != key.hi) {
+        if (e.generation != generation_ || e.tag() != tag || e.lo != key.lo || e.hi != key.hi) {
             continue;
         }
         // An exact value answers any window.  A bound answers only the windows
         // it already falls outside: knowing the value is at least X settles a
         // search whose beta is at or below X, and nothing narrower.
-        const int value = e.value;
-        const std::uint8_t kind = bound_kind(e.bound);
-        answers = kind == BOUND_EXACT || (kind == BOUND_LOWER && value >= beta) ||
-                  (kind == BOUND_UPPER && value <= alpha);
+        answers = e.lower == e.upper || e.lower >= beta || e.upper <= alpha;
         // Either way the entry comes back.  A match that does not answer is a
         // one-sided bound on this position, which is worth strictly more to the
         // caller than a miss even though it cannot end the node; see the header.
@@ -74,7 +71,8 @@ const TTEntry* TranspositionTable::probe(const StateKey& key, std::uint64_t hash
 }
 
 void TranspositionTable::store(const StateKey& key, std::uint64_t hash, int value, RelMove move,
-                               int depth, std::uint8_t bound, std::uint8_t tag) {
+                               int depth, std::uint8_t bound, std::uint8_t tag, bool maximizing) {
+    (void)depth;  // read back out of the key; see key_card_count
     if (!buckets_) return;
     TTEntry* bucket = &table_[(hash & mask_) * WAYS];
 
@@ -91,7 +89,7 @@ void TranspositionTable::store(const StateKey& key, std::uint64_t hash, int valu
             victim_score = -1;
             break;
         }
-        const int score = live ? 1 + static_cast<int>(e.depth) : 0;
+        const int score = live ? 1 + key_card_count(StateKey{e.lo, e.hi}) : 0;
         if (victim_score < 0 || score < victim_score) {
             victim = &e;
             victim_score = score;
@@ -99,18 +97,38 @@ void TranspositionTable::store(const StateKey& key, std::uint64_t hash, int valu
     }
 
     ++stats_.stores;
-    if (victim->generation == generation_ && (victim->lo != key.lo || victim->hi != key.hi)) {
-        ++stats_.evictions;
+    const bool same = victim->generation == generation_ && victim->lo == key.lo &&
+                      victim->hi == key.hi;
+    if (victim->generation == generation_ && !same) ++stats_.evictions;
+
+    const std::uint8_t kind = bound_kind(bound);
+    const std::int16_t v = static_cast<std::int16_t>(value);
+    std::int16_t lower = kind == BOUND_UPPER ? TT_NO_LOWER : v;
+    std::int16_t upper = kind == BOUND_LOWER ? TT_NO_UPPER : v;
+    const bool witness = kind == BOUND_EXACT || (maximizing ? kind == BOUND_LOWER
+                                                            : kind == BOUND_UPPER);
+    RelMove keep_move = move;
+    if (merge_ && same && victim->tag() == tag) {
+        const std::int16_t merged_lower = victim->lower > lower ? victim->lower : lower;
+        const std::int16_t merged_upper = victim->upper < upper ? victim->upper : upper;
+        if (merged_lower <= merged_upper) {
+            // The move follows the bound it witnesses: replaced only by a store
+            // that witnesses the side it is on AND is what that side now says.
+            const bool sets_side = maximizing ? lower == merged_lower : upper == merged_upper;
+            if (!(witness && sets_side) && victim->move != REL_NO_MOVE) keep_move = victim->move;
+            lower = merged_lower;
+            upper = merged_upper;
+        }
     }
 
     victim->lo = key.lo;
     victim->hi = key.hi;
-    victim->value = static_cast<std::int16_t>(value);
+    victim->lower = lower;
+    victim->upper = upper;
     victim->generation = generation_;
-    victim->move = move;
-    victim->depth = static_cast<std::uint8_t>(depth < 0 ? 0 : (depth > 255 ? 255 : depth));
-    victim->bound = bound;
-    victim->tag = tag;
+    victim->move = keep_move;
+    victim->meta = static_cast<std::uint8_t>((tag & 7u) |
+                                             (static_cast<unsigned>(bound_need(bound)) << 3));
 }
 
 }  // namespace nil

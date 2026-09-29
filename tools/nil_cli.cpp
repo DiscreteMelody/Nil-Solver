@@ -73,7 +73,24 @@ void usage(const char* argv0) {
         << "                          promising-first one (same answer, more nodes;\n"
         << "                          fast mode only)\n"
         << "  --no-dd-live-bounds     with one bid live, do not bound positions by the\n"
-        << "                          double-dummy trick count (same answer, more nodes)\n"
+        << "                          double-dummy trick count (the default now)\n"
+        << "  --dd-live-bounds        with one bid live, DO bound them that way (same\n"
+        << "                          answer; faster on some deals, much slower on others)\n"
+        << "  --no-row-mtd            score --moves rows as before the Sept 2026 pass:\n"
+        << "                          root search first, one windowed search per card\n"
+        << "                          (same answers and lines; full mode only)\n"
+        << "  --no-moves-aspiration   score --moves rows under one wide window rather\n"
+        << "                          than by null windows (same answers)\n"
+        << "  --moves-root-search     run the root search before the --moves rows\n"
+        << "  --no-doom-charge        charge a doomed bid on the trick it breaks, not\n"
+        << "                          on arrival (same answer, more nodes)\n"
+        << "  --no-live-order         key the ordering rules to the nil seat, not to the\n"
+        << "                          live bids (same answer, more nodes)\n"
+        << "  --no-win-order          do not try the cheapest trick-winning card first\n"
+        << "                          for a seat with no live bid (same answer)\n"
+        << "  --no-tight-pv           re-derive each line step under the caller's window\n"
+        << "                          rather than a (v-1, v+1) one (same answer and PV)\n"
+        << "  --no-tt-two-bounds      keep one bound per table entry (same answer and PV)\n"
         << "  --no-dd-engine          once no bid is live, keep searching with the\n"
         << "                          general search instead of the double-dummy\n"
         << "                          engine (same answer and PV, much slower)\n"
@@ -317,6 +334,25 @@ int main(int argc, char** argv) {
             opts.presolve_window = false;
         } else if (arg == "--no-dd-live-bounds") {
             opts.dd_live_bounds = false;
+        } else if (arg == "--dd-live-bounds") {
+            opts.dd_live_bounds = true;
+        } else if (arg == "--moves-root-search") {
+            opts.moves_root_search = true;
+        } else if (arg == "--no-row-mtd") {
+            opts.moves_aspiration = false;
+            opts.moves_root_search = true;
+        } else if (arg == "--no-win-order") {
+            opts.win_order = false;
+        } else if (arg == "--no-doom-charge") {
+            opts.doom_charge = false;
+        } else if (arg == "--no-live-order") {
+            opts.live_order = false;
+        } else if (arg == "--no-tight-pv") {
+            opts.tight_pv = false;
+        } else if (arg == "--no-moves-aspiration") {
+            opts.moves_aspiration = false;
+        } else if (arg == "--no-tt-two-bounds") {
+            opts.tt_two_bounds = false;
         } else if (arg == "--no-dd-engine") {
             opts.dd_engine = false;
         } else if (arg == "--no-canonical-pv") {

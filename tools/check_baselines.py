@@ -56,36 +56,59 @@ import sys
 #
 # Keep this table and ROADMAP.md's banked figures in step.  If you are changing
 # a number here, the roadmap entry explaining WHY should already exist.
+# RE-BANKED AT THE SEPT 2026 PERFORMANCE PASS, with two causes that have to be
+# kept apart.  HEAD c35614b already missed seven of these nine -- the
+# double-dummy handoff, the one-live-bid bound and the charge-once rule each
+# moved the full-mode trees and none re-banked here -- so the table below
+# records THREE figures per moved row: what patch 108 banked, what HEAD
+# c35614b measured before the pass, and what the pass measures (the number
+# checked).  The pass's own causes are in its ROADMAP.md entry: MTD(f) rows
+# (which none of these run -- they are single-answer solves), the two-bound
+# table, the tight principal-variation windows, charging doomed bids on
+# arrival, the live-bid move ordering, the double-dummy soundness fix, and the
+# one-live-bid bound turned OFF by default, which is the one that moves a
+# figure UP (large.txt full; c13-0000 alone goes 5,964,148 -> 13,169,403).
+# The two fast rows do not move: the one ordering rule that touched MODE_FAST
+# is gated off there.
 BASELINES = [
     ("positions.txt fast", 39_701,
      ["--corpus", "tests/corpus/positions.txt", "--mode", "fast"]),
-    # Re-banked at patch 106 (B1a): 278,059 -> 274,270, -1.36%.  Cause is in
-    # ROADMAP.md -- the dead-nil/max canonicalisation change across 57 rows.
-    ("positions.txt full", 274_270,
+    # 274,270 at patch 106 (B1a); 227,386 at HEAD c35614b; 227,706 after the
+    # Sept 2026 pass (+0.14% on HEAD).
+    ("positions.txt full", 227_706,
      ["--corpus", "tests/corpus/positions.txt", "--mode", "full"]),
     ("large.txt fast", 49_084,
      ["--corpus", "tests/corpus/large.txt", "--mode", "fast"]),
-    # Re-banked at patch 106 (B1a): 163,149,275 -> 163,134,302, -0.01%, from
-    # the four dead-nil/max rows in this file.  No EXPECTED VALUE in large.txt
-    # moved -- all 19 still match; only the tree searched to reach them did.
-    ("large.txt full", 163_134_302,
+    # 163,134,302 at patch 106 (B1a); 7,778,660 at HEAD c35614b; 14,899,561
+    # after the pass (+92% on HEAD, nearly all of it c13-0000 -- see above).
+    ("large.txt full", 14_899_561,
      ["--corpus", "tests/corpus/large.txt", "--mode", "full"]),
     # NOT one of the four hand-run baselines Phase A set out to verify.  Added
     # at patch 105 as a CONSISTENCY CHECK on the worst-case leg's subtotal in
     # scripts/run-bench.{sh,cmd}: those three per-deal figures were the ones
     # found stale, and no other row here covers them.
-    ("large.txt 13c only", 162_499_778,
+    # 162,499,778 at patch 105; 7,512,026 at HEAD c35614b; 14,692,504 after
+    # the pass.
+    ("large.txt 13c only", 14_692_504,
      ["--corpus", "tests/corpus/large.txt", "--cards-only", "13"]),
-    ("multinil.txt", 4_833_200,
+    # 4,833,200 at patch 108; 3,958,328 at HEAD c35614b; 2,425,248 after the
+    # pass (-39% on HEAD).
+    ("multinil.txt", 2_425_248,
      ["--corpus", "tests/corpus/multinil.txt"]),
     # Roles in the file header, not in the rows -- see the module docstring.
-    ("opposed13", 351_156_828,
+    # 351,156,828 at patch 108; 271,522,655 at HEAD c35614b; 182,407,101 after
+    # the pass (-33% on HEAD).
+    ("opposed13", 182_407_101,
      ["--deals", "tests/corpus/opposed13.txt", "--seats", "0 0 3 2"]),
     # ROTATED roles, deliberately.  Not a copy of the line above.
-    ("opposed13_settled", 55_428_602,
+    # 55,428,602 at patch 108; 3,437,862 at HEAD c35614b; 3,626,151 after the
+    # pass (+5.5% on HEAD).
+    ("opposed13_settled", 3_626_151,
      ["--deals", "tests/corpus/opposed13_settled.txt", "--seats", "3 2 0 0"]),
     # A corpus: roles travel per row, so no --seats.
-    ("opposed13_real", 171_731_064,
+    # 171,731,064 at patch 108; 172,080,754 at HEAD c35614b; 93,336,454 after
+    # the pass (-46% on HEAD).
+    ("opposed13_real", 93_336_454,
      ["--corpus", "tests/corpus/opposed13_real.txt"]),
 ]
 

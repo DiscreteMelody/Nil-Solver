@@ -379,7 +379,29 @@ namespace NilSolver
         /// cards. Same value and same principal variation; diagnostic and a control arm.
         /// Inert under <see cref="FastMode"/>, which has no partial entries.
         /// </summary>
-        NoTtNarrow = 0x80000u
+        NoTtNarrow = 0x80000u,
+
+        /// <summary>
+        /// Keep the one-live-bid double-dummy bound off. Inert: the bound has been off by
+        /// default since the Sept 2026 performance pass, because it loses badly on the
+        /// slowest 13-card deals. There is no flag to turn it on.
+        /// </summary>
+        NoDdLiveBounds = 0x10000000u,
+
+        /// <summary>
+        /// Score each card in full-mode <c>SolveMoves</c> as before the Sept 2026 pass: the
+        /// root search first, then one windowed search per card. By default the root search
+        /// is skipped and each card is scored by null-window searches (MTD(f)). Same values,
+        /// same lines; a control arm.
+        /// </summary>
+        NoRowMtd = 0x20000000u,
+
+        /// <summary>
+        /// Order moves by the one nil seat rather than by the bids still live, and do not
+        /// have a seat with no live bid win tricks cheaply first. Ordering only; same values
+        /// and, in full mode, the same line. A control arm.
+        /// </summary>
+        NoLiveOrder = 0x40000000u
     }
 
     /// <summary>Return codes. <see cref="Ok"/> is success; everything else is negative.</summary>

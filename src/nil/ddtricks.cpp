@@ -2,6 +2,7 @@
 
 #include <algorithm>
 
+#include "nil/bitpack.hpp"
 #include "nil/rules.hpp"
 
 #if defined(_MSC_VER)
@@ -287,7 +288,7 @@ bool Engine::probe(const Key& key, int target, bool& result, CardId& move, const
                    std::uint32_t pat_out[4]) {
     if (table_.empty()) return false;
     ++stats_.tt_probes;
-    const Header* hd = header(key, false);
+    Header* hd = header(key, false);
     if (!hd) return false;
     for (int i = 0; i < hd->count; ++i) {
         std::uint32_t pat[4];
@@ -298,6 +299,11 @@ bool Engine::probe(const Key& key, int target, bool& result, CardId& move, const
         if (e->lo >= target || e->hi < target) {
             result = e->lo >= target;
             for (int s = 0; s < 4; ++s) pat_out[s] = e->pat[s];
+            if (mru_ && i > 0) {
+                const std::uint16_t hit = hd->prof[i];
+                for (int j = i; j > 0; --j) hd->prof[j] = hd->prof[j - 1];
+                hd->prof[0] = hit;
+            }
             return true;
         }
     }
@@ -318,7 +324,11 @@ void Engine::store(const Key& key, const unsigned rel[4], int lo, int hi, CardId
     int i = 0;
     while (i < hd->count && hd->prof[i] != prof) ++i;
     if (i == hd->count) {
-        if (hd->count < PROFILES) {
+        if (mru_) {
+            if (hd->count < PROFILES) ++hd->count;
+            for (int j = hd->count - 1; j > 0; --j) hd->prof[j] = hd->prof[j - 1];
+            hd->prof[0] = prof;
+        } else if (hd->count < PROFILES) {
             hd->prof[hd->count++] = prof;
         } else {
             hd->prof[hd->next] = prof;  // the displaced profile's facts go unreachable
@@ -342,9 +352,11 @@ void Engine::store(const Key& key, const unsigned rel[4], int lo, int hi, CardId
 // cards a static bound relied on.  Only positions at a trick boundary are
 // stored; `rel` is what lets a stored fact cover every position that agrees on
 // those cards.
-bool Engine::search(const Pos& p, int target, CardId* witness, unsigned rel[4]) {
+bool Engine::search(const Pos& p, int target, CardId* witness, unsigned rel[4],
+                    unsigned forb[4]) {
     ++stats_.nodes;
     rel[0] = rel[1] = rel[2] = rel[3] = 0;
+    forb[0] = forb[1] = forb[2] = forb[3] = 0;
     const int seat = (p.leader + p.len) & 3;
     const bool ns_to_move = (seat & 1) == 0;
     const bool root = witness != nullptr;
@@ -368,27 +380,25 @@ bool Engine::search(const Pos& p, int target, CardId* witness, unsigned rel[4]) 
             return (winner & 1) == 0;  // target is 1 here
         }
 
-        // Build the key.
-        key.lengths = 0;
-        for (int s = 0; s < 4; ++s) {
-            unsigned hs[4];
-            for (int i = 0; i < 4; ++i) {
-                hs[i] = sbits(p.h[i], s);
-                key.lengths |= static_cast<std::uint64_t>(pop32(hs[i])) << (16 * s + 4 * i);
+        // Build the key.  The owners of each suit's live cards, two bits a
+        // card with the lowest card in the lowest bits -- the same string the
+        // old top-down loop shifted together, built a whole suit at a time
+        // (nil/bitpack.hpp).  The lengths nibble for suit s and hand i sits at
+        // bit 16s + 4i, which is where each hand's four suit-lane counts land
+        // once shifted by 4i.
+        key.lengths = bitpack::lane_counts(p.h[0]) | (bitpack::lane_counts(p.h[1]) << 4) |
+                      (bitpack::lane_counts(p.h[2]) << 8) | (bitpack::lane_counts(p.h[3]) << 12);
+        {
+            const Hand all_h = p.h[0] | p.h[1] | p.h[2] | p.h[3];
+            const Hand plane0 = p.h[1] | p.h[3];  // owner bit 0: East or West
+            const Hand plane1 = p.h[2] | p.h[3];  // owner bit 1: South or West
+            const std::uint64_t counts = bitpack::lane_counts(all_h);
+            for (int s = 0; s < 4; ++s) {
+                const unsigned all = sbits(all_h, s);
+                key.all[s] = all;
+                key.code[s] = bitpack::owners13(sbits(plane0, s), sbits(plane1, s), all);
+                key.n[s] = static_cast<int>((counts >> (16 * s)) & 31u);
             }
-            unsigned all = hs[0] | hs[1] | hs[2] | hs[3];
-            key.all[s] = all;
-            std::uint32_t code = 0;
-            int n = 0;
-            while (all) {
-                const int r = top_bit(all);
-                all &= ~(1u << r);
-                code = (code << 2) | (((hs[1] >> r) & 1u) * 1u + ((hs[2] >> r) & 1u) * 2u +
-                                      ((hs[3] >> r) & 1u) * 3u);
-                ++n;
-            }
-            key.code[s] = code;
-            key.n[s] = n;
         }
         const bool broken = p.broken || key.all[0] == 0;
         key.meta = static_cast<std::uint8_t>(p.leader | (broken ? 4 : 0));
@@ -525,6 +535,7 @@ bool Engine::search(const Pos& p, int target, CardId* witness, unsigned rel[4]) 
     bool result = !ns_to_move;
     CardId best = NO_CARD;
     unsigned acc[4] = {0, 0, 0, 0};
+    unsigned facc[4] = {0, 0, 0, 0};
     for (int i = 0; i < n; ++i) {
         const CardId c = mv[i];
         Pos child = p;
@@ -543,16 +554,93 @@ bool Engine::search(const Pos& p, int target, CardId* witness, unsigned rel[4]) 
             child.len = 0;
             if ((winner & 1) == 0) --child_target;
         }
-        unsigned crel[4];
-        const bool r = search(child, child_target, nullptr, crel);
+        unsigned crel[4], cforb[4];
+        const bool r = search(child, child_target, nullptr, crel, cforb);
         if (trick_win != NO_CARD) crel[card_suit(trick_win)] |= 1u << (trick_win & 15);
         if (ns_to_move ? r : !r) {
             result = r;
             best = c;
-            for (int s = 0; s < 4; ++s) acc[s] = crel[s];
+            for (int s = 0; s < 4; ++s) {
+                acc[s] = crel[s];
+                facc[s] = cforb[s];
+            }
             break;
         }
-        for (int s = 0; s < 4; ++s) acc[s] |= crel[s];
+        for (int s = 0; s < 4; ++s) {
+            acc[s] |= crel[s];
+            facc[s] |= cforb[s];
+        }
+    }
+    // A REFUTED CLASS MUST NOT STRADDLE THE CUT.
+    //
+    // A stored fact pins the owners of the top k cards of each suit, down to
+    // the lowest card the proof relied on, and lets everything below vary.  A
+    // node that looked at ALL of its moves (none worked) claims more than one
+    // that cut: every move of the mover fails, and it only tried one
+    // representative -- the lowest card -- per class of rank-equivalent cards.
+    // If a class runs across that cut, with its upper members pinned and its
+    // representative below, the proof does not transfer.  In a position the
+    // fact is read back on, the pinned upper members are still the mover's, but
+    // the card under them can now belong to someone else, so playing the upper
+    // member is a DIFFERENT move from playing a low card -- and it is the one
+    // the proof never tried.
+    //
+    // Measured, not hypothetical: from 8 tricks, East holds ST S9 S8 over
+    // North's S7, one spade class represented by the eight.  The proof pinned
+    // the ten and the nine only; the fact was then read back on East ST S9 S5
+    // under the S7, where the nine and the five are two moves, and North-South
+    // lose a trick to the one the proof skipped.  The engine said 2 tricks where
+    // there is 1, and a 9-trick settled position 4 where there are 2, which the
+    // general search disagrees with.
+    //
+    // The repair is to lower the cut to the representative whenever it would
+    // land strictly inside a refuted class, which makes the whole class match
+    // exactly wherever the fact applies.  Where the cut lands is only known at
+    // the trick boundary that stores the fact -- the proof below adds cards to
+    // it -- so an all-node reports the rank ranges its classes cover, (lowest,
+    // highest], as `forb`; they ride up to the boundary with the proof they
+    // belong to (the cutting child's at a cut node, every child's at an all-node)
+    // and are applied there.  Cards the range skips (ranks no hand holds any
+    // more) are harmless to include.  A class wholly above the cut is pinned
+    // already, and one wholly below it is low cards on both sides: any of the
+    // mover's low cards stands in for any other, as the generalization assumes.
+    //
+    // An earlier repair pinned EVERY representative at every all-node.  That is
+    // also sound, but it pinned each suit the mover could play down to its
+    // lowest card, and it cost up to a factor 6 in wall time on the 13-card
+    // benchmark; this rule pins only where the proof needs it.
+    //
+    // A node that CUT needs none of this: the working move is either pinned or
+    // a low card, and the mover has a card like it in every position the fact
+    // covers.
+    if (best == NO_CARD) {  // the loop ran out without a cut
+        const Hand members = legal & ~moves;  // every class member but its representative
+        if (members) {
+            // Fill downward from each member through ranks nobody holds and
+            // through other members; it stops just above the representative.
+            Hand pass = (members | ~relevant) & ~SUIT_PADDING;
+            Hand f = members;
+            f |= pass & (f >> 1);
+            pass &= pass >> 1;
+            f |= pass & (f >> 2);
+            pass &= pass >> 2;
+            f |= pass & (f >> 4);
+            pass &= pass >> 4;
+            f |= pass & (f >> 8);
+            for (int s = 0; s < 4; ++s) facc[s] |= sbits(f, s);
+        }
+    }
+    if (p.len == 0) {
+        // Where each suit's cut lands, and whether it lands inside a class.
+        for (int s = 0; s < 4; ++s) {
+            if (!(acc[s] & facc[s])) continue;  // nothing pinned in the ranges
+            unsigned cut = acc[s] & (0u - acc[s]);  // lowest pinned rank
+            if (!(facc[s] & cut)) continue;
+            while (facc[s] & (cut >> 1)) cut >>= 1;
+            acc[s] |= cut >> 1;  // the representative under the range
+        }
+    } else {
+        for (int s = 0; s < 4; ++s) forb[s] = facc[s];
     }
     for (int s = 0; s < 4; ++s) rel[s] = acc[s];
     if (root) *witness = best != NO_CARD ? best : (n ? mv[0] : NO_CARD);
@@ -573,8 +661,8 @@ bool Engine::ns_reach(const Hand hands[4], int leader, bool broken, int target,
     p.broken = broken;
     p.trick[0] = p.trick[1] = p.trick[2] = p.trick[3] = NO_CARD;
     if (witness) *witness = NO_CARD;
-    unsigned rel[4];
-    return search(p, target, witness, rel);
+    unsigned rel[4], forb[4];
+    return search(p, target, witness, rel, forb);
 }
 
 int Engine::ns_exact(const Hand hands[4], int leader, bool broken, int lo, int hi,

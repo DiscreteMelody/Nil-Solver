@@ -208,6 +208,16 @@ bool encode_state_key(const Hand hands[4], int leader, bool broken, const CardId
 // 128-bit key, so a hash collision costs a probe and never an answer.
 std::uint64_t mix_key(const StateKey& key);
 
+// How many cards are still in the four hands, read back out of a key built by
+// encode_state_key: the four suit lengths sit in bits 3-18 of `lo`, four bits
+// apiece, straight after the leader and the broken flag.  The transposition
+// table ranks entries for replacement by it and no longer spends a byte of the
+// entry on a copy.
+inline int key_card_count(const StateKey& key) {
+    const unsigned x = static_cast<unsigned>(key.lo >> 3);
+    return static_cast<int>((x & 15u) + ((x >> 4) & 15u) + ((x >> 8) & 15u) + ((x >> 12) & 15u));
+}
+
 }  // namespace nil
 
 #endif  // NIL_STATEKEY_HPP
