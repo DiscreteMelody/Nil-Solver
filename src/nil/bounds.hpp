@@ -675,6 +675,316 @@ inline bool nil_must_take_a_trick(const Hand hands[4], int nil_seat) {
     return cover_deficit_depth(mine, theirs, SUIT_SPADES) != SUIT_COVERED;
 }
 
+// ===========================================================================
+// ADVERSARIAL PROOFS (Sept 2026 nil-rules research)
+// ===========================================================================
+// Everything above this line is an EVERY-LINE proof: nil_cannot_be_forced says
+// no line of play at all gives the nil bidder a trick, nil_must_take_a_trick
+// says every line does.  That is the strongest kind of fact and the one the
+// double-dummy handoff (dd_pinned_offset) and doom-charging need.
+//
+// It is also nearly exhausted.  Measured over 45,000 random endings with the
+// two cooperative probes as ground truth: from six cards a hand on, positions
+// that are safe or doomed on EVERY line and that the two proofs above miss are
+// under 1% of deals, and every-line safety beyond nil_cannot_be_forced is zero
+// by nine cards.  There is little left there.
+//
+// What the search actually spends its nodes on is the ADVERSARIAL question --
+// can the nil side keep the nil clean against any defence, can the opponents
+// force a trick against any defence -- and the three functions below answer it
+// by proof.  They are weaker facts than the ones above in exactly one respect:
+// they hold under the right strategy, not under every line.  So:
+//
+//   * MODE_FAST: the value IS the adversarial verdict, so a proof settles the
+//     node outright, exactly as the two every-line proofs do.
+//   * MODE_FULL: the primary weight dominates the trick term, so under optimal
+//     play the nil's outcome is the one the proof guarantees and the value lies
+//     in the same band an every-line proof would put it in.  The same fail-soft
+//     bounds apply, and nothing else does.
+//   * NOT dd_pinned_offset and NOT doom_charge.  Both need the outcome pinned
+//     on EVERY line -- a misdefence could still save a nil that D1 below proves
+//     the opponents can break, so charging it on arrival would be wrong.
+//
+// How they were checked, since each is a proof and a proof is only as good as
+// its weakest case (full write-up in the project's nil-rules research notes):
+// agreement with the search on every trick-boundary position with one or two
+// cards a hand (3.3M positions), on ~650k positions from adversarial generators
+// and a mutation walk inside each rule's firing region, and on ~540M firings
+// inside real 13-card searches; and, for the SAFE proof, a solver-free check
+// that it is an INDUCTIVE INVARIANT -- wherever it fires, the nil side can play
+// the next trick so that the nil does not win it and the proof fires again --
+// on 6.8M positions.  Loosening any single clause below by one step is refuted
+// by a one- or two-card counterexample, which is the evidence that each clause
+// is doing work.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// A DUCKABLE SUIT
+// ---------------------------------------------------------------------------
+// `mine` is the nil bidder's cards of a side suit, `others` everybody else's.
+// True when the nil bidder's j-th LOWEST card is below the j-th lowest of
+// `others`, for every j up to the shorter holding.
+//
+// WHY THAT IS ENOUGH TO NEVER LOSE THE SUIT.  Whatever card of the suit is led,
+// it is some o(i), and the condition gives the nil bidder at least min(i, |N|)
+// cards below it -- so it ducks, playing its HIGHEST card below the lead.  The
+// condition survives the trick:
+//
+//   * other players' cards leaving only push o(j) upward;
+//   * the duck removes n(m) with m >= i: for j < i nothing changes, for
+//     i <= j < m it is n(j) < o(j) < o(j+1), and for j >= m it is
+//     n(j+1) < o(j+1) -- which is the old condition one index up;
+//   * a discard of the nil bidder's HIGHEST card of the suit leaves every
+//     n(j) with j < |N| where it was.
+//
+// This is condition 2 of nil_cannot_be_forced read the other way: that one
+// asks for every card below every outstanding card, which is the case where
+// ducking needs no strategy at all.  This one needs the nil bidder to duck
+// correctly, which is exactly the difference between an every-line fact and an
+// adversarial one.
+//
+// Walked upwards through the ranks of the suit: at the j-th card of `others`
+// at least min(j, |N|) of the nil bidder's must already have been seen.
+inline bool duckable_suit(Hand mine, Hand others, int suit) {
+    if (!mine || !others) return true;
+    const int need_all = count_cards(mine);
+    int seen_mine = 0;
+    int seen_others = 0;
+    const int shift = suit * 16;
+    Hand bits = (mine | others) >> shift;
+    const Hand m = mine >> shift;
+    while (bits) {
+        const Hand low = bits & (~bits + 1);
+        bits &= bits - 1;
+        if (m & low) {
+            if (++seen_mine >= need_all) return true;
+        } else if (++seen_others > seen_mine) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// NIL PROVABLY SAFE AGAINST ANY DEFENCE: duck or cover
+// ---------------------------------------------------------------------------
+// True when the nil side has a strategy that keeps the nil bidder off every
+// remaining trick.  The nil bidder must not be on lead: below the root it
+// never is (it reaches the lead only by winning a trick), and at the root the
+// search can find its own safe lead.
+//
+// THE CONDITIONS.  Per side suit s, call L the nil bidder's cards below every
+// other outstanding card of s (they lose to any card of s that is led) and H
+// the rest.
+//
+//   Spades.  The cover holds at least as many spades as the nil bidder, and
+//   its top |N_S| spades beat the nil bidder's top-vs-top -- duck_depth()
+//   matches every one of them.  The cover's other spades are SPARE.
+//
+//   A side suit that is duckable (above) needs nothing.  Otherwise:
+//
+//     len = the longest holding of s among the other three hands.  Every
+//           round of s is led by one of them and every holder follows, so
+//           s can be led at most len more times, and the nil bidder only has
+//           to survive R = min(|N_s|, len) of them.
+//     a   = min(R, |C_s|), the rounds in which the cover must follow too.
+//     M   = duck_depth(H, C_s), how many H cards distinct higher cover cards
+//           can shelter.
+//     FEASIBLE: M + |L| >= a.  A round in which the cover must follow needs a
+//           matched H card under its cover card, or an L card; nothing else
+//           is safe while the cover cannot ruff.
+//     need = R - |L| - min(M, a), the H cards left once the cover is void in
+//           s, each of which costs one ruff from a spare spade.
+//     excess = |N_s| - R, the nil bidder's cards of s that can never be
+//           forced because the suit runs out first.
+//
+//   Fires when every side suit is feasible and
+//
+//       sum(need) + min(SL, sum of excess over suits with need > 0) <= spare
+//
+//   where SL is the longer OPPONENT spade holding.
+//
+// WHY THE EXCESS IS CHARGED, and why only against SL.  Every spade lead while
+// the nil bidder has no spade costs the cover a spare spade, and the nil
+// bidder's discard pays it back only if it comes out of a suit that still
+// needs ruffs AND has no excess -- discarding a card the suit would never have
+// forced reduces nothing.  So an excess card is worth one spade lead to the
+// opponents, and they can make at most SL of those.  Dropping the charge is
+// refuted in two cards: N:.98.. 2.7.. T..Q. J.6.., East on lead, spades broken
+// -- the spade lead strips the cover's only trump, the nil bidder's discard
+// does not help, and the next heart lead finds it with nothing to duck under.
+//
+// THE STRATEGY THE PROOF RUNS, in one paragraph.  In a duckable suit, duck as
+// above.  In a round where the cover follows, play a matched pair (the nil
+// bidder's H card under the cover's partner card) while there are enough of
+// them, otherwise an L card with an unmatched cover card.  Once the cover is
+// void, ruff the nil bidder's unmatched H card with the cover's LOWEST spare
+// spade.  Spades led: with spades, both play their top one (domination is
+// kept); without, the cover follows with a spare spade and the nil bidder
+// discards where it pays the most.  A forced ruff by an all-spade nil bidder
+// is overruffed, because the cover holds at least as many spades and so is
+// then all spades too.  Each case keeps the condition true at the next trick
+// boundary, so the proof re-fires there and the argument is an induction on
+// tricks left.  That induction step is what the lab's closure check verified
+// mechanically.
+//
+// NOT THE SAME QUESTION AS cover_deficit_depth OR duck_depth, though it is
+// built from both: those measure one suit's supply of covers; this decides
+// whether the supplies of all four suits, plus the cover's trumps, add up to
+// a strategy.
+inline bool nil_duck_or_cover(const Hand hands[4], int nil_seat, bool nil_on_lead) {
+    if (nil_on_lead) return false;
+    const int cov = (nil_seat + 2) & 3;
+    const int lho = (nil_seat + 1) & 3;
+    const int rho = (nil_seat + 3) & 3;
+    const Hand spades = suit_mask(SUIT_SPADES);
+    const Hand nil_sp = hands[nil_seat] & spades;
+    const Hand cov_sp = hands[cov] & spades;
+    const int n_nil_sp = count_cards(nil_sp);
+    const int n_cov_sp = count_cards(cov_sp);
+    // The cheap gate, and the common failure: a nil spade the cover cannot
+    // shelter one-for-one.
+    if (n_cov_sp < n_nil_sp) return false;
+    if (nil_sp && duck_depth(nil_sp, cov_sp, SUIT_SPADES) != n_nil_sp) return false;
+    const int spare = n_cov_sp - n_nil_sp;
+
+    int need = 0;
+    int excess = 0;
+    for (int suit = SUIT_HEARTS; suit <= SUIT_CLUBS; ++suit) {
+        const Hand sm = suit_mask(suit);
+        const Hand mine = hands[nil_seat] & sm;
+        if (!mine) continue;
+        const Hand h_lho = hands[lho] & sm;
+        const Hand h_cov = hands[cov] & sm;
+        const Hand h_rho = hands[rho] & sm;
+        const Hand others = h_lho | h_cov | h_rho;
+        // Nobody else holds the suit: nobody can lead it, and the nil bidder
+        // is not on lead.  Its cards of the suit will only ever be discards.
+        if (!others) continue;
+        const Hand low = mine & ((others & (~others + 1)) - 1);
+        if (low == mine) continue;  // all L: they lose to any card led
+        if (duckable_suit(mine, others, suit)) continue;
+        const Hand high = mine & ~low;
+        const int n = count_cards(mine);
+        const int n_low = count_cards(low);
+        const int n_cov = count_cards(h_cov);
+        int len = count_cards(h_lho);
+        if (n_cov > len) len = n_cov;
+        const int n_rho = count_cards(h_rho);
+        if (n_rho > len) len = n_rho;
+        const int rounds = n < len ? n : len;
+        const int cover_rounds = rounds < n_cov ? rounds : n_cov;
+        const int matched = h_cov ? duck_depth(high, h_cov, suit) : 0;
+        if (matched + n_low < cover_rounds) return false;
+        const int sheltered = matched < cover_rounds ? matched : cover_rounds;
+        const int ruffs = rounds - n_low - sheltered;
+        if (ruffs > 0) {
+            need += ruffs;
+            if (need > spare) return false;
+            excess += n - rounds;
+        }
+    }
+    if (excess) {
+        const int sl_lho = count_cards(hands[lho] & spades);
+        const int sl_rho = count_cards(hands[rho] & spades);
+        const int sl = sl_lho > sl_rho ? sl_lho : sl_rho;
+        need += excess < sl ? excess : sl;
+    }
+    return need <= spare;
+}
+
+// ---------------------------------------------------------------------------
+// NIL PROVABLY FORCED THIS TRICK: the forcing lead (D1) and the forced ruff (D1b)
+// ---------------------------------------------------------------------------
+// The opponents' side of the same question, for a position where one of them
+// is on lead.  Both are one-trick arguments: they name a lead and show that
+// every reply by the nil side leaves the nil bidder winning the trick.  On
+// in-search FAILS positions the two together reach 8,198 of the 8,203 that an
+// exact one-trick minimax finds, so there is essentially nothing left to find
+// at this depth.
+//
+// D1, THE FORCING LEAD.  Returns the suit s, or -1.  The leader X may legally
+// lead s, and:
+//
+//   * the nil bidder holds s, and its LOWEST card of s beats X's lowest;
+//   * the cover holds s and every card of s it holds is below that nil card,
+//     or it is void in s and holds no spade (so it cannot ruff);
+//   * X's partner holds a card of s below that nil card, or is void in s and
+//     holds a non-spade to discard.
+//
+// X leads its lowest card of s.  Every card that reaches the trick is then
+// below the nil bidder's lowest card of s, which it must play or beat, and no
+// spade can arrive.  The last condition is ROADMAP item 32's rescue: an
+// opponent void in s holding only spades is forced to ruff, and the ruff saves
+// the nil -- N:.T.. 9... .7.. .4.., West on lead and spades broken, is exactly
+// that trick.
+//
+// Spades as s need spades broken or a leader holding nothing else; a void in
+// spades then discards, whoever it is.
+inline int forcing_lead_suit(const Hand hands[4], int nil_seat, int leader, bool broken) {
+    if (((leader ^ nil_seat) & 1) == 0) return -1;  // an opponent must be on lead
+    const int cov = (nil_seat + 2) & 3;
+    const int partner = (leader + 2) & 3;
+    const Hand spades = suit_mask(SUIT_SPADES);
+    const Hand lead_hand = hands[leader];
+    const bool leader_only_spades = (lead_hand & ~spades) == 0;
+    for (int suit = SUIT_SPADES; suit <= SUIT_CLUBS; ++suit) {
+        const Hand sm = suit_mask(suit);
+        const Hand xs = lead_hand & sm;
+        if (!xs) continue;
+        const Hand ns = hands[nil_seat] & sm;
+        if (!ns) continue;
+        if (suit == SUIT_SPADES && !broken && !leader_only_spades) continue;
+        const CardId nil_low = static_cast<CardId>(lowest_card(ns));
+        if (lowest_card(xs) > nil_low) continue;
+        const Hand cs = hands[cov] & sm;
+        if (cs) {
+            if (highest_card(cs) > nil_low) continue;
+        } else if (suit != SUIT_SPADES && (hands[cov] & spades)) {
+            continue;  // the cover can ruff
+        }
+        const Hand ys = hands[partner] & sm;
+        if (ys) {
+            if (lowest_card(ys) > nil_low) continue;  // forced to play over the nil
+        } else if (suit != SUIT_SPADES && (hands[partner] & ~spades) == 0) {
+            continue;  // nothing but spades: a forced ruff rescues the nil
+        }
+        return suit;
+    }
+    return -1;
+}
+
+// D1b, THE FORCED RUFF.  The nil bidder holds nothing but spades, and the
+// opponent on lead holds a side suit t the nil bidder is void in.  Led, t makes
+// the nil bidder ruff, and the ruff wins unless
+//
+//   * the cover, also void in t, holds a spade above the nil bidder's lowest
+//     (it ruffs first and the nil bidder underruffs, or it overruffs), or
+//   * the leader's partner, void in t, holds nothing but spades (it is forced
+//     to ruff, and might ruff higher).
+//
+// Rare -- 22 of 26,090 in-search FAILS samples -- but it is the one-trick case
+// D1 cannot see, because D1 asks about suits the nil bidder holds.  It is also
+// the case that makes the spade gate on nil_cannot_be_forced exact rather than
+// conservative (ROADMAP, "Weakening condition 1").
+inline bool forced_ruff_lead(const Hand hands[4], int nil_seat, int leader) {
+    if (((leader ^ nil_seat) & 1) == 0) return false;
+    const Hand spades = suit_mask(SUIT_SPADES);
+    const Hand nil_hand = hands[nil_seat];
+    if (!nil_hand || (nil_hand & ~spades)) return false;
+    const int cov = (nil_seat + 2) & 3;
+    const int partner = (leader + 2) & 3;
+    const Hand above_nil_low = ~((card_bit(static_cast<CardId>(lowest_card(nil_hand))) << 1) - 1);
+    for (int suit = SUIT_HEARTS; suit <= SUIT_CLUBS; ++suit) {
+        const Hand sm = suit_mask(suit);
+        if (!(hands[leader] & sm)) continue;
+        if (!(hands[cov] & sm) && (hands[cov] & spades & above_nil_low)) continue;
+        if (!(hands[partner] & sm) && !(hands[partner] & ~spades)) continue;
+        return true;
+    }
+    return false;
+}
+
 }  // namespace nil
 
 #endif  // NIL_BOUNDS_HPP

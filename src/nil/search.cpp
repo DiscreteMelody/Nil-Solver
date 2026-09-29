@@ -146,6 +146,11 @@ struct Ctx {
     // is the control arm, and off is also what every measurement recorded
     // before patch 29 was taken under.
     bool full_static_bounds = true;
+    // The adversarial proofs (bounds.hpp, SearchOptions::adversarial_safe and
+    // adversarial_doom).  Read only where static_bounds is, so they die with it
+    // in disable_single_nil_machinery.
+    bool adversarial_safe = true;
+    bool adversarial_doom = true;
     // True when the search may try moves in an order other than the canonical
     // one.  Item 6 reads this; nothing does yet, and patch 15 landed it inert
     // on purpose so that the flag, the ABI bit and the control-arm test all
@@ -540,6 +545,29 @@ inline Hand ranks_read_by_set_proof(const Hand hands[4], int nil_seat) {
         }
     }
     return live;  // the proof did not fire; the caller does not use this
+}
+
+// nil_duck_or_cover compares ranks inside the spades when the nil bidder holds
+// any (the domination walk), and inside every side suit the nil bidder holds
+// (the low/high split, the duck walk, the cover matching).  Everything else it
+// reads -- lengths, voids, the cover's spare-spade COUNT, the opponents' spade
+// lengths -- is suit distribution, which the key keeps exactly.
+inline Hand ranks_read_by_duck_or_cover(const Hand hands[4], int nil_seat) {
+    const Hand live = relevant_cards(hands, NO_CARD);
+    const Hand mine = hands[nil_seat];
+    Hand read = 0;
+    for (int suit = SUIT_SPADES; suit <= SUIT_CLUBS; ++suit) {
+        if (mine & suit_mask(suit)) read |= live & suit_mask(suit);
+    }
+    return read;
+}
+
+// The forcing lead compares ranks inside the one suit it names; the forced
+// ruff compares the nil bidder's lowest spade with the cover's spades.  Voids
+// and the spade/non-spade split of a hand are distribution.
+inline Hand ranks_read_by_forcing_lead(const Hand hands[4], int suit) {
+    const Hand live = relevant_cards(hands, NO_CARD);
+    return live & suit_mask(suit < 0 ? SUIT_SPADES : suit);
 }
 
 // Apply `card` at `st`.  Returns what the trick banked -- zero unless this card
@@ -1578,6 +1606,30 @@ int search_core(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
             if constexpr (TRACK) *essential = ranks_read_by_set_proof(st.hands, ctx.nil_seat);
             return 1;
         }
+
+        // THE ADVERSARIAL PROOFS, after the every-line ones because those are
+        // cheaper and stronger.  In MODE_FAST the value is the adversarial
+        // verdict itself, so a proof settles the node exactly: the nil side
+        // can hold the nil to zero (the value cannot be below zero), or the
+        // opponents can force the one trick the primary charges.  The doom
+        // return keeps the set proof's `beta <= 1` guard for the same reason
+        // that one has it.
+        const bool nil_leads = st.leader == ctx.nil_seat;
+        if (ctx.adversarial_safe && !nil_leads &&
+            nil_duck_or_cover(st.hands, ctx.nil_seat, false)) {
+            best_move = first_legal_move(st);
+            if constexpr (TRACK)
+                *essential = ranks_read_by_duck_or_cover(st.hands, ctx.nil_seat);
+            return 0;
+        }
+        if (ctx.adversarial_doom && beta <= 1 && ((st.leader ^ ctx.nil_seat) & 1)) {
+            const int suit = forcing_lead_suit(st.hands, ctx.nil_seat, st.leader, st.broken);
+            if (suit >= 0 || forced_ruff_lead(st.hands, ctx.nil_seat, st.leader)) {
+                best_move = first_legal_move(st);
+                if constexpr (TRACK) *essential = ranks_read_by_forcing_lead(st.hands, suit);
+                return 1;
+            }
+        }
     }
 
     // TARGET REACHED.  The other half of Chang's and DDS's check, which this
@@ -1930,6 +1982,52 @@ int search_core(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
                 if (lo >= beta) {
                     best_move = first_legal_move(st);
                     if constexpr (TRACK) *essential = ranks_read_by_set_proof(st.hands, ctx.nil_seat);
+                    return lo;
+                }
+            }
+        }
+    }
+
+    // THE ADVERSARIAL PROOFS IN MODE_FULL: the same two bands, for a different
+    // reason.  The every-line proofs above pin n on every line; these pin it
+    // only under optimal play, which is enough because the primary weight
+    // dominates.  A nil the nil side can keep clean is kept clean by every
+    // optimal line -- any outcome with n >= 1 is worth at least
+    // P + min(S, S*t), and every outcome with n = 0 at most max(0, S*t), and
+    // P = K*K (+1) with K > t puts the first above the second in both
+    // directions.  So the value is S*p for some p in [0, t].  Symmetrically, a
+    // nil the opponents can force is broken on every optimal line, and the
+    // value is at least P + S + (S < 0 ? S*(t-1) : 0), the set proof's floor.
+    //
+    // Only for a LIVE nil with a positive primary: the band argument is the
+    // primary's, and a broken or already-set nil has none.  The window test
+    // comes first because it is two compares and the proof is not.
+    if (ctx.static_bounds && ctx.full_static_bounds && !ctx.value_is_nil_tricks &&
+        st.trick_len == 0 && ctx.primary_weight > 0 &&
+        ((ctx.nil_mask >> ctx.nil_seat) & 1) && !(st.nils_broken & (1u << ctx.nil_seat)) &&
+        (ctx.adversarial_safe || ctx.adversarial_doom)) {
+        const int t = count_cards(st.hands[ctx.nil_seat]);
+        if (ctx.adversarial_safe && st.leader != ctx.nil_seat) {
+            const int span = ctx.secondary_weight * t;
+            const int lo = span < 0 ? span : 0;
+            const int hi = span < 0 ? 0 : span;
+            if ((hi <= alpha || lo >= beta) &&
+                nil_duck_or_cover(st.hands, ctx.nil_seat, false)) {
+                best_move = first_legal_move(st);
+                if constexpr (TRACK)
+                    *essential = ranks_read_by_duck_or_cover(st.hands, ctx.nil_seat);
+                return hi <= alpha ? hi : lo;
+            }
+        }
+        if (ctx.adversarial_doom && ((st.leader ^ ctx.nil_seat) & 1)) {
+            const int per_nil = ctx.primary_weight + ctx.secondary_weight;
+            const int worst_partner = ctx.secondary_weight < 0 ? ctx.secondary_weight * (t - 1) : 0;
+            const int lo = per_nil + worst_partner;
+            if (per_nil > 0 && lo >= beta) {
+                const int suit = forcing_lead_suit(st.hands, ctx.nil_seat, st.leader, st.broken);
+                if (suit >= 0 || forced_ruff_lead(st.hands, ctx.nil_seat, st.leader)) {
+                    best_move = first_legal_move(st);
+                    if constexpr (TRACK) *essential = ranks_read_by_forcing_lead(st.hands, suit);
                     return lo;
                 }
             }
@@ -2335,6 +2433,11 @@ int value_after(Ctx& ctx, const State& st, CardId card, int alpha, int beta, Sta
 void disable_single_nil_machinery(Ctx& ctx) {
     ctx.static_bounds = false;
     ctx.full_static_bounds = false;
+    // Gated on static_bounds already; switched off by name as well because
+    // they name "the cover" -- partner of the nil bidder -- and the shapes that
+    // come through here do not have one.
+    ctx.adversarial_safe = false;
+    ctx.adversarial_doom = false;
     ctx.later_tricks = false;
     ctx.quick_tricks = false;
     ctx.spade_matrix = false;
@@ -2432,6 +2535,8 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
         !ctx.conjunction && weights.primary == 1 && weights.secondary == 0;
     ctx.static_bounds = opts.use_static_bounds;
     ctx.full_static_bounds = opts.full_static_bounds;
+    ctx.adversarial_safe = opts.adversarial_safe;
+    ctx.adversarial_doom = opts.adversarial_doom;
     // Charging a doomed bid early is a statement about the objective's primary
     // level, which MODE_FAST's single-nil value and the conjunction's indicator
     // answer by other means -- see charge_for_mask.

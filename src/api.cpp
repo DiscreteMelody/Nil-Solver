@@ -115,6 +115,8 @@ std::int32_t prepare(const char* pbn, std::int32_t leader, const char* current_t
     opts.collapse_equivalents = (flags & NIL_FLAG_NO_COLLAPSE) == 0;
     opts.use_static_bounds = (flags & NIL_FLAG_NO_STATIC_BOUNDS) == 0;
     opts.full_static_bounds = (flags & NIL_FLAG_NO_FULL_STATIC) == 0;
+    opts.adversarial_safe = (flags & NIL_FLAG_NO_ADVERSARIAL_PROOFS) == 0;
+    opts.adversarial_doom = (flags & NIL_FLAG_NO_ADVERSARIAL_PROOFS) == 0;
     opts.order_moves = (flags & NIL_FLAG_NO_ORDERING) == 0;
     opts.last_trick_eval = (flags & NIL_FLAG_NO_LAST_TRICK) == 0;
     opts.tt_boundaries_only = (flags & NIL_FLAG_TT_ALL_PLIES) == 0;

@@ -400,6 +400,9 @@ void usage(const char* argv0) {
               << "  --no-memo         no transposition table at all\n"
               << "  --no-collapse     generate every legal card rather than one per class\n"
               << "  --no-static       do not settle positions by proof (fast mode only)\n"
+              << "  --no-adversarial-proofs  no duck-or-cover and no forcing-lead proofs\n"
+              << "  --no-duck-cover   no duck-or-cover proof (the SAFE half)\n"
+              << "  --no-forcing-lead no forcing-lead / forced-ruff proof (the DOOM half)\n"
               << "                    of rank-equivalent ones (same answer, many more nodes)\n"
               << "  --no-presolve     do not bound full mode's root window with a fast\n"
               << "                    search (same answer, more nodes; full mode only)\n"
@@ -486,6 +489,8 @@ std::string memo_label(const nil::SearchOptions& opts) {
     // suffix would be noise on a full row; there it is left off rather than
     // splitting the history into two groups that hold identical numbers.
     if (!opts.use_static_bounds && opts.mode == nil::MODE_FAST) suffix += "+nostatic";
+    if (!opts.adversarial_safe) suffix += "+noduckcover";
+    if (!opts.adversarial_doom) suffix += "+noforcinglead";
     // And again for move ordering, on the same grounds and with the same
     // fast-mode guard: ordering is inert in full mode, so the suffix there
     // would split the history into two groups holding identical numbers.
@@ -628,6 +633,13 @@ int main(int argc, char** argv) {
             opts.use_static_bounds = false;
         } else if (arg == "--no-full-static") {
             opts.full_static_bounds = false;
+        } else if (arg == "--no-adversarial-proofs") {
+            opts.adversarial_safe = false;
+            opts.adversarial_doom = false;
+        } else if (arg == "--no-duck-cover") {
+            opts.adversarial_safe = false;
+        } else if (arg == "--no-forcing-lead") {
+            opts.adversarial_doom = false;
         } else if (arg == "--no-ordering") {
             opts.order_moves = false;
         } else if (arg == "--no-last-trick") {

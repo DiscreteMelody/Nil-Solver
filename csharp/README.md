@@ -259,7 +259,7 @@ same answers, more work.
 | `MinimiseOwnTricks` | tie-break direction: each pair sheds tricks rather than taking them |
 | `ForceLarge` | more than nine cards a hand |
 
-`NoMemo`, `NoCollapse`, `NoStaticBounds` and `NoOrdering` are diagnostics. They
+`NoMemo`, `NoCollapse`, `NoStaticBounds`, `NoAdversarialProofs` and `NoOrdering` are diagnostics. They
 all produce the same answer more slowly, and they exist so a suspected bug can be
 bisected against a dumber search. Do not ship with them on.
 

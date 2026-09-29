@@ -44,12 +44,22 @@ if [ "${NIL_SKIP_WORST:-0}" != "1" ]; then
     # that something broke.  Investigate rather than assume either way.
     #
     # Baselines to compare against, deterministic and machine independent.
-    # Re-banked at the Sept 2026 performance pass, which is the second move since
-    # patch 105: HEAD c35614b already read 5,964,148 / 671,379 / 876,499
-    # (7,512,026) -- the double-dummy handoff, the one-live-bid bound and the
-    # charge-once rule, none of which re-banked here.  The pass moves c13-0000 UP,
-    # because it turns the one-live-bid bound off by default; see ROADMAP.md.
-    #   c13-0000     13,169,403 nodes   <- the largest of the three now
+    # Re-banked by the adversarial-proofs patch (duck or cover, forcing lead; see
+    # ROADMAP.md): these are full-mode solves, where the new proofs are spent as
+    # fail-soft bounds, so the tree moves a little -- and not only down.
+    #   c13-0000     13,060,981 nodes   <- was 13,169,403
+    #   c13-0001        669,534 nodes   <- was 669,528: +6, a bound stored
+    #                                    where an exact value used to be
+    #   c13-0002        853,573 nodes
+    #   ---------------------------
+    #   total        14,584,088 nodes   <- was 14,692,504
+    #
+    # The Sept 2026 performance pass's figures, for the record.  That pass was
+    # the second move since patch 105: HEAD c35614b already read 5,964,148 /
+    # 671,379 / 876,499 (7,512,026) -- the double-dummy handoff, the one-live-bid
+    # bound and the charge-once rule, none of which re-banked here.  The pass
+    # moved c13-0000 UP, because it turned the one-live-bid bound off by default.
+    #   c13-0000     13,169,403 nodes
     #   c13-0001        669,528 nodes
     #   c13-0002        853,573 nodes
     #   ---------------------------

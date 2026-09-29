@@ -601,6 +601,20 @@ on, `corpus_static` with them off — and both are checked against the oracle's
 recorded answers. The flag is inert outside fast mode, which is the only mode
 the proofs apply to.
 
+`--no-adversarial-proofs` is the control arm for the three proofs that answer
+the nil question *against best defence* rather than on every line: the nil side
+can keep the nil clean by ducking or by the cover's covering cards and ruffs
+(`nil_duck_or_cover`), or the opponent on lead can force it to win this trick
+(`forcing_lead_suit`, `forced_ruff_lead`). They are spent where the two
+every-line proofs are — values in fast mode, fail-soft bounds in full mode, which
+is sound because the primary weight dominates the trick term — and nowhere else;
+the double-dummy handoff and doom-charging need the outcome pinned on every
+line, and these proofs do not pin it there. `--no-duck-cover` and
+`--no-forcing-lead` switch the two halves separately, `NIL_FLAG_NO_ADVERSARIAL_PROOFS`
+switches both through the ABI, and `corpus_no_adversarial` /
+`corpus_no_adversarial_fast` run the corpus with them off. `--no-static` turns
+them off too.
+
 `--no-narrow` is the control arm for window narrowing (roadmap item 22), and it
 is the one with the most riding on it. Full mode narrows its window as a node's
 moves come back, which is what makes the alpha-beta cutoff reachable there at

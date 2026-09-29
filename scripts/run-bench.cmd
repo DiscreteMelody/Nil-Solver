@@ -45,12 +45,22 @@ rem reach 13 cards: a mismatch here means something CHANGED, not necessarily
 rem that something broke.  Investigate rather than assume either way.
 rem
 rem Baselines to compare against, deterministic and machine independent.
-rem Re-banked at the Sept 2026 performance pass, which is the second move since
-rem patch 105: HEAD c35614b already read 5,964,148 / 671,379 / 876,499
-rem (7,512,026) -- the double-dummy handoff, the one-live-bid bound and the
-rem charge-once rule, none of which re-banked here.  The pass moves c13-0000 UP,
-rem because it turns the one-live-bid bound off by default; see ROADMAP.md.
-rem   c13-0000     13,169,403 nodes   ^<- the largest of the three now
+rem Re-banked by the adversarial-proofs patch (duck or cover, forcing lead; see
+rem ROADMAP.md): these are full-mode solves, where the new proofs are spent as
+rem fail-soft bounds, so the tree moves a little -- and not only down.
+rem   c13-0000     13,060,981 nodes   ^<- was 13,169,403
+rem   c13-0001        669,534 nodes   ^<- was 669,528: +6, a bound stored
+rem                                    where an exact value used to be
+rem   c13-0002        853,573 nodes
+rem   ---------------------------
+rem   total        14,584,088 nodes   ^<- was 14,692,504
+rem
+rem The Sept 2026 performance pass's figures, for the record.  That pass was
+rem the second move since patch 105: HEAD c35614b already read 5,964,148 /
+rem 671,379 / 876,499 (7,512,026) -- the double-dummy handoff, the one-live-bid
+rem bound and the charge-once rule, none of which re-banked here.  The pass
+rem moved c13-0000 UP, because it turned the one-live-bid bound off by default.
+rem   c13-0000     13,169,403 nodes
 rem   c13-0001        669,528 nodes
 rem   c13-0002        853,573 nodes
 rem   ---------------------------

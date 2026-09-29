@@ -1300,6 +1300,191 @@ int main(int argc, char** argv) {
         }
     }
 
+    std::cout << "Adversarial proofs: duck or cover, forcing lead\n";
+    {
+        // Every layout below is N-anchored with the nil on North, cover South.
+        // The positive cases are the worked examples of the Sept 2026 research
+        // notes; the negative ones are the smallest counterexamples to each
+        // clause LOOSENED by one step, which is what shows each clause is
+        // load-bearing.  Every verdict quoted in a comment was re-checked with
+        // nil_cli; the end-to-end block further down checks the ones it can
+        // against the search itself.
+        auto hands_of = [](const char* pbn, const char* leader, bool broken) {
+            return make_position(pbn, leader, broken);
+        };
+        auto safe = [&](const char* pbn, const char* leader, bool broken = false) {
+            const Position p = hands_of(pbn, leader, broken);
+            return nil::nil_duck_or_cover(p.hands, 0, p.leader == 0);
+        };
+        auto forcing = [&](const char* pbn, const char* leader, bool broken = false) {
+            const Position p = hands_of(pbn, leader, broken);
+            return nil::forcing_lead_suit(p.hands, 0, p.leader, broken);
+        };
+        auto ruff = [&](const char* pbn, const char* leader, bool broken = false) {
+            const Position p = hands_of(pbn, leader, broken);
+            return nil::forced_ruff_lead(p.hands, 0, p.leader);
+        };
+
+        // DUCKABLE, the walk on its own.  2 < 3 and 4 < 8 bottom-to-bottom.
+        check("duckable: bottom-to-bottom holds",
+              nil::duckable_suit(H({"H4", "H2"}), H({"HT", "H8", "H3"}), nil::SUIT_HEARTS), true);
+        check("duckable: a queen over a deuce does not",
+              nil::duckable_suit(H({"HQ"}), H({"HT", "H2"}), nil::SUIT_HEARTS), false);
+        check("duckable: the LAST index is checked too",
+              nil::duckable_suit(H({"H9", "H2"}), H({"H8", "H3"}), nil::SUIT_HEARTS), false);
+        check("duckable: extra nil cards beyond the others' length are free",
+              nil::duckable_suit(H({"HA", "HK", "H2"}), H({"H3"}), nil::SUIT_HEARTS), true);
+
+        // SAFE, positive.
+        check("duck: S10's example (hearts and diamonds duck, no spade)",
+              safe("N:.42.84. Q.T3..5 2..AK5. AJ.8..6", "S"), true);
+        check("cover: the ruff shelter example",
+              safe("N:.2.KT.Q2 95.J9.8. 6.76.J.7 .T.A.KT5", "E", true), true);
+        check("cover: the round-bound example",
+              safe("N:.T3.T.A7 72..K9.2 6.4.Q6.Q 9.A75..9", "E"), true);
+        check("cover: spade domination (near-identical pair, safe side)",
+              safe("N:87...85 ..T864. KT...AK A...J74", "W"), true);
+        check("cover: never with the nil on lead",
+              safe("N:87...85 ..T864. KT...AK A...J74", "N"), false);
+
+        // SAFE, negative: each is a FAILS position one clause short.
+        check("low spades are not low cards (forced ruff)", safe("N:5... ..6. .Q.. ..Q.", "E"),
+              false);
+        check("the cover's low card counts against the nil (forced lead)",
+              safe("N:.T.. ...5 .9.. ...7", "S"), false);
+        check("the excess is charged (spade lead strips the only trump)",
+              safe("N:.98.. 2.7.. T..Q. J.6..", "E", true), false);
+        check("cover-follow feasibility (the forced heart three)",
+              safe("N:.Q.9. ...J4 Q.3.. 7.8..", "S"), false);
+        check("the round bound counts the OPPONENTS' lengths",
+              safe("N:...T ..K. ..8. ...2", "W"), false);
+        check("ducking is measured against the cover's cards too",
+              safe("N:...Q ..T. ...7 ..6.", "S", true), false);
+        check("spade domination (near-identical pair, failing side)",
+              safe("N:87...85 T..T86. K..4.AK A...J74", "W"), false);
+
+        // DOOM.
+        check("forcing lead: the diamond two", forcing("N:94.5.T. ..2.K32 72.4.7. A6.J..6", "E", true),
+              static_cast<int>(nil::SUIT_DIAMONDS));
+        check("forcing lead: none when the cover can ruff",
+              forcing("N:..A. ..5. 9... .5..", "E"), -1);
+        check("forcing lead: none when the partner must ruff (item 32's rescue)",
+              forcing("N:.T.. 9... .7.. .4..", "W", true), -1);
+        check("forcing lead: none when the cover beats the nil's LOWEST card",
+              forcing("N:.QT.. ..J6. .J..A .3..Q", "W"), -1);
+        check("forcing lead: none with the cover on lead",
+              forcing("N:94.5.T. ..2.K32 72.4.7. A6.J..6", "S", true), -1);
+        check("forced ruff: an all-spade nil void in the lead",
+              ruff("N:J975... T83.6.. A6..Q.3 KQ4..4.", "W", true), true);
+        check("forced ruff: not when the cover can overruff",
+              ruff("N:5... .8.. 6... ...T", "E", true), false);
+
+        // END TO END: same verdict with the proofs off, settled without a search.
+        {
+            SearchOptions on;
+            on.mode = nil::MODE_FAST;
+            SearchOptions off = on;
+            off.adversarial_safe = false;
+            off.adversarial_doom = false;
+            const Position mk = make_position("N:.T3.T.A7 72..K9.2 6.4.Q6.Q 9.A75..9", "E");
+            check("duck or cover: same answer", must_solve(mk, "N", on).nils_set,
+                  must_solve(mk, "N", off).nils_set);
+            check("duck or cover: and it is 'makes'", must_solve(mk, "N", on).nils_set, 0);
+            check("duck or cover: settled at the root", must_solve(mk, "N", on).nodes, 1ull);
+            check("duck or cover: which the search had to work for",
+                  must_solve(mk, "N", off).nodes > 1ull, true);
+            const Position fl = make_position("N:94.5.T. ..2.K32 72.4.7. A6.J..6", "E", true);
+            check("forcing lead: same answer", must_solve(fl, "N", on).nils_set,
+                  must_solve(fl, "N", off).nils_set);
+            check("forcing lead: and it is 'fails'", must_solve(fl, "N", on).nils_set, 1);
+            check("forcing lead: settled at the root", must_solve(fl, "N", on).nodes, 1ull);
+            check("forcing lead: which the search had to work for",
+                  must_solve(fl, "N", off).nodes > 1ull, true);
+        }
+        {
+            // THE DIFFERENTIAL, fast mode.  Proofs are one-sided, so switching
+            // them off may only add search, never move a boolean.  Seven cards
+            // is where both fire often and the sweep is still quick.
+            Rng rng;
+            int checked = 0;
+            int disagreed = 0;
+            long long with = 0;
+            long long without = 0;
+            for (int deal = 0; deal < 16; ++deal) {
+                const Position pos = random_deal(rng, 7);
+                for (const char* seat : SEAT_NAMES) {
+                    SearchOptions on;
+                    on.mode = nil::MODE_FAST;
+                    SearchOptions off = on;
+                    off.adversarial_safe = false;
+                    off.adversarial_doom = false;
+                    const Solution a = must_solve(pos, seat, on);
+                    const Solution b = must_solve(pos, seat, off);
+                    ++checked;
+                    if (a.nils_set != b.nils_set) ++disagreed;
+                    with += static_cast<long long>(a.nodes);
+                    without += static_cast<long long>(b.nodes);
+                }
+            }
+            check("adversarial proofs never change the boolean", disagreed, 0);
+            check("and that sweep actually ran", checked, 64);
+            check("and they save work", with < without, true);
+        }
+        {
+            // THE DIFFERENTIAL, full mode, both tie-break directions and both
+            // states of the nil.  The proofs are spent as fail-soft bounds
+            // there, so the value AND the principal variation are owed exactly;
+            // node counts are not asserted, for the reason the static-bounds
+            // block above gives.
+            Rng rng;
+            rng.state = 0x2545F4914F6CDD1Dull;
+            int moved = 0;
+            int checked = 0;
+            for (int deal = 0; deal < 6; ++deal) {
+                const Position pos = random_deal(rng, 6);
+                for (const char* seat : SEAT_NAMES) {
+                    for (int variant = 0; variant < 4; ++variant) {
+                        SearchOptions on;
+                        on.minimise_own_tricks = (variant & 1) != 0;
+                        SearchOptions off = on;
+                        off.adversarial_safe = false;
+                        off.adversarial_doom = false;
+                        const bool already_set = (variant & 2) != 0;
+                        const Solution a = must_solve(pos, seat, on, already_set);
+                        const Solution b = must_solve(pos, seat, off, already_set);
+                        ++checked;
+                        if (a.value != b.value ||
+                            nil::format_pv_compact(a) != nil::format_pv_compact(b))
+                            ++moved;
+                    }
+                }
+            }
+            check("full mode: value and line unmoved by the adversarial proofs", moved, 0);
+            check("and that sweep actually ran", checked, 96);
+        }
+        {
+            // The ABI bit, and that it only reaches the new proofs.
+            char err[256] = {0};
+            nil_result on;
+            nil_result off;
+            const uint32_t base = NIL_FLAG_SPADES_BROKEN | NIL_FLAG_FAST_MODE;
+            const char* pbn = "N:94.5.T. ..2.K32 72.4.7. A6.J..6";
+            check("ABI: adversarial proofs on",
+                  static_cast<long long>(nil_solve(pbn, NIL_SEAT_EAST, "", SEATS_NIL_N, base, &on,
+                                                   err, sizeof(err))),
+                  0LL);
+            check("ABI: adversarial proofs off",
+                  static_cast<long long>(nil_solve(pbn, NIL_SEAT_EAST, "", SEATS_NIL_N,
+                                                   base | NIL_FLAG_NO_ADVERSARIAL_PROOFS, &off,
+                                                   err, sizeof(err))),
+                  0LL);
+            check("ABI: the switch does not move the answer",
+                  static_cast<long long>(on.nils_set), static_cast<long long>(off.nils_set));
+            check("ABI: and the switch does move the work",
+                  on.nodes < off.nodes, true);
+        }
+    }
+
     std::cout << "Later tricks control arm\n";
     {
         // top_spade_run() is a soundness lever, so the units below pin the two

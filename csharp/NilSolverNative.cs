@@ -401,7 +401,15 @@ namespace NilSolver
         /// have a seat with no live bid win tricks cheaply first. Ordering only; same values
         /// and, in full mode, the same line. A control arm.
         /// </summary>
-        NoLiveOrder = 0x40000000u
+        NoLiveOrder = 0x40000000u,
+
+        /// <summary>
+        /// Do not settle positions by the adversarial proofs (the nil side can keep the nil
+        /// clean against any defence; the opponent on lead can force it to win this trick).
+        /// The every-line proofs <see cref="NoStaticBounds"/> turns off stay on. Same values,
+        /// verdicts and lines; a control arm. The last free bit of the flag word.
+        /// </summary>
+        NoAdversarialProofs = 0x80000000u
     }
 
     /// <summary>Return codes. <see cref="Ok"/> is success; everything else is negative.</summary>

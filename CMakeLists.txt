@@ -392,6 +392,21 @@ if(NIL_SOLVER_BUILD_TESTS)
              COMMAND nil_bench --corpus "${NIL_CORPUS}" --check-moves --check-pv --no-live-order
                      --quiet --slowest 0)
     set_tests_properties(corpus_no_live_order PROPERTIES TIMEOUT 900)
+
+    # The control arm for the ADVERSARIAL proofs (duck or cover, forcing lead;
+    # see bounds.hpp), on the corpus_static model: every other run of this
+    # corpus takes them, this one does not, and both must land on the oracle's
+    # answers.  Full mode carries --check-moves and --check-pv because there
+    # the proofs are spent as fail-soft bounds, which owe the same value AND
+    # the same line; the fast arm is where they settle nodes outright.
+    add_test(NAME corpus_no_adversarial
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --check-moves --check-pv
+                     --no-adversarial-proofs --quiet --slowest 0)
+    set_tests_properties(corpus_no_adversarial PROPERTIES TIMEOUT 900)
+    add_test(NAME corpus_no_adversarial_fast
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --mode fast --check-moves
+                     --no-adversarial-proofs --quiet --slowest 0)
+    set_tests_properties(corpus_no_adversarial_fast PROPERTIES TIMEOUT 900)
   endif()
 
   # TWO NILS ON ONE SIDE.  A separate corpus because it is a separate question:

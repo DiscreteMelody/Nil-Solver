@@ -57,6 +57,11 @@ void usage(const char* argv0) {
         << "  --no-static             do not settle a position by proof; search for\n"
         << "                          the answer instead (same answer, more nodes;\n"
         << "                          fast mode only)\n"
+        << "  --no-adversarial-proofs do not settle a position by the adversarial\n"
+        << "                          proofs (duck or cover, forcing lead); the two\n"
+        << "                          every-line proofs stay on (same answer and PV)\n"
+        << "  --no-duck-cover         only the SAFE half of that: no duck-or-cover\n"
+        << "  --no-forcing-lead       only the DOOM half: no forcing lead or forced ruff\n"
         << "  --no-narrow             do not narrow the window as moves come back\n"
         << "                          (same answer and same PV, many more nodes;\n"
         << "                          full mode only)\n"
@@ -286,6 +291,13 @@ int main(int argc, char** argv) {
             opts.use_static_bounds = false;
         } else if (arg == "--no-full-static") {
             opts.full_static_bounds = false;
+        } else if (arg == "--no-adversarial-proofs") {
+            opts.adversarial_safe = false;
+            opts.adversarial_doom = false;
+        } else if (arg == "--no-duck-cover") {
+            opts.adversarial_safe = false;
+        } else if (arg == "--no-forcing-lead") {
+            opts.adversarial_doom = false;
         } else if (arg == "--no-ordering") {
             opts.order_moves = false;
         } else if (arg == "--no-last-trick") {

@@ -258,6 +258,22 @@ struct SearchOptions {
     // caller was already entitled to make do with.
     bool full_static_bounds = true;
 
+    // The ADVERSARIAL proofs in bounds.hpp (Sept 2026): nil_duck_or_cover says
+    // the nil side can keep the nil clean against any defence, and
+    // forcing_lead_suit / forced_ruff_lead say the opponent on lead can force
+    // a trick onto it this trick.  Spent wherever the two every-line proofs
+    // are -- as values in MODE_FAST, as fail-soft bounds in MODE_FULL -- and
+    // nowhere they are not: not the double-dummy handoff, not doom-charging,
+    // which need the outcome pinned on every line.  See bounds.hpp for why the
+    // bands are the same under optimal play.
+    //
+    // Under use_static_bounds, so --no-static still means no proofs at all.
+    // Two switches rather than one so each half can be measured alone; the
+    // ABI has one bit left and spends it on both (NIL_FLAG_NO_ADVERSARIAL_PROOFS).
+    // Answer-neutral: same values, same verdicts, same principal variations.
+    bool adversarial_safe = true;
+    bool adversarial_doom = true;
+
     bool order_moves = true;
 
     // Evaluate the final trick instead of searching it.

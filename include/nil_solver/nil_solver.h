@@ -465,9 +465,9 @@ extern "C" {
  * lines, same trick counts; a control arm.  Inert under NIL_FLAG_FAST_MODE and
  * outside nil_solve_moves.
  *
- * THE FLAG WORD IS NEARLY FULL.  After this bit and NIL_FLAG_NO_LIVE_ORDER
- * below, 0x80000000u is the last unassigned bit (0x2u, 0x8u and 0x20u are
- * burned).  The pass's other exact changes -- charging a doomed bid on arrival,
+ * THE FLAG WORD IS FULL.  After this bit, NIL_FLAG_NO_LIVE_ORDER and
+ * NIL_FLAG_NO_ADVERSARIAL_PROOFS below, no bit is left unassigned (0x2u, 0x8u
+ * and 0x20u are burned).  The pass's other exact changes -- charging a doomed bid on arrival,
  * the tight principal-variation windows, the two-bound table -- have control
  * arms in nil_cli, nil_bench and ctest, but not here; a wider flag word or an
  * options struct is the way to give them one. */
@@ -479,6 +479,19 @@ extern "C" {
  * before the performance pass of Sept 2026.  Ordering only: same values; in
  * full mode, the same principal variation.  A control arm. */
 #define NIL_FLAG_NO_LIVE_ORDER 0x40000000u
+
+/* Do not settle a position by the ADVERSARIAL proofs: that the nil side can
+ * keep the nil clean against any defence (duck or cover), or that the opponent
+ * on lead can force it to win this trick (a forcing lead or a forced ruff).
+ * They are spent where the every-line proofs NIL_FLAG_NO_STATIC_BOUNDS turns
+ * off are spent -- values under NIL_FLAG_FAST_MODE, fail-soft bounds in full
+ * mode -- and this flag turns off only them.  Same values, verdicts and
+ * principal variations either way; a control arm.
+ *
+ * THE LAST BIT.  With this one the flag word has no free bit left; see the
+ * note on NIL_FLAG_NO_ROW_MTD.  nil_cli and nil_bench can switch the two
+ * halves separately (--no-duck-cover, --no-forcing-lead). */
+#define NIL_FLAG_NO_ADVERSARIAL_PROOFS 0x80000000u
 
 #define NIL_FLAG_NO_SETTLED_GAINS 0x800000u
 
