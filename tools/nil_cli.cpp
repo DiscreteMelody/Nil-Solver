@@ -90,9 +90,15 @@ void usage(const char* argv0) {
         << "  --no-doom-charge        charge a doomed bid on the trick it breaks, not\n"
         << "                          on arrival (same answer, more nodes)\n"
         << "  --no-live-order         key the ordering rules to the nil seat, not to the\n"
-        << "                          live bids (same answer, more nodes)\n"
+        << "                          live bids, and no trick-oriented order either\n"
+        << "                          (same answer, more nodes)\n"
         << "  --no-win-order          do not try the cheapest trick-winning card first\n"
         << "                          for a seat with no live bid (same answer)\n"
+        << "  --no-trick-order        order a seat with no live bid by the old seat\n"
+        << "                          rules, not by the trick-oriented score (same\n"
+        << "                          answer and PV, more nodes)\n"
+        << "  --no-killer-order       do not try the last cutting move at the same\n"
+        << "                          depth second (same answer and PV, more nodes)\n"
         << "  --no-tight-pv           re-derive each line step under the caller's window\n"
         << "                          rather than a (v-1, v+1) one (same answer and PV)\n"
         << "  --no-tt-two-bounds      keep one bound per table entry (same answer and PV)\n"
@@ -355,6 +361,10 @@ int main(int argc, char** argv) {
             opts.moves_root_search = true;
         } else if (arg == "--no-win-order") {
             opts.win_order = false;
+        } else if (arg == "--no-trick-order") {
+            opts.trick_order = false;
+        } else if (arg == "--no-killer-order") {
+            opts.killer_order = false;
         } else if (arg == "--no-doom-charge") {
             opts.doom_charge = false;
         } else if (arg == "--no-live-order") {

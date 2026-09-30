@@ -397,9 +397,11 @@ namespace NilSolver
         NoRowMtd = 0x20000000u,
 
         /// <summary>
-        /// Order moves by the one nil seat rather than by the bids still live, and do not
-        /// have a seat with no live bid win tricks cheaply first. Ordering only; same values
-        /// and, in full mode, the same line. A control arm.
+        /// Order moves by the one nil seat rather than by the bids still live, do not
+        /// have a seat with no live bid win tricks cheaply first, and do not order such a
+        /// seat by the trick-oriented score of the Sept 2026 ordering study -- the ordering
+        /// from before the Sept 2026 pass, whole. Ordering only; same values and, in full
+        /// mode, the same line. A control arm.
         /// </summary>
         NoLiveOrder = 0x40000000u,
 

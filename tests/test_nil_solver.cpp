@@ -1727,6 +1727,138 @@ int main(int argc, char** argv) {
         }
     }
 
+    std::cout << "Trick-oriented order control arm\n";
+    {
+        // The Sept 2026 ordering study's order (trick_order_moves in
+        // search.cpp) is ordering only.  So with it on and off, every per-card
+        // row -- value, bid mask, the three trick counts -- and the position's
+        // line must be identical, and so must the fast verdict, over a fixed
+        // sweep of 7-card deals in the three shapes the order reaches: one
+        // nil, a pair that both bid, and one bid per side.  The killer move
+        // that rides on it in full mode gets the same check on its own.
+        Rng rng;
+        int positions = 0;
+        int rows_differ = 0;
+        int lines_differ = 0;
+        int verdicts_differ = 0;
+        int killer_rows_differ = 0;
+        int killer_lines_differ = 0;
+        long long nodes_on = 0;
+        long long nodes_off = 0;
+        long long nodes_no_killer = 0;
+        auto row_text = [](const std::vector<nil::MoveScore>& ms) {
+            std::string t;
+            for (const nil::MoveScore& m : ms) {
+                t += nil::card_to_string(m.card) + ":" + std::to_string(m.value) + ":" +
+                     std::to_string(m.nils_set_mask) + ":" + std::to_string(m.nil_tricks) + ":" +
+                     std::to_string(m.nil_side_tricks) + ":" + std::to_string(m.opponent_tricks) +
+                     " ";
+            }
+            return t;
+        };
+        for (int deal = 0; deal < 8; ++deal) {
+            const Position pos = random_deal(rng, 7);
+            for (int shape = 0; shape < 6; ++shape) {
+                nil::SeatRoles roles;
+                if (shape < 4) {
+                    roles = nil::seat_roles_from_nil(shape, false);
+                } else if (shape == 4) {
+                    const nil::SeatRole pair[4] = {nil::ROLE_NIL, nil::ROLE_OPPONENT, nil::ROLE_NIL,
+                                                   nil::ROLE_OPPONENT};
+                    for (int s2 = 0; s2 < 4; ++s2) roles.role[s2] = pair[s2];
+                } else {
+                    const nil::SeatRole opp[4] = {nil::ROLE_NIL, nil::ROLE_NIL, nil::ROLE_COVER,
+                                                  nil::ROLE_OPPONENT};
+                    for (int s2 = 0; s2 < 4; ++s2) roles.role[s2] = opp[s2];
+                }
+                SearchOptions on;
+                SearchOptions off = on;
+                off.trick_order = false;
+                SearchOptions no_killer = on;
+                no_killer.killer_order = false;
+                Solution a;
+                Solution b;
+                Solution k;
+                std::vector<nil::MoveScore> ma;
+                std::vector<nil::MoveScore> mb;
+                std::vector<nil::MoveScore> mk;
+                std::string err;
+                if (!nil::solve_moves(pos, roles, on, a, ma, err) ||
+                    !nil::solve_moves(pos, roles, off, b, mb, err) ||
+                    !nil::solve_moves(pos, roles, no_killer, k, mk, err)) {
+                    std::cerr << "test bug: solve_moves failed: " << err << "\n";
+                    std::exit(70);
+                }
+                ++positions;
+                if (row_text(ma) != row_text(mb)) ++rows_differ;
+                if (nil::format_pv_compact(a) != nil::format_pv_compact(b)) ++lines_differ;
+                if (row_text(ma) != row_text(mk)) ++killer_rows_differ;
+                if (nil::format_pv_compact(a) != nil::format_pv_compact(k)) ++killer_lines_differ;
+                nodes_on += static_cast<long long>(a.nodes);
+                nodes_off += static_cast<long long>(b.nodes);
+                nodes_no_killer += static_cast<long long>(k.nodes);
+                if (shape < 4) {
+                    SearchOptions fon;
+                    fon.mode = nil::MODE_FAST;
+                    SearchOptions foff = fon;
+                    foff.trick_order = false;
+                    if (must_solve(pos, SEAT_NAMES[shape], fon).nils_set !=
+                        must_solve(pos, SEAT_NAMES[shape], foff).nils_set)
+                        ++verdicts_differ;
+                }
+            }
+        }
+        check("trick order: sweep ran", positions, 48);
+        check("trick order never moves a per-card row", rows_differ, 0);
+        check("trick order never moves the line", lines_differ, 0);
+        check("trick order never moves a fast verdict", verdicts_differ, 0);
+        // Deliberately no node-count direction.  At seven cards the order is a
+        // heuristic with losers on single deals, and full-mode counts include
+        // the double-dummy engine's, whose table outlives a solve; the saving
+        // is a 13-card property and is measured in the benchmark (see
+        // MOVE_ORDERING.md).  What is pinned is that the arm is live at all.
+        check("and the arm changes the tree", nodes_on != nodes_off, true);
+        check("the killer never moves a per-card row", killer_rows_differ, 0);
+        check("the killer never moves the line", killer_lines_differ, 0);
+        check("and the killer's arm changes the tree", nodes_on != nodes_no_killer, true);
+
+        // NIL_FLAG_NO_LIVE_ORDER restores the ordering from before the Sept
+        // 2026 pass whole, so it must reproduce live_order = false exactly --
+        // which the order rides on -- node for node.  Fast mode, because the
+        // double-dummy engine's table outlives a solve and would make two
+        // full-mode node counts depend on which ran first.
+        Rng deal_rng;
+        deal_rng.state = 0x2545F4914F6CDD1Dull;
+        SearchOptions legacy;
+        legacy.mode = nil::MODE_FAST;
+        legacy.live_order = false;
+        SearchOptions current = legacy;
+        current.live_order = true;
+        // The first deal of a fixed sweep on which the order changes the tree
+        // at all: a fast search settled by a proof at its root has nothing to
+        // order, and would make the ABI check below vacuous.
+        Position pos;
+        Solution want;
+        bool found = false;
+        for (int attempt = 0; attempt < 20 && !found; ++attempt) {
+            pos = random_deal(deal_rng, 9);
+            want = must_solve(pos, "N", legacy);
+            found = must_solve(pos, "N", current).nodes != want.nodes;
+        }
+        check("the order is live in fast mode", found, true);
+        char err[256] = {0};
+        nil_result got;
+        const std::string pbn = nil::deal_to_pbn(pos.hands, nil::SEAT_NORTH);
+        const std::uint32_t flags = NIL_FLAG_FAST_MODE | NIL_FLAG_NO_LIVE_ORDER |
+                                    (pos.spades_broken ? NIL_FLAG_SPADES_BROKEN : 0u);
+        check("ABI: NO_LIVE_ORDER solves",
+              static_cast<long long>(nil_solve(pbn.c_str(), pos.leader, "", SEATS_NIL_N, flags,
+                                               &got, err, sizeof(err))),
+              0LL);
+        check("ABI: NO_LIVE_ORDER turns the trick order off too",
+              static_cast<long long>(got.nodes), static_cast<long long>(want.nodes));
+    }
+
     std::cout << "Compact state key\n";
     {
         // Absolute ranks do not matter, only the order the four hands hold

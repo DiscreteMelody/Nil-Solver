@@ -201,6 +201,12 @@ struct Ctx {
     bool live_order = false;      // SearchOptions::live_order; see live_bid_promotion
     bool tight_pv = false;        // SearchOptions::tight_pv; see canonical_move_for
     bool win_order = false;       // SearchOptions::win_order; see cheap_win_card
+    bool trick_order = false;     // SearchOptions::trick_order; see trick_order_moves
+    bool killer_order = false;    // SearchOptions::killer_order; see the move loop
+    // The last move that cut at a scored node, by plies played from the full
+    // deal (52 less the cards still in hands).  One solve's worth: a Ctx is
+    // made per solve, and solve_moves() runs all its rows through one.
+    CardId killer[64];
     bool want_move = false;       // the next node's caller reads its best move
     bool moves_aspiration = false;  // SearchOptions::moves_aspiration; see solve_moves
     int dd_weight = 0;
@@ -1141,6 +1147,11 @@ inline CardId cheap_win_card(const State& st, int seat, unsigned live, Hand move
 // Ordering only, so answer-neutral in both modes: the same moves are searched
 // and MODE_FULL's line is re-derived canonically.  Off with
 // --no-live-order / NIL_FLAG_NO_LIVE_ORDER, which restores the seat rules above.
+//
+// With trick_order on (the default) only the first branch below is reached --
+// the live bidder's own shed, which the Sept 2026 ordering study measured as
+// the one strong rule here and kept.  Every other seat is ordered by
+// trick_order_moves; the rest of this function is the control arm's tree.
 inline CardId live_bid_promotion(const Ctx& ctx, const State& st, int seat, Hand moves) {
     const unsigned live = ctx.nil_mask & ~st.nils_broken;
     if (!live) return NO_CARD;
@@ -1184,6 +1195,236 @@ inline CardId live_bid_promotion(const Ctx& ctx, const State& st, int seat, Hand
         return cover_partner_duck_short(st, seat ^ 2, moves);  // C5
     }
     return NO_CARD;
+}
+
+// THE TRICK-ORIENTED ORDER FOR EVERY SEAT WITHOUT A LIVE BID (Sept 2026
+// ordering study; see MOVE_ORDERING.md, "The solver-driven study").
+//
+// WHAT THE STUDY FOUND.  Every rule above was designed, and measured, for the
+// BOOLEAN nil question: MODE_FAST's [0, 1] window.  The bot's call is per-card
+// full scoring, and there every row is a sequence of null-window searches on
+// the PACKED value -- nil outcome first, then the pair's tricks.  Sampling the
+// nodes of real 13-card per-card searches and classifying each one's window
+// against the value bands: 15% ask the nil question, 85% ask a TRICK question
+// ("keeping the nil, can the pair still take x?", or "breaking it, can the
+// opponents still hold them to y?").  At those nodes the seat rules had
+// nothing to say about the seats they did not cover, and what they said about
+// the ones they did was measured at chance -- the share of cut nodes whose
+// FIRST move cut, before this order, against a first move picked at random:
+//
+//   opponent on lead      70%   (random 69%)      now 78%
+//   cover on lead         78%   (random 80%)      now 86%
+//   opponent, third hand  82%   (random 80%)      now 94%
+//
+// and an exactly-best-first rate, on 3,660 solver-labelled positions of every
+// size and shape, of 57% on the positions where the choice matters -- a
+// random move scores 51%, this order 77%.  The one rule measured far above
+// chance was the nil bidder's own shed (6a/6d): 94-99% of its cut nodes cut on
+// the first move.
+//
+// WHAT IT DOES INSTEAD.  The double-dummy engine's own ordering
+// (ddtricks.cpp, a subset of DDS's), with the live bidder read the right way
+// round for each side -- because a trick won by a live bidder is not a trick
+// "for" anybody here: it is the one outcome its own side must prevent and the
+// other side is trying to force.
+//
+//   On lead: cash the top card of a suit (80; 20 when an opponent can ruff it),
+//   lead low toward partner's top card (60; 15 with a ruff threat), otherwise
+//   lead the lowest card of a suit (30; 20 for a spade), anything else last.
+//   Never "toward partner's top card" when the partner is a live bidder: that
+//   is leading into the nil.
+//
+//   Following: a card that wins for sure (90) before a loser (50) before a
+//   winner a later seat can still beat (45, or 25 second hand).  A card that
+//   wins "for sure" is judged against the seats still to play EXCLUDING a live
+//   bidder, which will never choose to overtake -- and whose overtaking the
+//   other side would welcome.  When partner holds the trick and no later seat
+//   that wants it can take it off, the order flips: losers first (60), winners
+//   last (5).  "Partner holds it" includes, for the side AGAINST a live bid,
+//   that bidder holding it: an opponent lets a winning nil keep its trick --
+//   unless the nil's own partner is still to play and can overtake it, because
+//   then leaving it does not keep it there.  (That last clause is worth 2.4% of
+//   the nodes on every workload measured; it is the "nil winning, cover still
+//   to come" case found in the in-search samples.)
+//
+//   Void: as above, with a spade that does not win and a side-suit top card
+//   thrown away both pushed down.  Ties go to the lower card.
+//
+// Opponents on lead against exactly one live bid put 6b's attacking lead ahead
+// of the scored list.  Alone neither is best: the scored list without 6b
+// loses 43% on a pathological 13-card deal where the nil must be broken to
+// score at all, and 6b followed by the canonical order is what the study
+// measured at chance.  Together: 6.9% fewer nodes than the score alone over
+// 147 13-card deals, 11% in MODE_FAST.
+//
+// A LIVE BIDDER keeps 6a/6d and the suit rotation, which this study confirmed
+// rather than replaced.
+//
+// COST.  About 40 ns per call against 5-35 ns for the rules it replaces, on
+// the nodes where a seat has a real choice.  The node saving is far larger:
+// see SearchOptions::trick_order for the measured totals.
+//
+// Ordering only: the same moves are searched, so every value, verdict and --
+// with MODE_FULL's canonical re-derivation -- every principal variation is
+// unchanged.  Off with --no-trick-order, and with NIL_FLAG_NO_LIVE_ORDER, which
+// restores the ordering from before the Sept 2026 performance pass whole.
+inline bool hand_can_beat(Hand h, CardId card, int led) {
+    const Hand follow = h & suit_mask(led);
+    if (follow) return card_suit(card) == led && highest_card(follow) > card;
+    const Hand sp = h & suit_mask(SUIT_SPADES);
+    if (!sp) return false;
+    if (card_suit(card) != SUIT_SPADES) return true;
+    return highest_card(sp) > card;
+}
+
+// Insert `c` into the score-sorted list `out`, highest key first, keeping the
+// canonical order among equal keys.
+inline void insert_scored(CardId* out, int* key, int& n, CardId c, int k) {
+    int i = n++;
+    while (i > 0 && key[i - 1] < k) {
+        key[i] = key[i - 1];
+        out[i] = out[i - 1];
+        --i;
+    }
+    key[i] = k;
+    out[i] = c;
+}
+
+// `moves` is the reduced move set of a seat holding no live bid.  Writes all
+// of them to `out`, best first, and returns how many.
+inline int trick_order_moves(const Ctx& ctx, const State& st, int seat, Hand moves, CardId* out) {
+    const unsigned live = ctx.nil_mask & ~st.nils_broken;
+    const Hand all = st.hands[0] | st.hands[1] | st.hands[2] | st.hands[3];
+    const Hand sp = suit_mask(SUIT_SPADES);
+    int key[16];
+    int n = 0;
+    if (st.trick_len == 0) {
+        const Hand hand = st.hands[seat];
+        const int partner = seat ^ 2;
+        const bool partner_live = (live >> partner) & 1u;
+        const Hand lho = st.hands[(seat + 1) & 3];
+        const Hand rho = st.hands[(seat + 3) & 3];
+        for (int s = 0; s < 4; ++s) {
+            const Hand sm = suit_mask(s);
+            Hand mine = moves & sm;
+            if (!mine) continue;
+            const CardId top = static_cast<CardId>(highest_card(all & sm));
+            const bool ruff_risk = s != SUIT_SPADES && (((lho & sp) && !(lho & sm)) ||
+                                                        ((rho & sp) && !(rho & sm)));
+            const bool toward = !partner_live && (st.hands[partner] & card_bit(top)) != 0;
+            const CardId lowest = static_cast<CardId>(lowest_card(hand & sm));
+            while (mine) {
+                const CardId c = take_lowest(mine);
+                int score;
+                if (c == top) {
+                    score = ruff_risk ? 20 : 80;
+                } else if (toward) {
+                    score = c == lowest ? (ruff_risk ? 15 : 60) : 10;
+                } else {
+                    score = c == lowest ? (s == SUIT_SPADES ? 20 : 30) : 5;
+                }
+                insert_scored(out, key, n, c, score * 16 + (15 - (c & 15)));
+            }
+        }
+        return n;
+    }
+
+    const int led = card_suit(st.trick[0]);
+    const Hand led_mask = suit_mask(led);
+    int win = 0;
+    for (int i = 1; i < st.trick_len; ++i)
+        if (beats(st.trick[i], st.trick[win])) win = i;
+    const CardId best = st.trick[win];
+    const int win_seat = (st.leader + win) & 3;
+
+    // What the seats still to play, a live bidder apart, can do to a winning
+    // card: the highest card of the led suit any of them holds, whether one of
+    // them is void with a trump, and the highest trump among those void.
+    CardId max_follow = NO_CARD;
+    CardId max_ruff = NO_CARD;
+    bool ruffer = false;
+    for (int q = st.trick_len + 1; q < 4; ++q) {
+        const int p = (st.leader + q) & 3;
+        if ((live >> p) & 1u) continue;
+        const Hand h = st.hands[p];
+        if (h & led_mask) {
+            const CardId hi = static_cast<CardId>(highest_card(h & led_mask));
+            if (hi > max_follow) max_follow = hi;
+        } else if (h & sp) {
+            ruffer = true;
+            const CardId hi = static_cast<CardId>(highest_card(h & sp));
+            if (hi > max_ruff) max_ruff = hi;
+        }
+    }
+    // Can a later seat that wants the trick take it off `c`, which wins so far?
+    auto threatened = [&](CardId c) {
+        if (card_suit(c) == led) return c < max_follow || (led != SUIT_SPADES && ruffer);
+        return c < max_ruff;  // a trump on a side-suit lead
+    };
+
+    bool leave = false;
+    if ((live >> win_seat) & 1u) {
+        // A live bidder holds the trick.  Its own side wants it off it; the
+        // other side wants it left -- unless the bidder's partner is still to
+        // play and can overtake it anyway.
+        leave = ((win_seat ^ seat) & 1) != 0;
+        if (leave) {
+            const int cover = win_seat ^ 2;
+            for (int q = st.trick_len + 1; q < 4; ++q) {
+                if (((st.leader + q) & 3) == cover && hand_can_beat(st.hands[cover], best, led))
+                    leave = false;
+            }
+        }
+    } else if (((win_seat ^ seat) & 1) == 0) {
+        leave = !threatened(best);  // partner has it, and nobody who wants it can take it
+    }
+
+    if (moves & led_mask) {
+        // Following suit, so every candidate is in the led suit and the scores
+        // fall into at most three classes, each tried lowest first.  Built from
+        // masks rather than scored card by card: this is most of the nodes.
+        const Hand win_mask =
+            card_suit(best) == led ? moves & ~((card_bit(best) << 1) - 1) : Hand{0};
+        const Hand lose_mask = moves & ~win_mask;
+        Hand first = 0, second = 0, third = 0;
+        if (leave) {
+            first = lose_mask;
+            second = win_mask;
+        } else {
+            Hand sure = 0;
+            if (!(led != SUIT_SPADES && ruffer)) {
+                sure = max_follow == NO_CARD ? win_mask
+                                             : win_mask & ~((card_bit(max_follow) << 1) - 1);
+            }
+            first = sure;
+            second = lose_mask;
+            third = win_mask & ~sure;
+        }
+        for (Hand m = first; m;) out[n++] = take_lowest(m);
+        for (Hand m = second; m;) out[n++] = take_lowest(m);
+        for (Hand m = third; m;) out[n++] = take_lowest(m);
+        return n;
+    }
+
+    // Void in the led suit: anything goes, so score card by card.
+    for (Hand m = moves; m;) {
+        const CardId c = take_lowest(m);
+        const int s = card_suit(c);
+        const bool wins = beats(c, best);
+        int score;
+        if (leave) {
+            score = wins ? 5 : 60;
+        } else if (wins) {
+            score = !threatened(c) ? 90 : (st.trick_len == 1 ? 25 : 45);
+        } else {
+            score = 50;
+        }
+        if (s == SUIT_SPADES && !wins) score -= 20;  // a trump thrown away
+        if (s != SUIT_SPADES && c == static_cast<CardId>(highest_card(all & suit_mask(s))))
+            score -= 15;  // a winner thrown away
+        insert_scored(out, key, n, c, score * 16 + (15 - (c & 15)));
+    }
+    return n;
 }
 
 // DOOMED BIDS ARE CHARGED ON ARRIVAL.
@@ -2193,7 +2434,53 @@ int search_core(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
     // costs a `take_lowest` per move today, and both optimisations this project
     // has rejected lost on throughput rather than on nodes.
     CardId promoted = NO_CARD;
-    if (ctx.order_moves && ctx.live_order) {
+    // A whole list rather than one card, for the seats trick_order_moves
+    // orders: every seat without a live bid of its own.  See the comment there
+    // for what the order is and why.
+    CardId scored[16];
+    int n_scored = 0;
+    int i_scored = 0;
+    int killer_ply = -1;  // set when this node reads, and so writes, the killer
+    if ((moves & (moves - 1)) == 0) {
+        // One move left after the equivalence collapse: nothing to order, and
+        // nothing to spend deciding so.  Common deep in the tree.
+    } else if (ctx.trick_order && !(((ctx.nil_mask & ~st.nils_broken) >> seat) & 1u)) {
+        n_scored = trick_order_moves(ctx, st, seat, moves, scored);
+        if (st.trick_len == 0) {
+            // Against exactly one live bid, 6b's attacking lead goes first.
+            const unsigned live = ctx.nil_mask & ~st.nils_broken;
+            const unsigned targets = live & ((seat & 1) ? 0x5u : 0xAu);
+            if (targets && !(targets & (targets - 1))) {
+                const CardId attack =
+                    opponent_attack_lead(st, lowest_card(static_cast<Hand>(targets)), moves);
+                if (attack != NO_CARD && scored[0] != attack) {
+                    int j = 0;
+                    while (scored[j] != attack) ++j;
+                    for (; j > 0; --j) scored[j] = scored[j - 1];
+                    scored[0] = attack;
+                }
+            }
+        }
+        if (ctx.killer_order) {
+            // THE KILLER, SECOND.  The move that last cut a scored node at this
+            // depth is tried right after this node's own first choice.  Second
+            // and not first, by measurement: first costs 68% more nodes on
+            // twelve 13-card deals -- a sibling's refutation is a worse guess
+            // than this node's own score -- while second saves 6.9% over 147
+            // 13-card deals, 55 better and 9 worse.  A card, not a slot: after a
+            // different earlier line the same card may be a different class
+            // representative or not legal at all, and then nothing moves.
+            killer_ply = 52 - 4 * count_cards(st.hands[seat]) + st.trick_len;
+            const CardId k = ctx.killer[killer_ply];
+            if (k != NO_CARD && (moves & card_bit(k)) && scored[0] != k && scored[1] != k) {
+                int j = 2;
+                while (scored[j] != k) ++j;
+                for (; j > 1; --j) scored[j] = scored[j - 1];
+                scored[1] = k;
+            }
+        }
+        moves = 0;
+    } else if (ctx.order_moves && ctx.live_order) {
         promoted = live_bid_promotion(ctx, st, seat, moves);
         if (promoted != NO_CARD) moves &= ~card_bit(promoted);
     } else if (ctx.order_moves) {
@@ -2268,9 +2555,11 @@ int search_core(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
         if (promoted != NO_CARD) suit_cursor = card_suit(promoted);
     }
 
-    while (promoted != NO_CARD || moves) {
+    while (i_scored < n_scored || promoted != NO_CARD || moves) {
         CardId card;
-        if (promoted != NO_CARD) {
+        if (i_scored < n_scored) {
+            card = scored[i_scored++];
+        } else if (promoted != NO_CARD) {
             card = promoted;
             promoted = NO_CARD;
         } else if (mixed > 0) {
@@ -2312,6 +2601,7 @@ int search_core(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
         // change the answer the parent came for.
         if (maximizing ? best >= cut_at : best <= cut_at) {
             cut_off = true;
+            if (killer_ply >= 0) ctx.killer[killer_ply] = card;
             break;
         }
     }
@@ -2573,6 +2863,18 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
     // corpus, and MODE_FAST is also the presolve every single-nil full solve
     // spends first.
     ctx.win_order = opts.win_order && opts.mode == MODE_FULL;
+    // BOTH modes, unlike win_order: measured on the 400-deal nil13_verdict
+    // corpus in MODE_FAST it is worth a third of the nodes (see
+    // trick_order_moves), and MODE_FAST is also the presolve a full solve()
+    // spends first.
+    // Rides on live_order, as win_order does, so that NIL_FLAG_NO_LIVE_ORDER
+    // and --no-live-order still restore the ordering from before the Sept
+    // 2026 performance pass whole.
+    ctx.trick_order = opts.trick_order && opts.order_moves && opts.live_order;
+    // MODE_FULL only: in MODE_FAST it measured +1.8% of nodes on the 400-deal
+    // verdict corpus, where the per-card rows it feeds on do not exist.
+    ctx.killer_order = ctx.trick_order && opts.killer_order && opts.mode == MODE_FULL;
+    for (CardId& k : ctx.killer) k = NO_CARD;
     ctx.moves_aspiration = opts.moves_aspiration;
     ctx.last_trick = opts.last_trick_eval;
     ctx.tt_boundaries_only = opts.tt_boundaries_only;

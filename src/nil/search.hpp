@@ -536,6 +536,10 @@ struct SearchOptions {
     // the bar -- every rep a win -- so it does not ship on, and it is kept
     // rather than deleted because the next experiment is a tie-break rather
     // than a rewrite.  See MOVE_ORDERING.md.
+    //
+    // Inert while trick_order is on: the cover partner holds no live bid, so
+    // trick_order_moves orders it.  The study measured C5 in front of that
+    // order as well -- +9% and +13% of nodes on two 13-card seeds.
     bool cover_duck_short = false;
 
     // Consult the transposition table only at a trick boundary, never in the
@@ -774,7 +778,43 @@ struct SearchOptions {
     // cheap_win_card in search.cpp).  Ordering only, MODE_FULL only; rides on
     // live_order, so NIL_FLAG_NO_LIVE_ORDER turns it off too.  Off with
     // --no-win-order.
+    //
+    // SUPERSEDED while trick_order is on (the default): every seat this rule
+    // orders is ordered by trick_order_moves instead, whose "sure winner
+    // first" class contains this card whenever it is sure.  Reached only under
+    // --no-trick-order, where it keeps the pre-study tree reproducible.
     bool win_order = true;
+
+    // Order every seat that holds no live bid by a trick-oriented score --
+    // the double-dummy engine's own DDS-style rules, with a live bidder's
+    // winning card read the right way round for each side -- and put 6b's
+    // attacking lead ahead of it for a seat on lead against one live bid (see
+    // trick_order_moves in search.cpp).  A live bidder keeps 6a/6d.  Both
+    // modes; with it on, win_order and the non-bidder half of live_order are
+    // no longer reached.
+    //
+    // Measured on one binary with this flag the only difference (it takes
+    // killer_order below with it), Sept 2026 ordering study (MOVE_ORDERING.md
+    // has the tables): per-card full scoring on 155 random, opposed,
+    // partner-nil and pathological 13-card deals, nodes -30% and wall time
+    // -25% in total, median deal 0.58 s -> 0.37 s, 106 -> 116 of them under a
+    // second; MODE_FAST on the 400-deal nil13_verdict corpus, nodes -34% and
+    // time -26%.  Not a clean win on every deal -- no ordering is -- and the
+    // losses are listed there too.
+    //
+    // Ordering only: same values, verdicts and principal variations.  Off with
+    // --no-trick-order (CLI and nil_bench); NIL_FLAG_NO_LIVE_ORDER turns it off
+    // with the rest of the pass's ordering (the ABI has no bit of its own left).
+    bool trick_order = true;
+
+    // Try the move that last cut a trick-ordered node at the same depth SECOND
+    // at the next such node, behind that node's own first choice -- a killer
+    // move, rides on trick_order.  MODE_FULL only.  Measured on top of
+    // trick_order over 147 13-card deals under per-card scoring: nodes -6.9%,
+    // wall time -5.8%, 55 deals better and 9 worse; first rather than second
+    // is 68% WORSE, and in MODE_FAST it is +1.8%.  Ordering only.  Off with
+    // --no-killer-order (CLI and nil_bench).
+    bool killer_order = true;
 
     // Charge a live bid's primary the moment nil_must_take_a_trick proves it
     // breaks down every line, instead of on the trick where it happens (see

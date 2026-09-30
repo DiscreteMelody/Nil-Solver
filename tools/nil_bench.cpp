@@ -454,9 +454,13 @@ void usage(const char* argv0) {
               << "  --moves-root-search  run the root search before those rows\n"
               << "  --no-doom-charge  charge a doomed bid when it breaks, not on arrival\n"
               << "  --no-live-order   key the ordering rules to the nil seat, not the\n"
-              << "                    live bids (also turns off the next one)\n"
+              << "                    live bids (also turns off the next two)\n"
               << "  --no-win-order    no cheapest-winning-card-first for a seat with\n"
               << "                    no live bid\n"
+              << "  --no-trick-order  order a seat with no live bid by the old seat\n"
+              << "                    rules, not by the trick-oriented score (also\n"
+              << "                    turns off the next one)\n"
+              << "  --no-killer-order no last-cutting-move-second at scored nodes\n"
               << "  --no-tight-pv     re-derive lines under the caller's window\n"
               << "  --no-tt-two-bounds  one bound per table entry\n"
               << "                    (all of these: same answers, different nodes)\n"
@@ -529,6 +533,10 @@ std::string memo_label(const nil::SearchOptions& opts) {
     if (!opts.doom_charge && opts.mode == nil::MODE_FULL) suffix += "+nodoomcharge";
     if (!opts.live_order) suffix += "+noliveorder";
     if (!opts.win_order && opts.live_order) suffix += "+nowinorder";
+    if (!opts.trick_order && opts.live_order) suffix += "+notrickorder";
+    if (!opts.killer_order && opts.trick_order && opts.live_order &&
+        opts.mode == nil::MODE_FULL)
+        suffix += "+nokiller";
     if (!opts.tight_pv && opts.mode == nil::MODE_FULL) suffix += "+notightpv";
     if (!opts.tt_two_bounds) suffix += "+nottbounds";
     if (!opts.use_memo || opts.tt_megabytes == 0) return "off" + suffix;
@@ -744,6 +752,10 @@ int main(int argc, char** argv) {
             opts.live_order = false;
         } else if (arg == "--no-win-order") {
             opts.win_order = false;
+        } else if (arg == "--no-trick-order") {
+            opts.trick_order = false;
+        } else if (arg == "--no-killer-order") {
+            opts.killer_order = false;
         } else if (arg == "--no-tight-pv") {
             opts.tight_pv = false;
         } else if (arg == "--no-tt-two-bounds") {

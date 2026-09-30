@@ -615,6 +615,20 @@ switches both through the ABI, and `corpus_no_adversarial` /
 `corpus_no_adversarial_fast` run the corpus with them off. `--no-static` turns
 them off too.
 
+`--no-trick-order` is the control arm for the trick-oriented move order of the
+Sept 2026 ordering study (see `MOVE_ORDERING.md`): every seat that holds no live
+bid of its own is ordered by the double-dummy engine's DDS-style score, read
+through the nil (a live bidder never chooses to overtake, and the side against
+it leaves it the trick unless its partner can still take it), with 6b's
+attacking lead in front for an opponent on lead. The live nil bidder keeps
+6a/6d. Ordering only, both modes, so both arms must land on the same values,
+verdicts and lines; `corpus_no_trick_order`, `corpus_no_trick_order_fast` and
+`corpus_multinil_no_trick_order` run the corpora with it off. There is no ABI
+bit left for it alone; `NIL_FLAG_NO_LIVE_ORDER` turns it off together with the
+rest of the Sept 2026 ordering. `--no-killer-order` switches off only the killer
+move that rides on it in full mode (the last move to cut at the same depth,
+tried second), with `corpus_no_killer_order` as its arm.
+
 `--no-narrow` is the control arm for window narrowing (roadmap item 22), and it
 is the one with the most riding on it. Full mode narrows its window as a node's
 moves come back, which is what makes the alpha-beta cutoff reachable there at

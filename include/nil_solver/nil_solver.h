@@ -474,10 +474,13 @@ extern "C" {
 #define NIL_FLAG_NO_ROW_MTD 0x20000000u
 
 /* Key the seat-specific move ordering to the bids that are still LIVE and not
- * to the one nil seat, and have a seat with no live bid win a trick cheaply
- * from a non-bidding opponent -- turned off, restoring the ordering from
- * before the performance pass of Sept 2026.  Ordering only: same values; in
- * full mode, the same principal variation.  A control arm. */
+ * to the one nil seat, have a seat with no live bid win a trick cheaply from a
+ * non-bidding opponent, and order every seat with no live bid by the
+ * trick-oriented score of the Sept 2026 ordering study -- all turned off,
+ * restoring the ordering from before the performance pass of Sept 2026.  The
+ * study's order has no bit of its own (the word is full); nil_cli and
+ * nil_bench switch it alone with --no-trick-order.  Ordering only: same
+ * values; in full mode, the same principal variation.  A control arm. */
 #define NIL_FLAG_NO_LIVE_ORDER 0x40000000u
 
 /* Do not settle a position by the ADVERSARIAL proofs: that the nil side can

@@ -37,16 +37,28 @@ echo "=== Benchmark ==="
 
 if [ "${NIL_SKIP_WORST:-0}" != "1" ]; then
     echo
-    echo "=== Worst case (13 cards, ~15M nodes, a few seconds) ==="
+    echo "=== Worst case (13 cards, ~8M nodes, a few seconds) ==="
     # --cards-only 13 selects the three 13-card rows and nothing else.  Their
     # answers are PINNED FROM THIS SOLVER, not from nil_oracle.py, which cannot
     # reach 13 cards: a mismatch here means something CHANGED, not necessarily
     # that something broke.  Investigate rather than assume either way.
     #
     # Baselines to compare against, deterministic and machine independent.
-    # Re-banked by the adversarial-proofs patch (duck or cover, forcing lead; see
-    # ROADMAP.md): these are full-mode solves, where the new proofs are spent as
-    # fail-soft bounds, so the tree moves a little -- and not only down.
+    # Re-banked by the Sept 2026 ordering study (the trick-oriented order and the
+    # killer move; see MOVE_ORDERING.md and ROADMAP.md).  Ordering reaches every
+    # tree, and these three rows are where the killer pays most:
+    #   c13-0000      6,337,877 nodes   <- was 13,060,981
+    #   c13-0001        663,164 nodes   <- was 669,534
+    #   c13-0002        848,513 nodes   <- was 853,573
+    #   ---------------------------
+    #   total         7,849,554 nodes   <- was 14,584,088
+    # With the trick order alone (--no-killer-order): 10,443,253 / 663,352 /
+    # 846,518 (11,953,123).  --no-trick-order reproduces the figures below.
+    #
+    # The adversarial-proofs patch's figures, for the record (duck or cover,
+    # forcing lead; see ROADMAP.md): these are full-mode solves, where those
+    # proofs are spent as fail-soft bounds, so the tree moved a little -- and
+    # not only down.
     #   c13-0000     13,060,981 nodes   <- was 13,169,403
     #   c13-0001        669,534 nodes   <- was 669,528: +6, a bound stored
     #                                    where an exact value used to be

@@ -393,6 +393,26 @@ if(NIL_SOLVER_BUILD_TESTS)
                      --quiet --slowest 0)
     set_tests_properties(corpus_no_live_order PROPERTIES TIMEOUT 900)
 
+    # The control arm for the trick-oriented order (the Sept 2026 ordering
+    # study; see trick_order_moves in search.cpp).  Every default run of this
+    # corpus orders every seat without a live bid by the new score; these two
+    # put the old seat rules back, in both modes, because the order runs in
+    # both.  Ordering only, so both must land on the oracle's values -- and in
+    # full mode on its lines, which the canonical re-derivation pins.
+    add_test(NAME corpus_no_trick_order
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --check-moves --check-pv --no-trick-order
+                     --quiet --slowest 0)
+    set_tests_properties(corpus_no_trick_order PROPERTIES TIMEOUT 900)
+    add_test(NAME corpus_no_trick_order_fast
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --mode fast --check-moves
+                     --no-trick-order --quiet --slowest 0)
+    set_tests_properties(corpus_no_trick_order_fast PROPERTIES TIMEOUT 900)
+    # ...and the killer move that rides on it, full mode only.
+    add_test(NAME corpus_no_killer_order
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --check-moves --check-pv
+                     --no-killer-order --quiet --slowest 0)
+    set_tests_properties(corpus_no_killer_order PROPERTIES TIMEOUT 900)
+
     # The control arm for the ADVERSARIAL proofs (duck or cover, forcing lead;
     # see bounds.hpp), on the corpus_static model: every other run of this
     # corpus takes them, this one does not, and both must land on the oracle's
@@ -474,6 +494,10 @@ if(NIL_SOLVER_BUILD_TESTS)
              COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-moves --check-pv
                      --no-live-order --quiet --slowest 0)
     set_tests_properties(corpus_multinil_no_live_order PROPERTIES TIMEOUT 900)
+    add_test(NAME corpus_multinil_no_trick_order
+             COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-moves --check-pv
+                     --no-trick-order --quiet --slowest 0)
+    set_tests_properties(corpus_multinil_no_trick_order PROPERTIES TIMEOUT 900)
     add_test(NAME corpus_multinil_no_tt_two_bounds
              COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-moves --check-pv
                      --no-tt-two-bounds --quiet --slowest 0)

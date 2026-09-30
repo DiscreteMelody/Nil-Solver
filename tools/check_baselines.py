@@ -81,50 +81,80 @@ import sys
 #     exactly the game the proofs are about.
 # multinil.txt and opposed13_settled do not move.  Each moved row keeps the
 # previous figure in its comment; `--no-adversarial-proofs` reproduces it.
+#
+# RE-BANKED AGAIN BY THE SEPT 2026 ORDERING STUDY (the trick-oriented order;
+# MOVE_ORDERING.md and ROADMAP.md).  One cause: every seat without a live bid
+# is now ordered by trick_order_moves, in BOTH modes, so every row moves --
+# ordering is the one change that reaches every tree.  Most move down; three
+# move up, and they are named rather than hidden: positions.txt full (+4.1%
+# of nodes on 4-6 card solves, where there is little to order; wall time is
+# 5% LOWER; +3.0% once the killer is in), large.txt fast (+26.6% of an
+# 18k-node total, nearly all of it one 9-card row, c9-0002, 13,273 -> 19,287
+# nodes, under 3 ms either way), and opposed13_settled (+1.1%).  `--no-trick-order` reproduces every
+# previous figure exactly -- checked on all nine before re-banking.
+# The killer move that rides on it (full mode only, tried second) then moves
+# the six full-mode rows it reaches, all DOWN -- large.txt most, 12.06M -> 7.95M,
+# nearly all in its three 13-card rows -- and none of the fast rows or
+# opposed13_settled.  Each row below gives the figure with the trick order
+# alone, which `--no-killer-order` reproduces exactly (all nine checked), and
+# the figure checked.
 BASELINES = [
-    # 39,701 before the adversarial-proofs patch (-44.6%).
-    ("positions.txt fast", 22_009,
+    # 39,701 before the adversarial-proofs patch (-44.6%); 22,009 after it;
+    # 17,564 after the ordering study (-20.2%).
+    ("positions.txt fast", 17_564,
      ["--corpus", "tests/corpus/positions.txt", "--mode", "fast"]),
     # 274,270 at patch 106 (B1a); 227,386 at HEAD c35614b; 227,706 after the
     # Sept 2026 pass (+0.14% on HEAD); 219,626 after the adversarial proofs
-    # (-3.5%).
-    ("positions.txt full", 219_626,
+    # (-3.5%); 228,684 with the trick order (+4.1%, wall time -5%); 226,244
+    # with the killer too (+3.0% on 219,626).
+    ("positions.txt full", 226_244,
      ["--corpus", "tests/corpus/positions.txt", "--mode", "full"]),
-    # 49,084 before the adversarial-proofs patch (-62.4%).
-    ("large.txt fast", 18_466,
+    # 49,084 before the adversarial-proofs patch (-62.4%); 18,466 after it;
+    # 23,376 after the ordering study (+26.6%).
+    ("large.txt fast", 23_376,
      ["--corpus", "tests/corpus/large.txt", "--mode", "fast"]),
     # 163,134,302 at patch 106 (B1a); 7,778,660 at HEAD c35614b; 14,899,561
     # after the pass (+92% on HEAD, nearly all of it c13-0000 -- see above);
-    # 14,723,260 after the adversarial proofs (-1.2%).
-    ("large.txt full", 14_723_260,
+    # 14,723,260 after the adversarial proofs (-1.2%); 12,056,774 with the
+    # trick order (-18.1%); 7,952,579 with the killer too (-46.0% on
+    # 14,723,260).
+    ("large.txt full", 7_952_579,
      ["--corpus", "tests/corpus/large.txt", "--mode", "full"]),
     # NOT one of the four hand-run baselines Phase A set out to verify.  Added
     # at patch 105 as a CONSISTENCY CHECK on the worst-case leg's subtotal in
     # scripts/run-bench.{sh,cmd}: those three per-deal figures were the ones
     # found stale, and no other row here covers them.
     # 162,499,778 at patch 105; 7,512,026 at HEAD c35614b; 14,692,504 after
-    # the pass; 14,584,088 after the adversarial proofs (-0.7%).
-    ("large.txt 13c only", 14_584_088,
+    # the pass; 14,584,088 after the adversarial proofs (-0.7%); 11,953,123
+    # with the trick order (-18.0%); 7,849,554 with the killer too (-46.2% on
+    # 14,584,088).
+    ("large.txt 13c only", 7_849_554,
      ["--corpus", "tests/corpus/large.txt", "--cards-only", "13"]),
     # 4,833,200 at patch 108; 3,958,328 at HEAD c35614b; 2,425,248 after the
-    # pass (-39% on HEAD).
-    ("multinil.txt", 2_425_248,
+    # pass (-39% on HEAD); 2,397,142 with the trick order (-1.2%); 2,331,066
+    # with the killer too (-3.9% on 2,425,248).
+    ("multinil.txt", 2_331_066,
      ["--corpus", "tests/corpus/multinil.txt"]),
     # Roles in the file header, not in the rows -- see the module docstring.
     # 351,156,828 at patch 108; 271,522,655 at HEAD c35614b; 182,407,101 after
     # the pass (-33% on HEAD); 166,580,542 after the adversarial proofs
-    # (-8.7%, all of it in the single-nil presolve probes).
-    ("opposed13", 166_580_542,
+    # (-8.7%, all of it in the single-nil presolve probes); 123,215,403 with
+    # the trick order (-26.0%); 122,012,523 with the killer too (-26.8% on
+    # 166,580,542).
+    ("opposed13", 122_012_523,
      ["--deals", "tests/corpus/opposed13.txt", "--seats", "0 0 3 2"]),
     # ROTATED roles, deliberately.  Not a copy of the line above.
     # 55,428,602 at patch 108; 3,437,862 at HEAD c35614b; 3,626,151 after the
-    # pass (+5.5% on HEAD).
-    ("opposed13_settled", 3_626_151,
+    # pass (+5.5% on HEAD); 3,667,407 after the ordering study (+1.1%; the
+    # killer does not move it).
+    ("opposed13_settled", 3_667_407,
      ["--deals", "tests/corpus/opposed13_settled.txt", "--seats", "3 2 0 0"]),
     # A corpus: roles travel per row, so no --seats.
     # 171,731,064 at patch 108; 172,080,754 at HEAD c35614b; 93,336,454 after
-    # the pass (-46% on HEAD); 86,579,369 after the adversarial proofs (-7.2%).
-    ("opposed13_real", 86_579_369,
+    # the pass (-46% on HEAD); 86,579,369 after the adversarial proofs (-7.2%);
+    # 58,292,306 with the trick order (-32.7%); 56,768,828 with the killer too
+    # (-34.4% on 86,579,369).
+    ("opposed13_real", 56_768_828,
      ["--corpus", "tests/corpus/opposed13_real.txt"]),
 ]
 
