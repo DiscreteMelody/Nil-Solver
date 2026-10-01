@@ -955,6 +955,10 @@ struct Tally {
     int nil_tricks = 0;       // the nil bidder alone
     int nil_side_tricks = 0;  // the nil bidder and its covering partner
     int opponent_tricks = 0;  // the other pair
+    // Tricks each seat wins on the replayed line, indexed by absolute seat.
+    // Sums to the tricks played.  Within a pair this is ONE optimal line's
+    // split, not something the objective pins; see MoveScore::seat_tricks.
+    int seat_tricks[4] = {0, 0, 0, 0};
 };
 
 struct Solution {
@@ -1085,6 +1089,15 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
 // card you may play, and here is what each one costs".  A game client scores
 // its own move list against it; a teaching tool shows the player which cards
 // were safe and which threw the nil away.
+// What one seat's bid comes to after a card, as MoveScore::seat_status reports
+// it.  The values are part of the C ABI (NIL_SEAT_STATUS_*) and of nil_cli's
+// output, so they are fixed.
+enum SeatStatus : int {
+    SEAT_NIL_MAKES = 0,  // bid nil, and the nil survives
+    SEAT_NIL_SET = 1,    // bid nil, and the nil is broken (or already was)
+    SEAT_NO_NIL = 2,     // did not bid nil
+};
+
 struct MoveScore {
     // The card, and the other legal cards that are the same move under a
     // different name.
@@ -1134,6 +1147,22 @@ struct MoveScore {
     // the moves the search would have been content to pick.  There is usually
     // more than one.
     bool is_best = false;
+
+    // Per seat, indexed by absolute seat (N, E, S, W): a SeatStatus read off
+    // `nils_set_mask` and the roles.  Filled in every mode, fast included,
+    // since the mask is.
+    int seat_status[4] = {SEAT_NO_NIL, SEAT_NO_NIL, SEAT_NO_NIL, SEAT_NO_NIL};
+
+    // Per seat, the tricks that seat wins down this card's line, INCLUDING the
+    // trick this card completes.  TRICKS_NOT_COMPUTED in MODE_FAST and on
+    // values-only rows, which never walk a line.
+    //
+    // A live nil that makes is pinned at 0.  Every other seat's count is one
+    // optimal line's witness: the objective pins each PAIR's total
+    // (nil_side_tricks / opponent_tricks) and not how a pair divides it, so a
+    // differently-ordered search may move a trick between partners.
+    int seat_tricks[4] = {TRICKS_NOT_COMPUTED, TRICKS_NOT_COMPUTED, TRICKS_NOT_COMPUTED,
+                          TRICKS_NOT_COMPUTED};
 };
 
 // Validates, then scores EVERY legal card at the root rather than just the best

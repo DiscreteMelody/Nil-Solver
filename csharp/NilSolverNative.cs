@@ -568,6 +568,23 @@ namespace NilSolver
         /// </para>
         /// </summary>
         public int NilsSetMask;
+
+        // nil_move::seat_status[4] and seat_tricks[4], written out as separate
+        // fields so the struct stays blittable (a ByValArray would force a
+        // marshalling copy of every row).  Indexed by absolute seat: N, E, S, W.
+        // Read them through NilMoveScore.SeatStatus / SeatTricks.
+
+        /// <summary>Seat outcome after this card, as a <see cref="NilSeatStatus"/> value.</summary>
+        public int SeatStatusNorth;
+        public int SeatStatusEast;
+        public int SeatStatusSouth;
+        public int SeatStatusWest;
+
+        /// <summary>Tricks each seat wins down this card's line; <see cref="NilSolverNative.TricksUnknown"/> when no line was walked.</summary>
+        public int SeatTricksNorth;
+        public int SeatTricksEast;
+        public int SeatTricksSouth;
+        public int SeatTricksWest;
     }
 
     /// <summary>

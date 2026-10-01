@@ -775,7 +775,27 @@ typedef struct nil_move {
      * reported once as nil_result::nils_set_mask_determined rather than
      * repeated on all thirteen of these. */
     int32_t nils_set_mask;
+    /* EACH SEAT'S OUTCOME after this card, indexed by NIL_SEAT_* (absolute
+     * seats, not the PBN-relative order of `seats`): one of
+     * NIL_SEAT_STATUS_*.  Read off nils_set_mask and the roles, so it is
+     * filled in every mode, fast included, and is pinned exactly when the mask
+     * is (see nil_result::nils_set_mask_determined). */
+    int32_t seat_status[4];
+    /* Tricks each seat wins down this card's line, indexed by NIL_SEAT_*, and
+     * INCLUDING the trick this card completes.  NIL_TRICKS_UNKNOWN under
+     * NIL_FLAG_FAST_MODE and NIL_FLAG_FAST_LINE, which walk no line.
+     *
+     * A live nil that makes reads 0 and that is pinned.  Every other entry is
+     * one optimal line's witness: the objective pins each PAIR's total
+     * (nil_side_tricks, opponent_tricks) but not how a pair divides it, so a
+     * differently-ordered search may move a trick between two partners. */
+    int32_t seat_tricks[4];
 } nil_move;
+
+/* Values of nil_move::seat_status. */
+#define NIL_SEAT_STATUS_NIL_MAKES 0 /* bid nil, and the nil survives */
+#define NIL_SEAT_STATUS_NIL_SET 1   /* bid nil, and the nil is broken (or already was) */
+#define NIL_SEAT_STATUS_NO_NIL 2    /* did not bid nil */
 
 /* Solve a position and report EVERY legal card rather than just the answer.
  *

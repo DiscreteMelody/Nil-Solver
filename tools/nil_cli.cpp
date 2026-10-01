@@ -142,8 +142,9 @@ void usage(const char* argv0) {
         << "  --tt-mb <n>             transposition table size in MiB         [512]\n"
         << "  --tt-stats              also report transposition table behaviour\n"
         << "  --moves                 score every legal card, not just the best:\n"
-        << "                          one line per card with whether the nil\n"
-        << "                          survives it and what it costs\n"
+        << "                          one line per card giving each seat's\n"
+        << "                          outcome (0 nil makes, 1 nil set, 2 no nil)\n"
+        << "                          and tricks, plus the pair totals\n"
         << "  --conjunction <seat>    with a bid on each side, answer only whether\n"
         << "                          the side holding <seat> can force ITS bid to\n"
         << "                          survive while the other's dies.  Implies fast\n"
@@ -693,6 +694,20 @@ int main(int argc, char** argv) {
             }
             std::cout << "\n";
         }
+        // One `move_seats=` line per card, same order as the `move=` lines:
+        // the card, then every seat as SEAT=STATUS/TRICKS in N, E, S, W order.
+        // STATUS is 0 (nil makes), 1 (nil set) or 2 (no nil); TRICKS is that
+        // seat's tricks down the card's line, -1 where no line was walked
+        // (fast mode, --values-only).  A separate key rather than more fields
+        // on `move=`, whose equals list has to stay last.
+        for (const nil::MoveScore& m : scored) {
+            std::cout << "move_seats=" << nil::card_to_string(m.card);
+            for (int seat = 0; seat < 4; ++seat) {
+                std::cout << ':' << nil::SEAT_CHARS[seat] << '=' << m.seat_status[seat] << '/'
+                          << m.seat_tricks[seat];
+            }
+            std::cout << "\n";
+        }
         if (tt_stats) {
             std::cout << "tt_probes=" << sol.tt_probes << "\n"
                       << "tt_hits=" << sol.tt_hits << "\n"
@@ -703,18 +718,30 @@ int main(int argc, char** argv) {
     } else {
         std::cout << nil::format_solution(pos, sol, opts) << "\n";
         if (list_moves) {
-            const bool fast = opts.mode == nil::MODE_FAST;
+            // One row per card: each seat's outcome and tricks as STATUS/TRICKS
+            // (status 0 = nil makes, 1 = nil set, 2 = no nil), then the pair
+            // totals.  The pair totals are pinned by the objective; how a pair
+            // splits its total between partners is one optimal line's witness.
+            const int ref = sol.nil_seat() < 0 ? 0 : sol.nil_seat();
+            const bool ns_is_side = (ref & 1) == 0;
+            auto tricks_text = [](int t) { return t < 0 ? std::string("?") : std::to_string(t); };
             std::cout << "Legal cards for " << nil::SEAT_CHARS[(pos.leader + pos.trick_len) & 3]
-                      << ":\n";
+                      << ":\n"
+                      << "        N      E      S      W      NS  EW\n";
             for (const nil::MoveScore& m : scored) {
                 std::cout << "  " << (m.is_best ? '*' : ' ') << ' '
-                          << nil::card_to_string(m.card) << "  "
-                          << (m.nils_set ? "nil FAILS " : "nil holds ");
-                if (!fast) {
-                    std::cout << "  " << nil::SEAT_CHARS[sol.nil_seat()] << '=' << m.nil_tricks
-                              << "  side=" << m.nil_side_tricks
-                              << "  opp=" << m.opponent_tricks;
+                          << nil::card_to_string(m.card) << "  ";
+                for (int seat = 0; seat < 4; ++seat) {
+                    std::string cell =
+                        std::to_string(m.seat_status[seat]) + "/" + tricks_text(m.seat_tricks[seat]);
+                    cell.resize(7, ' ');
+                    std::cout << cell;
                 }
+                const int ns = ns_is_side ? m.nil_side_tricks : m.opponent_tricks;
+                const int ew = ns_is_side ? m.opponent_tricks : m.nil_side_tricks;
+                std::string ns_text = tricks_text(ns);
+                ns_text.resize(4, ' ');
+                std::cout << ns_text << tricks_text(ew);
                 bool first = true;
                 for (nil::Hand h = m.equals; h;) {
                     const nil::CardId c = nil::take_lowest(h);
@@ -724,8 +751,10 @@ int main(int argc, char** argv) {
                 }
                 std::cout << "\n";
             }
-            std::cout << "  (* marks a card that achieves the position's value; cards after "
-                         "'=' are the\n   same move under another name)\n";
+            std::cout << "  (each seat is STATUS/TRICKS: status 0 = nil makes, 1 = nil set,\n"
+                         "   2 = no nil; tricks include the trick the card completes, ? where\n"
+                         "   no line was walked.  * marks a card that achieves the position's\n"
+                         "   value; cards after '=' are the same move under another name)\n";
         }
         if (tt_stats) {
             // `partial` is the one to read.  It counts probes that found the

@@ -3177,6 +3177,81 @@ int main(int argc, char** argv) {
               true);
     }
 
+    std::cout << "\nPer-seat outcome and tricks on --moves rows\n";
+    {
+        // MoveScore::seat_status is read off the mask, and seat_tricks off the
+        // same replay as the pair totals, so every row has to agree with both:
+        // status with the mask and roles, tricks with the pair totals, and a
+        // live bid's status with whether it took a trick on the line.
+        const Position pos = make_position("N:K.A.A.K 32.2..A .K.3.32 A.3.K2.", "N");
+        const int shapes[][4] = {
+            {nil::ROLE_OPPONENT, nil::ROLE_NIL, nil::ROLE_OPPONENT, nil::ROLE_COVER},
+            {nil::ROLE_NIL, nil::ROLE_NIL, nil::ROLE_COVER, nil::ROLE_OPPONENT},
+            {nil::ROLE_NIL, nil::ROLE_OPPONENT, nil::ROLE_NIL, nil::ROLE_OPPONENT},
+            {nil::ROLE_NIL_SET, nil::ROLE_OPPONENT, nil::ROLE_COVER, nil::ROLE_OPPONENT},
+        };
+        const char* names[] = {"single", "opposing", "partner", "nil-set"};
+        for (int k = 0; k < 4; ++k) {
+            nil::SeatRoles roles;
+            for (int seat = 0; seat < 4; ++seat) roles.role[seat] = static_cast<nil::SeatRole>(shapes[k][seat]);
+            for (int fast = 0; fast < 2; ++fast) {
+                nil::SearchOptions opts;
+                if (fast) opts.mode = nil::MODE_FAST;
+                nil::Solution sol;
+                std::vector<nil::MoveScore> rows;
+                std::string err;
+                const std::string tag = std::string("seat rows ") + names[k] + (fast ? " fast" : " full");
+                if (fast && k == 1) continue;  // fast mode takes one bidder
+                if (fast && k == 2) continue;
+                check(tag + ": solves", nil::solve_moves(pos, roles, opts, sol, rows, err), true);
+                bool status_ok = true, tricks_ok = true, live_ok = true;
+                for (const nil::MoveScore& m : rows) {
+                    int sum = 0, ns = 0;
+                    for (int seat = 0; seat < 4; ++seat) {
+                        const int want = !roles.is_nil(seat) ? nil::SEAT_NO_NIL
+                                         : (m.nils_set_mask & (1u << seat)) ? nil::SEAT_NIL_SET
+                                                                           : nil::SEAT_NIL_MAKES;
+                        if (m.seat_status[seat] != want) status_ok = false;
+                        sum += m.seat_tricks[seat];
+                        if ((seat & 1) == 0) ns += m.seat_tricks[seat];
+                        if (!fast && roles.role[seat] == nil::ROLE_NIL &&
+                            (m.seat_tricks[seat] > 0) != (m.seat_status[seat] == nil::SEAT_NIL_SET))
+                            live_ok = false;
+                        if (fast && m.seat_tricks[seat] != nil::TRICKS_NOT_COMPUTED) tricks_ok = false;
+                    }
+                    if (!fast) {
+                        const int side_ns = (roles.nil_seat() & 1) == 0 ? m.nil_side_tricks
+                                                                          : m.opponent_tricks;
+                        if (sum != pos.tricks_remaining() || ns != side_ns) tricks_ok = false;
+                    }
+                }
+                check(tag + ": status matches mask and roles", status_ok, true);
+                check(tag + ": seat tricks match pair totals", tricks_ok, true);
+                check(tag + ": a live bid is set iff it took a trick", live_ok, true);
+            }
+        }
+        // One row pinned by hand.  Opposing bids N and E, N on lead: DA lets
+        // E duck, and N wins the remaining three -- E makes, N is set.
+        nil::SeatRoles opposing;
+        for (int seat = 0; seat < 4; ++seat) opposing.role[seat] = static_cast<nil::SeatRole>(shapes[1][seat]);
+        nil::Solution sol;
+        std::vector<nil::MoveScore> rows;
+        std::string err;
+        nil::solve_moves(pos, opposing, nil::SearchOptions(), sol, rows, err);
+        const nil::MoveScore* da = nullptr;
+        for (const nil::MoveScore& m : rows) {
+            if (m.card == C("DA")) da = &m;
+        }
+        check("seat rows: DA is listed", da != nullptr, true);
+        if (da) {
+            check("seat rows: DA sets N", da->seat_status[nil::SEAT_NORTH], int(nil::SEAT_NIL_SET));
+            check("seat rows: DA keeps E", da->seat_status[nil::SEAT_EAST], int(nil::SEAT_NIL_MAKES));
+            check("seat rows: DA leaves S without a bid", da->seat_status[nil::SEAT_SOUTH],
+                  int(nil::SEAT_NO_NIL));
+            check("seat rows: E takes nothing after DA", da->seat_tricks[nil::SEAT_EAST], 0);
+        }
+    }
+
     std::cout << "\n";
     if (g_failures) {
         std::cout << "FAILURES: " << g_failures << "\n";

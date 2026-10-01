@@ -4199,6 +4199,20 @@ const QuickTrickStats& quick_trick_stats() { return quick_trick_stats_storage();
 
 void reset_quick_trick_stats() { quick_trick_stats_storage() = QuickTrickStats(); }
 
+// Each seat's outcome after a card, read off the row's broken-bid mask: a
+// seat with no bid is SEAT_NO_NIL, a bidder in the mask SEAT_NIL_SET (the mask
+// already carries bids the caller declared down), any other bidder
+// SEAT_NIL_MAKES.
+static void fill_seat_status(MoveScore& ms, const SeatRoles& roles) {
+    for (int s = 0; s < 4; ++s) {
+        if (!roles.is_nil(s)) {
+            ms.seat_status[s] = SEAT_NO_NIL;
+        } else {
+            ms.seat_status[s] = (ms.nils_set_mask & (1u << s)) ? SEAT_NIL_SET : SEAT_NIL_MAKES;
+        }
+    }
+}
+
 bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOptions& opts,
                  Solution& out, std::vector<MoveScore>& moves_out, std::string& err) {
     moves_out.clear();
@@ -4286,6 +4300,7 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
             // The same bid, down before a card is played, so every row names it.
             ms.nils_set_mask = out.nils_set_mask;
             ms.is_best = true;
+            fill_seat_status(ms, roles);
             moves_out.push_back(ms);
         }
         return true;
@@ -4668,6 +4683,7 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
         // Off the same replay as the counts, so a row's mask describes the very
         // line whose trick counts sit beside it.
         ms.nils_set_mask = tally.nils_set_mask;
+        for (int s = 0; s < 4; ++s) ms.seat_tricks[s] = tally.seat_tricks[s];
 
         // The first best move in canonical order is the one solve() would have
         // picked -- it enumerates from the bottom and replaces the incumbent
@@ -4675,6 +4691,10 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
         // point the same principal variation, already replay-checked above.
         if (out.pv.empty() && ms.value == best_value && opts.row_lines) out.pv = line;
     }
+
+    // Each seat's outcome, read off the row's mask.  Done here rather than in
+    // the three paths above so that every row gets it whichever path filled it.
+    for (MoveScore& ms : moves_out) fill_seat_status(ms, roles);
 
     // The position's own answer, taken from a best move rather than searched
     // for a second time.
@@ -4752,6 +4772,7 @@ bool replay_pv(const Position& pos, const std::vector<Play>& pv, const SeatRoles
         trick[trick_len++] = card;
         if (trick_len == 4) {
             const int winner = trick_winner(leader, trick, 4);
+            ++tally_out.seat_tricks[winner & 3];
             if (roles.is_nil(winner)) {
                 ++tally_out.nil_tricks;
                 // The COUNT of bids down, not the count of tricks: a seat that

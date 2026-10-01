@@ -27,6 +27,20 @@ using System.Text;
 namespace NilSolver
 {
     /// <summary>
+    /// What one seat's bid comes to after a card. The numeric values are the C
+    /// ABI's <c>NIL_SEAT_STATUS_*</c> and nil_cli's 0/1/2, so they are fixed.
+    /// </summary>
+    public enum NilSeatStatus
+    {
+        /// <summary>Bid nil, and the nil survives.</summary>
+        NilMakes = 0,
+        /// <summary>Bid nil, and the nil is broken (or already was).</summary>
+        NilSet = 1,
+        /// <summary>Did not bid nil.</summary>
+        NoNil = 2
+    }
+
+    /// <summary>
     /// One legal card at the root, and what playing it leads to.
     ///
     /// This is the DDS-shaped answer -- not "what should I play" but "here is
@@ -114,6 +128,32 @@ namespace NilSolver
         /// (0 North, 1 East, 2 South, 3 West).</summary>
         public bool SetsNilAt(int seat) => (NilsSetMask & (1 << (seat & 3))) != 0;
 
+        /// <summary>
+        /// Each seat's outcome after this card, indexed by absolute seat: 0 North,
+        /// 1 East, 2 South, 3 West. Filled in in every mode, and pinned exactly
+        /// when <see cref="NilsSetMask"/> is.
+        /// </summary>
+        public IReadOnlyList<NilSeatStatus> SeatStatus { get; init; } =
+            new[] { NilSeatStatus.NoNil, NilSeatStatus.NoNil, NilSeatStatus.NoNil, NilSeatStatus.NoNil };
+
+        /// <summary>
+        /// Tricks each seat wins down this card's line, indexed by absolute seat,
+        /// INCLUDING the trick this card completes.
+        /// <see cref="NilSolverNative.TricksUnknown"/> after a fast solve or with
+        /// <c>NilFlags.FastLine</c>, which walk no line.
+        /// <para>
+        /// A live nil that makes reads 0 and that is pinned. Every other entry is
+        /// one optimal line's witness: the objective pins each pair's total
+        /// (<see cref="NilSideTricks"/>, <see cref="OpponentTricks"/>) but not how
+        /// the pair divides it between partners.
+        /// </para>
+        /// </summary>
+        public IReadOnlyList<int> SeatTricks { get; init; } = new[]
+        {
+            NilSolverNative.TricksUnknown, NilSolverNative.TricksUnknown,
+            NilSolverNative.TricksUnknown, NilSolverNative.TricksUnknown
+        };
+
         /// <summary>Every rank this row stands for, this card's own included, ascending.</summary>
         public IEnumerable<int> Expand() => new[] { Rank }.Concat(EqualRanks).OrderBy(r => r);
 
@@ -136,7 +176,9 @@ namespace NilSolver
             NilSideTricks = NilSideTricks,
             OpponentTricks = OpponentTricks,
             IsBest = IsBest,
-            NilsSetMask = NilsSetMask
+            NilsSetMask = NilsSetMask,
+            SeatStatus = SeatStatus,
+            SeatTricks = SeatTricks
         };
 
         /// <summary>"K♠", "T♥", "2♣" — for display. <see cref="ToString"/> is the
@@ -174,7 +216,16 @@ namespace NilSolver
                 NilSideTricks = m.NilSideTricks,
                 OpponentTricks = m.OpponentTricks,
                 IsBest = m.IsBest != 0,
-                NilsSetMask = m.NilsSetMask
+                NilsSetMask = m.NilsSetMask,
+                SeatStatus = new[]
+                {
+                    (NilSeatStatus)m.SeatStatusNorth, (NilSeatStatus)m.SeatStatusEast,
+                    (NilSeatStatus)m.SeatStatusSouth, (NilSeatStatus)m.SeatStatusWest
+                },
+                SeatTricks = new[]
+                {
+                    m.SeatTricksNorth, m.SeatTricksEast, m.SeatTricksSouth, m.SeatTricksWest
+                }
             };
         }
 

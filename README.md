@@ -301,20 +301,36 @@ still be broken", which is the question a game client asks on every trick, and
 ### Every card, not just the answer
 
 `nil_solve_moves` fills in the same `nil_result` and additionally writes one
-`nil_move` row per legal card: the card, whether the nil fails after it, its
-trick counts in full mode, whether it is one of the best, and the other cards it
+`nil_move` row per legal card: the card, which bids fail after it, its trick
+counts in full mode, whether it is one of the best, and the other cards it
 stands for. Deliberately DDS-shaped, because the question is the same one and a
 caller that already unpacks `futureTricks` rows can unpack these.
 
+Each row also carries every seat's outcome and tricks, indexed by absolute seat
+(N, E, S, W): `seat_status` is `0` for a nil that makes, `1` for a nil that is
+set, `2` for a seat that did not bid nil, and `seat_tricks` is that seat's
+tricks down the card's line. With a bid on each side this is the only part of
+the row that tells "this card sets MY nil" from "this card sets THEIRS".
+
 ```
+$ nil_cli --pbn 'N:K.A.A.K 32.2..A .K.3.32 A.3.K2.' --leader N --seats 0 0 2 3 --moves
 Legal cards for N:
-  * S2  nil FAILS   N=2  side=3  opp=1
-  * SQ  nil FAILS   N=2  side=3  opp=1   = SK
-  * HA  nil FAILS   N=2  side=3  opp=1
+        N      E      S      W      NS  EW
+  * HA  1/1    1/2    2/0    2/1    1   3
+    DA  1/3    0/0    2/0    2/1    3   1
+  * CK  1/1    1/2    2/0    2/1    1   3
 ```
 
-`nil_cli --moves` prints exactly that, and is the fastest way to check a
-position by hand before wiring it into anything.
+Each cell is `status/tricks`. The pair totals (`NS`, `EW`) are pinned by the
+objective; how a pair divides its total between partners is one optimal line's
+witness, except that a live nil that makes is always 0. Tricks read `?` (`-1`
+in `--compact` and the ABI) in fast mode and under `--values-only`, which walk no
+line; the status is filled in either way. `--compact` adds one
+`move_seats=HA:N=1/1:E=1/2:S=2/0:W=2/1` line per card beside the existing
+`move=` lines.
+
+`nil_cli --moves` is the fastest way to check a position by hand before wiring
+it into anything.
 
 Rows come one per equivalence class rather than one per card. Holding SK and SQ
 with the jack gone, the two are one move under two names, and the `equal_ranks`

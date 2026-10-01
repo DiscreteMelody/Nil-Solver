@@ -201,6 +201,10 @@ std::int32_t solve_impl(const char* pbn, std::int32_t leader, const char* curren
     return NIL_OK;
 }
 
+static_assert(nil::SEAT_NIL_MAKES == NIL_SEAT_STATUS_NIL_MAKES &&
+                  nil::SEAT_NIL_SET == NIL_SEAT_STATUS_NIL_SET &&
+                  nil::SEAT_NO_NIL == NIL_SEAT_STATUS_NO_NIL,
+              "nil_move::seat_status is copied straight from MoveScore::seat_status");
 static_assert(nil::TRICKS_NOT_COMPUTED == NIL_TRICKS_UNKNOWN,
               "the C ABI's unknown-trick sentinel must match the core's");
 // The role numbers are the wire format, so the two spellings of them must not
@@ -338,6 +342,10 @@ NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve_moves(
         dst.nil_side_tricks = src.nil_side_tricks;
         dst.opponent_tricks = src.opponent_tricks;
         dst.is_best = src.is_best ? 1 : 0;
+        for (int seat = 0; seat < 4; ++seat) {
+            dst.seat_status[seat] = src.seat_status[seat];
+            dst.seat_tricks[seat] = src.seat_tricks[seat];
+        }
     }
     return NIL_OK;
 }
