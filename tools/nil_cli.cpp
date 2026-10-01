@@ -99,6 +99,12 @@ void usage(const char* argv0) {
         << "                          answer and PV, more nodes)\n"
         << "  --no-killer-order       do not try the last cutting move at the same\n"
         << "                          depth second (same answer and PV, more nodes)\n"
+        << "  --no-shed-order         --secondary min: order seats with no live bid\n"
+        << "                          by the trick order, not the shed order (same\n"
+        << "                          answer and PV, more nodes)\n"
+        << "  --shed-single-attack    --secondary min: an opponent on lead against a\n"
+        << "                          single nil tries 6b's attacking lead first, as\n"
+        << "                          in the default direction (same answer and PV)\n"
         << "  --no-tight-pv           re-derive each line step under the caller's window\n"
         << "                          rather than a (v-1, v+1) one (same answer and PV)\n"
         << "  --no-tt-two-bounds      keep one bound per table entry (same answer and PV)\n"
@@ -380,6 +386,10 @@ int main(int argc, char** argv) {
             opts.trick_order = false;
         } else if (arg == "--no-killer-order") {
             opts.killer_order = false;
+        } else if (arg == "--no-shed-order") {
+            opts.shed_order = false;
+        } else if (arg == "--shed-single-attack") {
+            opts.shed_single_attack = true;
         } else if (arg == "--no-doom-charge") {
             opts.doom_charge = false;
         } else if (arg == "--no-live-order") {

@@ -418,9 +418,10 @@ namespace NilSolver
         /// <summary>
         /// Order moves by the one nil seat rather than by the bids still live, do not
         /// have a seat with no live bid win tricks cheaply first, and do not order such a
-        /// seat by the trick-oriented score of the Sept 2026 ordering study -- the ordering
-        /// from before the Sept 2026 pass, whole. Ordering only; same values and, in full
-        /// mode, the same line. A control arm.
+        /// seat by the trick-oriented score of the Sept 2026 ordering study -- nor, with
+        /// <see cref="MinimiseOwnTricks"/>, by the shed order of the Oct 2026 study, which
+        /// rides on it -- the ordering from before the Sept 2026 pass, whole. Ordering only;
+        /// same values and, in full mode, the same line. A control arm.
         /// </summary>
         NoLiveOrder = 0x40000000u,
 

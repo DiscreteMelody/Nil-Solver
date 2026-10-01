@@ -892,6 +892,44 @@ struct SearchOptions {
     // --no-killer-order (CLI and nil_bench).
     bool killer_order = true;
 
+    // In the MINIMISE direction (minimise_own_tricks), order every seat that
+    // holds no live bid by the shed order instead of the trick order: the
+    // losing card first, highest first, then the cheapest winner; on a void
+    // the highest card that does not win; on lead a score that leads low,
+    // away from an opponent's void and into partner's.  See shed_order_moves
+    // in search.cpp for the rules and the reasons.  MODE_FULL only -- the nil
+    // question has no direction -- and it rides on trick_order.
+    //
+    // Measured (Oct 2026 study, per-card full scoring, values-only rows,
+    // minimise direction, against --no-shed-order): 32 thirteen-card deals of
+    // every shape 7,912.7M -> 631.6M nodes (-92.0%) and 1,101.5 -> 63.0 s
+    // (-94.3%), all 32 faster, median 9.7 -> 0.8 s; 40 held-out 13-card
+    // deals 15,675.3M -> 830.1M (-94.7%) and 1,922.6 -> 70.1 s (-96.4%), all
+    // 40 faster, the slowest 1,043.5 -> 14.1 s; 200 positions at 10-12 cards
+    // -87.7% nodes; 1,500 at 4-9 cards -71.6%.
+    // MTD(f) probes unchanged: the saving is all nodes per probe.
+    //
+    // Ordering only: same values, verdicts and principal variations.  Off with
+    // --no-shed-order (CLI and nil_bench); NIL_FLAG_NO_LIVE_ORDER turns it off
+    // with the rest of the ordering, as it does trick_order.
+    bool shed_order = true;
+
+    // Under the shed order, an opponent on lead against a SINGLE nil tries the
+    // shed order's own first card rather than 6b's attacking lead.  6b stays
+    // first against exactly one live bid in the two-bid shapes (opposed and
+    // partner nils), and everywhere in the default direction.
+    //
+    // Where 6b fired in 13-card searches, its card cut first only 58% of the
+    // time against 80% for the shed order's own lead.  Taking it off the front
+    // against a single nil: -36% of nodes on six 13-card deals, -5.3% on 32
+    // (14 better, 4 worse); putting it back on top of the rest, +1.3% over 44
+    // (1 better, 7 worse).  In the two-bid shapes taking it off measured -0.6%
+    // at 13 cards and -3.7%/+4.2% on two 10-12-card sets, so it stays there.
+    //
+    // True puts 6b back in front for single-nil shapes too (the control arm,
+    // --shed-single-attack).  Ordering only.
+    bool shed_single_attack = false;
+
     // Charge a live bid's primary the moment nil_must_take_a_trick proves it
     // breaks down every line, instead of on the trick where it happens (see
     // charge_for_mask in search.cpp).  The value is unchanged -- the primary is

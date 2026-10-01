@@ -479,8 +479,12 @@ extern "C" {
  * trick-oriented score of the Sept 2026 ordering study -- all turned off,
  * restoring the ordering from before the performance pass of Sept 2026.  The
  * study's order has no bit of its own (the word is full); nil_cli and
- * nil_bench switch it alone with --no-trick-order.  Ordering only: same
- * values; in full mode, the same principal variation.  A control arm. */
+ * nil_bench switch it alone with --no-trick-order.  Under
+ * NIL_FLAG_MINIMISE_OWN_TRICKS in full mode the same seats are ordered by the
+ * shed order of the Oct 2026 minimise-direction study instead, which rides on
+ * the trick order and so goes off with it here; --no-shed-order switches it
+ * alone.  Ordering only: same values; in full mode, the same principal
+ * variation.  A control arm. */
 #define NIL_FLAG_NO_LIVE_ORDER 0x40000000u
 
 /* Do not settle a position by the ADVERSARIAL proofs: that the nil side can

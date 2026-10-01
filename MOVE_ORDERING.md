@@ -30,6 +30,14 @@ ordering study below):
 A node with one legal move left after the equivalence collapse orders nothing
 (free, node-identical, and common deep in the tree).
 
+**In the minimise direction** (`--secondary min`, full mode) the scored list
+for a seat with no live bid is the **shed order** instead (`shed_order_moves`,
+the Oct 2026 study below): the highest losing card first, then the cheapest
+winner; on a void the highest card that does not win; on lead a score that
+leads low, away from an opponent's void and into partner's. 6b's attack stays
+in front only in the two-bid shapes. `--no-shed-order` switches it off;
+`--shed-single-attack` puts 6b back in front against a single nil.
+
 **Suit mixing** (item 35, DDS §5) now only runs where the old mechanism does:
 one card from each present suit taken in rotation, then the canonical tail,
 only where the seat has a free choice of suit. The tail is deliberately not
@@ -49,6 +57,9 @@ scores 3.
 | Cover partner of a live bid | trick score (cash a top card; never lead toward the nil's top card) | trick score (overtake a winning nil) | trick score |
 | Opponents of a live bid | **6b** attacking lead first, then the trick score | trick score (leave a winning nil alone unless its partner can still overtake) | trick score |
 | No live bid anywhere near | trick score | trick score | trick score |
+
+In the minimise direction every "trick score" cell above is the shed order,
+and the opponents' 6b is in front only when the live bid is one of two.
 
 With `--no-trick-order` the pre-study table applies: the cover partner has no
 rule, opponents have 6b on lead and, in full mode only, `win_order`'s cheapest
@@ -284,6 +295,265 @@ third of wall time. See "Not done" below.
   ruff threats that ignore the nil) was neutral or worse in the solver.
 - Windows/MSVC timings; the shed (`--secondary min`) direction beyond the
   corpus and unit differentials.
+
+---
+
+## The minimise direction (Oct 2026)
+
+Everything above was designed and measured in the default direction, where
+each pair takes what it can. Under `minimise_own_tricks` (`--secondary min`,
+`NIL_FLAG_MINIMISE_OWN_TRICKS`) every pair sheds what it can instead: the nil
+side still protects the nil first, but past that BOTH pairs want to take as
+few tricks as they can -- and the opponents' two interests (break the nil, then
+hand the nil side tricks) point the same way as their own shedding. The order
+was never re-examined for that game. This study did, with the exact solver as
+the oracle, and replaced the order for every seat that holds no live bid.
+
+### What the minimise direction did, before
+
+- **The trick order ran in both directions.** `trick_order_moves` (cash a top
+  card, cheapest sure winner, lead toward partner's top card) ordered every
+  seat without a live bid whatever the direction; nothing in the ordering read
+  `minimise_own_tricks`. 6b's attack went first for an opponent on lead against
+  one live bid; the killer went second; the live bidder kept 6a/6d and the suit
+  rotation; the per-card rows were scored in the trick order (Q4).
+- **The double-dummy engine never runs here.** The handoff needs the far side's
+  tricks to carry a positive weight (`configure`), so once the nil breaks the
+  rest of the hand -- a misere trick game, each pair shedding -- is searched by
+  the general search, with the trick order. On 13-card single-nil deals that
+  region was **49% of the nodes with a choice** and 44% of the work spent on
+  failing moves before a cut.
+- So the minimise direction was about **16x slower than the default direction**
+  on the same deals (163.6M against 9.9M nodes on six of them), and its median
+  13-card deal took ~11 s per-card.
+
+### Method
+
+The tools are outside the branch, per the project's preference.
+
+1. **A generator** (fixed seeds) reaching every position by legal play from a
+   13-card deal: 1-13 cards, 0-3 cards on the trick, every seat to play, every
+   leader and every current winner that play produces; single nil, dead nil,
+   partner nils (both live, one broken), one bid per side in both leanings;
+   uniform, nil-ish and eight pathological deal styles (high cards in one hand,
+   high cards on one side, two-suiters, voids, the nil with top spades, the nil
+   with only low cards, a spade-heavy hand, a weak cover). A nil the generated
+   play breaks becomes ROLE_NIL_SET; the solver's own validator accepts every
+   position.
+2. **Static labels.** Every legal card of each position scored by the
+   per-card call (about 16,000 positions, 1-12 cards), best by the packed value
+   -- so the nil outcome takes precedence and the trick count breaks ties --
+   then where each order puts the first optimal card.
+3. **In-search samples.** An instrumented build counted, per node class (role
+   of the seat to play, lead/follow/void, the band the window asks about,
+   tricks left), how often a node cut and whether its first move did, and
+   sampled nodes stratified by tricks left. Offline, every legal move of every
+   sample was searched under that node's own window with a cold table, so any
+   candidate order is scored exactly: the cost of the moves it tries up to the
+   first one that cuts, against the cheapest cutting move. 48,000 samples.
+4. **The solver A/B.** One binary, the arm toggled at run time, positions
+   interleaved, every per-card row of every arm compared on every run. Node
+   counts decide; wall time confirms.
+
+### What the data said
+
+**The trick order is backwards here.** On the same 3,000 positions labelled in
+both directions, the share of non-trivial positions whose first card is
+optimal:
+
+| seat | trick order, default direction | trick order, minimise | shed order, minimise |
+|---|---:|---:|---:|
+| no live bid anywhere | 80.1% | 42.4% | 74.0% |
+| opponent of a live bid | 69.2% | 42.5% | 71.0% |
+| partner of a live bid | 69.3% | 34.2% | 69.9% |
+| live bidder (6a/6d, unchanged) | 59.5% | 76.6% | 76.6% |
+
+Following suit with no live bid it put an optimal card first on **9.5%** of
+positions -- canonical ascending order did better. In the search, the share of
+cut nodes whose first move cut was 61-73% for every non-bidder class on 13-card
+deals, against 94-98% for the same classes in the default direction, and the
+second move -- the killer's slot -- made 21% of all cuts.
+
+**Both pairs are the same player.** Split by which pair is to play, the trick
+order scored 28.4% and 26.0% best-first in the misere region, the shed order
+79.9% and 81.7%; on 1,500 positions at 4-9 cards the shed order removed 71.4%
+of the nodes where the nil side was to play and 71.8% where the opponents were.
+Nothing in the rules below needs to know which pair it is ordering.
+
+**What the solver wanted, in the order the evidence came in:**
+
+1. **Following suit: the highest losing card first** -- the nil bidder's own
+   6a, for everyone. Then the winners, **cheapest first**.
+2. **Void: shed the highest card that does not win**, ranks compared across
+   suits; then the winning cards (ruffs, overruffs), highest first.
+3. **On lead, a score**, and it matters more than anything else here: with
+   every feature removed (plain lowest card first) 13-card nodes rose 71%, and
+   the trick order's lead score in its place cost 43% (32 deals each, all 32
+   worse). +2 the lowest
+   card held in a suit; -3 the suit's top outstanding card; -3 a suit an
+   opponent is void in (it discards its own danger on it); +2 a suit partner is
+   void in; +1 a singleton (it makes a void); -1 a spade; ties to the lower
+   card.
+4. **6b's attack, against a single nil, comes off the front.** Where it fired,
+   its card cut first only 58% of the time at 13 cards (the shed order's own
+   lead: 80%); removing it was -36% of nodes on six 13-card deals and -5.3% on
+   32 (geo-mean 0.90, 14 better / 4 worse). In the two-bid shapes it stays:
+   removing it there was -0.6% at 13 cards (25 deals, 6/2) and -3.7% and +4.2%
+   on two 10-12-card sets -- no case for a change.
+
+**And the rules that won small and lost big.** The first version of the order
+was more aggressive, and it was the better order on everything up to 12 cards:
+
+| change, against the first version | 4-9 cards (400) | 10-12 cards (60) | 13 cards |
+|---|---:|---:|---:|
+| no "dump high on partner's trick" | +10.3% | +1.3% | -1.7% (32 deals, 18/9) |
+| winners cheapest first, not highest | +0.8% | +5.7% | -8.7% (32, 21/7) |
+| no spade first when dumping | +1.0% | -0.2% | -5.8% (32, 20/1) |
+| all three, with 6b gated (C5) | +8.1% | +2.1% | **-25.5% (88 deals, 75/10)** |
+| C5 only above 8 tricks left (C6) | +1.1% | +3.6% | -20.0% (88, 70/10) |
+| the final order (C5 without the cover rescue) | +8.3% | **-1.3%** | **-24.2% (32)** |
+
+The sign flips with the hand size, and it is the 13-card sign that ships: the
+project's rule is never to trade 13-card speed for small-hand speed, and the
+small positions it costs are cheap in absolute terms. The static labels side
+with the aggressive version too (it puts the optimal card first more often) --
+the Sept 2026 lesson again: **first-move accuracy is not the metric.**
+
+**The cover's rescue, measured and dropped.** "Partner is a live nil holding the
+trick: overtake it first, cheapest" is the obvious rule for a cover, and it
+lost: removing it was -6.3% of 13-card nodes (44 deals, 16 better, 2 worse) and
+-2.9% at 10-12 cards. Letting the nil keep the trick is a cheap move to refute -- the
+next boundary answers a broken nil in one node -- so trying it first costs
+almost nothing, and the shed order's next card is the cheapest overtake anyway.
+
+### Counterexamples worth keeping
+
+- **"Partner holds it, so dump high" fails when a later opponent is forced to
+  overtake.** `N:6..654. J95... ..AQJ. 73...74`, East led `S4`, South
+  discarded: West's `S3` keeps partner's four winning only until North, holding
+  nothing but `S6`, must take it; `S7` takes the trick for East-West. Patching
+  that one case (a forced later opponent) recovered 1.2% at 10-12 cards, but the
+  whole rule lost at 13 cards and is out.
+- **Who leads next.** In all six fourth-seat failures of the dump rule in the
+  labelled set, the same pair takes the trick with either card: what the
+  solver's choice changes is which hand leads the next trick and which card
+  stays behind. No cheap static proxy for "the right hand on lead" was found.
+- **Leads are locally fragile.** Swapping one card of a lead position with one
+  of another hand's (814 non-trivial pairs) flips whether the shed order's first
+  card is optimal 22.6% of the time (trick order: 29.6%). The lead score is right
+  on 58-77% of positions by seat; one more feature (lead low where an opponent
+  must overtake) cost +8.3% at 13 cards, and a linear score learned over 13
+  features did not beat it out of sample except on opponents' leads (97 test
+  samples, never tried in the solver).
+- **The opposed shapes gain least** (-58% at 4-9 cards, -72% at 10-12, against
+  -73%/-90% for a single nil), and the worst regressions are there: two 0.2 s
+  positions at 11-12 cards with three cards on the trick lose 36-40%.
+
+### The other heuristics, in this direction
+
+| heuristic | in the minimise direction | evidence | verdict |
+|---|---|---|---|
+| `trick_order_moves` | reversed | 9-43% best-first; 61-73% first-move cuts | **replaced** by `shed_order_moves` |
+| 6b first, single nil | weak, costly | right 58% when it fires; removing it -36% (6 deals), -5.3% (32), geo 0.90 | **made conditional**: off for a single nil |
+| 6b first, two bids | neutral | -0.6% at 13 cards, +4% at 10-12 | **kept** |
+| killer second | still pays | removing it +4.1% (32 deals, 2/19) and +4.2% (44, 2/23) at 13 cards | **kept** |
+| rows best-first (Q4) | neutral | -0.5% / +0.6% / -0.0% at 13 cards | **kept**, follows the new order |
+| live bidder 6a/6d | excellent | 97-99.8% first-move cut; 76.6% best-first | **kept** |
+| suit rotation (live bidder) | marginal | removing it +0.1% (4-9 cards) / +0.75% (10-12) | **kept** |
+| `win_order`, C5 | inert | superseded / off | unchanged |
+
+The default direction and MODE_FAST are untouched, node for node (the unit test
+pins both): MODE_FAST asks the nil question, which has no direction.
+
+### Results
+
+Per-card full scoring (`solve_moves`, values-only rows), one binary, the arm
+toggled at run time, positions interleaved, the engine's table cleared per
+solve, every row of every arm compared (0 mismatches anywhere). Linux GCC 13
+Release.
+
+**Thirteen cards, the tuning set** (32 deals: 8 uniform, 4 nil-ish, 4
+pathological single nils, 6 partner nils, 6 one bid per side, 4 dead nils),
+the order built up one stage at a time:
+
+| stage | nodes | cumulative | incremental | wall | median | < 1 s |
+|---|---:|---:|---:|---:|---:|---:|
+| HEAD | 7,912.7M | | | 1,101.5 s | 9.73 s | 3 |
+| shed order, first version | 833.0M | -89.5% | -89.5% | 85.1 s | 1.18 s | 16 |
+| + 6b off the front, single nil | 793.3M | -90.0% | -4.8% | 78.8 s | 1.15 s | 16 |
+| + no spade first when dumping | 748.5M | -90.5% | -5.6% | 75.5 s | 1.20 s | 15 |
+| + no dumping, winners cheapest first | 656.9M | -91.7% | -12.2% | 67.0 s | 0.99 s | 16 |
+| **+ no cover rescue (shipped)** | **631.6M** | **-92.0%** | -3.9% | **63.0 s (-94.3%)** | **0.80 s** | **18** |
+
+All 32 deals faster (the least, x0.33); the slowest, a dead nil whose whole
+hand is misere tail, 339 s -> 20.5 s. MTD(f) probes 811 -> 812: the saving is
+all nodes per probe.
+
+**Thirteen cards, held out** (40 deals never used for tuning: 14 uniform, 6
+nil-ish and pathological, 7 partner nils, 7 one bid per side, 6 dead nils; two
+reps, best time), `--no-shed-order` against the default and against
+`--shed-single-attack`:
+
+| arm | nodes | wall | median | < 1 s | > 5 s | slowest |
+|---|---:|---:|---:|---:|---:|---:|
+| HEAD (`--no-shed-order`) | 15,675.3M | 1,922.6 s | 5.00 s | 8 | 20 | 1,043.5 s |
+| shed order, 6b still first (`--shed-single-attack`) | 838.2M (-94.7%) | 72.1 s (-96.3%) | 0.72 s | 22 | 5 | 15.2 s |
+| **shipped** | **830.1M (-94.7%)** | **70.1 s (-96.4%)** | **0.72 s** | **22** | **5** | **14.1 s** |
+
+All 40 faster; geo-mean node ratio 0.125; the least improved x0.67 (an
+opposed deal, 4.6 -> 2.3 s); the slowest before, a single nil with voids,
+1,043.5 s -> 14.1 s. By shape: single nil -96.2% of nodes, partner nils
+-82.4%, one bid per side -82.9%, dead nil -82.6% (every deal better in each).
+The 6b gate on its own, on this set: -1.0% nodes, -2.7% wall.
+
+**Smaller positions** (default against `--no-shed-order`, two reps):
+
+| set | nodes | wall | better / worse |
+|---|---:|---:|---:|
+| 200 at 10-12 cards, every shape, 0-3 on the trick | 2,553M -> 314M (-87.7%) | 309.3 -> 29.0 s (-90.6%) | 193 / 5 |
+| 1,500 at 4-9 cards | 123.4M -> 35.1M (-71.6%) | 12.65 -> 3.09 s (-75.5%) | 1,285 / 131 |
+| 1,500 at 1-3 cards | 25.5k -> 22.6k (-11.2%) | below the timer | 263 / 47 |
+
+At 10-12 cards, 158 -> 195 of the 200 under a second. The worst regressions
+there: two opposed positions with three cards on the trick, 0.16 -> 0.25 s and
+0.19 -> 0.26 s (x1.40, x1.36 nodes); then x1.15, x1.14 and x1.13.
+
+**By position type** (the 1,500 at 4-9 cards, nodes): nil side to play -71.4%,
+opponents -71.8%; 0/1/2/3 cards on the trick -74.5/-71.7/-61.0/-70.2%; single
+nil -73.1%, dead nil -76.6%, partner nils -66.9%, one bid per side -57.6%; the
+seat with no live bid on lead / following / void -74/-81/-76%, an opponent of
+a live bid -74/-66/-57%, its partner -75/-73/-64%; spades unbroken -73.6%,
+broken -67.8%.
+
+**In the search** (18 13-card deals, instrumented): first-move cuts 75.9% ->
+95.8% of cut nodes, the second move's share 21.3% -> 3.6%, moves tried per
+node 1.81 -> 1.66; nodes spent on failing moves before a cut, counted at every
+level, -94%.
+
+
+### Cost
+
+The shed order is cheaper than the order it replaces. Timed over 44,857
+in-search states sampled from the minimise direction (a seat with no live bid
+to play), per call, trick order -> shed order: lead 81.0 -> 54.7 ns, following
+38.6 -> 26.6 ns, void 64.7 -> 52.3 ns, all 63.0 -> 48.6 ns. Following suit is
+two masks; the rest is the insertion sort the trick order already used. Node
+throughput on the 32 thirteen-card deals rose from 7.2M to 10.0M nodes/s; the
+cheaper call is only ~15 ns of a 100-140 ns node, so most of that is the
+different node mix, which was not broken down further.
+
+### Not done
+
+- **A misere double-dummy engine.** The engine's handoff is off in this
+  direction, so the misere tail after a broken nil is general search. It is
+  still 56% of the 13-card nodes with a choice under this order (62% before). An engine for
+  "each pair sheds" (a DDS core with the objective negated, and its own bounds)
+  is the next large lever here, and not an ordering question.
+- **Who leads next.** The largest class of remaining failures; no cheap proxy
+  found.
+- **Opponents in the broken band** remain the weakest class (78% first-move
+  cut, mostly all-nodes).
+- Windows/MSVC timings.
 
 ---
 

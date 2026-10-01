@@ -1859,6 +1859,127 @@ int main(int argc, char** argv) {
               static_cast<long long>(got.nodes), static_cast<long long>(want.nodes));
     }
 
+    std::cout << "Shed order control arm (minimise direction)\n";
+    {
+        // The Oct 2026 study's shed order (shed_order_moves in search.cpp) and
+        // its single-nil attack gate are ordering only, so with them on, off,
+        // and with 6b put back in front, every per-card row and the position's
+        // line must be identical in the minimise direction -- over the same
+        // sweep of 7-card deals and six seat shapes as the trick order's arm
+        // above, plus the dead-nil shape, where the whole hand is the misere
+        // trick game the order was built for.  MODE_FAST ignores the direction
+        // and must ignore the order with it: the verdict AND the node count
+        // are pinned.  And in the default direction the order must not exist:
+        // node for node, with the engine's table cleared so the two full-mode
+        // counts do not depend on which ran first.
+        Rng rng;
+        rng.state = 0xD1B54A32D192ED03ull;
+        int positions = 0;
+        int rows_differ = 0;
+        int lines_differ = 0;
+        int attack_rows_differ = 0;
+        int attack_lines_differ = 0;
+        int fast_differ = 0;
+        int max_nodes_differ = 0;
+        long long nodes_on = 0;
+        long long nodes_off = 0;
+        long long nodes_attack = 0;
+        auto row_text = [](const std::vector<nil::MoveScore>& ms) {
+            std::string t;
+            for (const nil::MoveScore& m : ms) {
+                t += nil::card_to_string(m.card) + ":" + std::to_string(m.value) + ":" +
+                     std::to_string(m.nils_set_mask) + ":" + std::to_string(m.nil_tricks) + ":" +
+                     std::to_string(m.nil_side_tricks) + ":" + std::to_string(m.opponent_tricks) +
+                     " ";
+            }
+            return t;
+        };
+        for (int deal = 0; deal < 8; ++deal) {
+            const Position pos = random_deal(rng, 7);
+            for (int shape = 0; shape < 7; ++shape) {
+                nil::SeatRoles roles;
+                if (shape < 4) {
+                    roles = nil::seat_roles_from_nil(shape, false);
+                } else if (shape == 4) {
+                    const nil::SeatRole pair[4] = {nil::ROLE_NIL, nil::ROLE_OPPONENT, nil::ROLE_NIL,
+                                                   nil::ROLE_OPPONENT};
+                    for (int s2 = 0; s2 < 4; ++s2) roles.role[s2] = pair[s2];
+                } else if (shape == 5) {
+                    const nil::SeatRole opp[4] = {nil::ROLE_NIL, nil::ROLE_NIL, nil::ROLE_COVER,
+                                                  nil::ROLE_OPPONENT};
+                    for (int s2 = 0; s2 < 4; ++s2) roles.role[s2] = opp[s2];
+                } else {
+                    roles = nil::seat_roles_from_nil(deal & 3, true);
+                }
+                SearchOptions on;
+                on.minimise_own_tricks = true;
+                SearchOptions off = on;
+                off.shed_order = false;
+                SearchOptions attack = on;
+                attack.shed_single_attack = true;
+                Solution a;
+                Solution b;
+                Solution c;
+                std::vector<nil::MoveScore> ma;
+                std::vector<nil::MoveScore> mb;
+                std::vector<nil::MoveScore> mc;
+                std::string err;
+                if (!nil::solve_moves(pos, roles, on, a, ma, err) ||
+                    !nil::solve_moves(pos, roles, off, b, mb, err) ||
+                    !nil::solve_moves(pos, roles, attack, c, mc, err)) {
+                    std::cerr << "test bug: solve_moves failed: " << err << "\n";
+                    std::exit(70);
+                }
+                ++positions;
+                if (row_text(ma) != row_text(mb)) ++rows_differ;
+                if (nil::format_pv_compact(a) != nil::format_pv_compact(b)) ++lines_differ;
+                if (row_text(ma) != row_text(mc)) ++attack_rows_differ;
+                if (nil::format_pv_compact(a) != nil::format_pv_compact(c)) ++attack_lines_differ;
+                nodes_on += static_cast<long long>(a.nodes);
+                nodes_off += static_cast<long long>(b.nodes);
+                nodes_attack += static_cast<long long>(c.nodes);
+                if (shape < 4) {
+                    SearchOptions fon = on;
+                    fon.mode = nil::MODE_FAST;
+                    SearchOptions foff = fon;
+                    foff.shed_order = false;
+                    const Solution x = must_solve(pos, SEAT_NAMES[shape], fon);
+                    const Solution y = must_solve(pos, SEAT_NAMES[shape], foff);
+                    if (x.nils_set != y.nils_set || x.nodes != y.nodes) ++fast_differ;
+
+                    SearchOptions mon;
+                    SearchOptions moff = mon;
+                    moff.shed_order = false;
+                    Solution p;
+                    Solution q;
+                    std::vector<nil::MoveScore> mp;
+                    std::vector<nil::MoveScore> mq;
+                    nil::dd::engine().clear();
+                    const bool ok1 = nil::solve_moves(pos, roles, mon, p, mp, err);
+                    nil::dd::engine().clear();
+                    const bool ok2 = nil::solve_moves(pos, roles, moff, q, mq, err);
+                    if (!ok1 || !ok2) {
+                        std::cerr << "test bug: solve_moves failed: " << err << "\n";
+                        std::exit(70);
+                    }
+                    if (p.nodes != q.nodes || row_text(mp) != row_text(mq)) ++max_nodes_differ;
+                }
+            }
+        }
+        check("shed order: sweep ran", positions, 56);
+        check("shed order never moves a per-card row", rows_differ, 0);
+        check("shed order never moves the line", lines_differ, 0);
+        check("6b back in front never moves a per-card row", attack_rows_differ, 0);
+        check("6b back in front never moves the line", attack_lines_differ, 0);
+        check("MODE_FAST ignores the shed order, node for node", fast_differ, 0);
+        check("the default direction ignores it, node for node", max_nodes_differ, 0);
+        // No node-count direction at seven cards, for the reason the trick
+        // order's arm gives; the saving is measured at 13 cards.  What is
+        // pinned is that both arms are live.
+        check("and the shed arm changes the tree", nodes_on != nodes_off, true);
+        check("and the attack arm changes the tree", nodes_on != nodes_attack, true);
+    }
+
     std::cout << "Compact state key\n";
     {
         // Absolute ranks do not matter, only the order the four hands hold

@@ -461,6 +461,8 @@ void usage(const char* argv0) {
               << "                    rules, not by the trick-oriented score (also\n"
               << "                    turns off the next one)\n"
               << "  --no-killer-order no last-cutting-move-second at scored nodes\n"
+              << "  --no-shed-order   minimise direction: trick order, not shed order\n"
+              << "  --shed-single-attack  minimise direction: 6b first vs a single nil\n"
               << "  --no-tight-pv     re-derive lines under the caller's window\n"
               << "  --no-tt-two-bounds  one bound per table entry\n"
               << "  --no-huge-pages   do not ask for 2 MiB pages for the tables\n"
@@ -763,6 +765,10 @@ int main(int argc, char** argv) {
             opts.trick_order = false;
         } else if (arg == "--no-killer-order") {
             opts.killer_order = false;
+        } else if (arg == "--no-shed-order") {
+            opts.shed_order = false;
+        } else if (arg == "--shed-single-attack") {
+            opts.shed_single_attack = true;
         } else if (arg == "--no-tight-pv") {
             opts.tight_pv = false;
         } else if (arg == "--no-tt-two-bounds") {

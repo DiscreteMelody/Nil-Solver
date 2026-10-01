@@ -125,8 +125,11 @@ BASELINES = [
     # 274,270 at patch 106 (B1a); 227,386 at HEAD c35614b; 227,706 after the
     # Sept 2026 pass (+0.14% on HEAD); 219,626 after the adversarial proofs
     # (-3.5%); 228,684 with the trick order (+4.1%, wall time -5%); 226,244
-    # with the killer too (+3.0% on 219,626).
-    ("positions.txt full", 226_244,
+    # with the killer too (+3.0% on 219,626); 145,489 after the Oct 2026
+    # minimise-direction study (-35.7%): the shed order, on the corpus's 270
+    # `min` rows only -- --no-shed-order reproduces 226,244 exactly, and
+    # --shed-single-attack gives 146,271.
+    ("positions.txt full", 145_489,
      ["--corpus", "tests/corpus/positions.txt", "--mode", "full"]),
     # 49,084 before the adversarial-proofs patch (-62.4%); 18,466 after it;
     # 23,376 after the ordering study (+26.6%).

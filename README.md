@@ -645,6 +645,18 @@ rest of the Sept 2026 ordering. `--no-killer-order` switches off only the killer
 move that rides on it in full mode (the last move to cut at the same depth,
 tried second), with `corpus_no_killer_order` as its arm.
 
+`--no-shed-order` is the control arm for the minimise direction's order (the
+Oct 2026 study, `MOVE_ORDERING.md`): under `--secondary min` in full mode every
+seat that holds no live bid is ordered by the shed order instead of the trick
+order -- the highest card that still loses first, then the cheapest winner; on
+a void the highest card that does not win; on lead a score that leads low,
+away from an opponent's void and into partner's -- and an opponent on lead
+against a SINGLE nil no longer puts 6b's attacking lead first
+(`--shed-single-attack` puts it back). The default direction and MODE_FAST are
+untouched, node for node. `corpus_no_shed_order`, `corpus_shed_single_attack`
+and `corpus_multinil_no_shed_order` are the arms; `NIL_FLAG_NO_LIVE_ORDER`
+turns the shed order off with the trick order it rides on.
+
 The second Sept 2026 optimization pass added these, each with a corpus arm
 (`corpus_<name>` on positions.txt with `--check-moves --check-pv`, and the
 per-card ones on the two-nil corpus too):

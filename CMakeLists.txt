@@ -441,6 +441,21 @@ if(NIL_SOLVER_BUILD_TESTS)
              COMMAND nil_bench --corpus "${NIL_CORPUS}" --check-moves --check-pv
                      --no-killer-order --quiet --slowest 0)
     set_tests_properties(corpus_no_killer_order PROPERTIES TIMEOUT 900)
+    # The control arms for the shed order (the Oct 2026 minimise-direction
+    # study; see shed_order_moves in search.cpp).  It reaches only the corpus
+    # rows that ask for the minimise direction -- 271 of them here -- and
+    # only in full mode, so these are full-mode arms: one puts the trick
+    # order back for those rows, the other puts 6b's attacking lead back in
+    # front of the shed order against a single nil.  Ordering only, so both
+    # must land on the oracle's values and lines.
+    add_test(NAME corpus_no_shed_order
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --check-moves --check-pv --no-shed-order
+                     --quiet --slowest 0)
+    set_tests_properties(corpus_no_shed_order PROPERTIES TIMEOUT 900)
+    add_test(NAME corpus_shed_single_attack
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --check-moves --check-pv
+                     --shed-single-attack --quiet --slowest 0)
+    set_tests_properties(corpus_shed_single_attack PROPERTIES TIMEOUT 900)
 
     # The control arm for the ADVERSARIAL proofs (duck or cover, forcing lead;
     # see bounds.hpp), on the corpus_static model: every other run of this
@@ -557,6 +572,10 @@ if(NIL_SOLVER_BUILD_TESTS)
              COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-moves --check-pv
                      --no-trick-order --quiet --slowest 0)
     set_tests_properties(corpus_multinil_no_trick_order PROPERTIES TIMEOUT 900)
+    add_test(NAME corpus_multinil_no_shed_order
+             COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-moves --check-pv
+                     --no-shed-order --quiet --slowest 0)
+    set_tests_properties(corpus_multinil_no_shed_order PROPERTIES TIMEOUT 900)
     add_test(NAME corpus_multinil_no_tt_two_bounds
              COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-moves --check-pv
                      --no-tt-two-bounds --quiet --slowest 0)

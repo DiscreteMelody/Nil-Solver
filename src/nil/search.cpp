@@ -202,6 +202,11 @@ struct Ctx {
     bool tight_pv = false;        // SearchOptions::tight_pv; see canonical_move_for
     bool win_order = false;       // SearchOptions::win_order; see cheap_win_card
     bool trick_order = false;     // SearchOptions::trick_order; see trick_order_moves
+    bool shed_order = false;      // SearchOptions::shed_order; see shed_order_moves
+    // 6b's attacking lead goes first for an opponent on lead against exactly
+    // one live bid.  Always, except under the shed order on a single-nil
+    // shape; see SearchOptions::shed_single_attack.
+    bool attack_first = true;
     bool killer_order = false;    // SearchOptions::killer_order; see the move loop
     // The last move that cut at a scored node, by plies played from the full
     // deal (52 less the cards still in hands).  One solve's worth: a Ctx is
@@ -1388,9 +1393,129 @@ inline void insert_scored(CardId* out, int* key, int& n, CardId c, int k) {
     out[i] = c;
 }
 
+// THE SHED ORDER: EVERY SEAT WITHOUT A LIVE BID, IN THE MINIMISE DIRECTION
+// (Oct 2026 study; see MOVE_ORDERING.md, "The minimise direction").
+//
+// WHY THE TRICK ORDER IS WRONG HERE.  trick_order_moves below is DDS's
+// ordering: cash a top card, win cheaply with a sure winner, lead toward
+// partner's top card.  Under minimise_own_tricks every pair sheds what it can
+// -- the nil side still protects the nil first, but past that BOTH pairs want
+// as few tricks as they can, and the opponents' two interests (break the nil,
+// then hand the nil side tricks) point the same way as their own shedding.  So
+// the trick order asks every non-bidding seat to try first the card it least
+// wants.  Measured on 3,000 positions labelled in both directions, it put an
+// optimal card first on 69-80% of the non-trivial ones in the default
+// direction and on 34-43% in this one; following suit with no live bid, on
+// 9.5% -- canonical ascending order did better.  In 13-card searches the share
+// of cut nodes whose first move cut was 61-73% for every non-bidding class,
+// against 94-98% in the default direction.
+//
+// And it costs more here than anywhere: the double-dummy engine's handoff
+// needs the far side's tricks to carry a positive weight, so in this direction
+// the misere tail after a broken nil is general search too -- half the nodes
+// with a choice on 13-card single-nil deals.
+//
+// WHAT IT DOES INSTEAD.  The nil bidder's own rule (6a), extended to a whole
+// order and to every seat that holds no live bid, whichever pair it is on:
+//
+//   Following suit: the losing cards first, HIGHEST first -- the most
+//   dangerous card that can still be shed for free -- then the winning cards,
+//   CHEAPEST first.  Two masks.
+//
+//   Void: every card that does not win the trick as it stands, highest rank
+//   first across suits; then every card that does (ruffs, overruffs), highest
+//   first.
+//
+//   On lead: a per-card score.  +2 the lowest card held in its suit; -3 the
+//   suit's top outstanding card (it can only win); -3 a suit an opponent is
+//   void in (it sheds its own danger on it); +2 a suit partner is void in;
+//   +1 a singleton (it makes a void); -1 a spade.  Ties go to the lower card,
+//   then to the canonical order.  The lead is where the order earns most:
+//   with the score reduced to "lowest card first" 13-card nodes rose 71%.
+//
+// The same order serves both pairs: in the misere region the trick order was
+// best-first on 28% and 26% of the positions for the two pairs, this order on
+// 80% and 82%.
+//
+// WHAT THE SOLVER REJECTED, each measured on 12- and 13-card deals on top of
+// the rest (MOVE_ORDERING.md has every number).  A first version was more
+// aggressive -- dump the highest card on partner's trick ("ours anyway"), win
+// with the highest card when every card wins, ruff high on partner's trick
+// with a spade first -- and it was the better order up to 12 cards: +8% nodes
+// at 4-9 cards and -1% at 10-12 for this one against it.  At 13 cards,
+// dropping the three (and gating 6b, see SearchOptions::shed_single_attack)
+// took 25.5% of the nodes off it over 88 deals, 75 better and 10 worse --
+// and the 13-card sign is the one the project ships.  The cover's obvious
+// rescue -- partner is a live nil holding the trick, so overtake it first --
+// lost too, -6.3% at 13 cards without it: letting the nil keep the trick is a
+// cheap move to refute (the next boundary answers a broken nil in one node),
+// and the cheapest overtake comes right after it anyway.
+//
+// COST.  Cheaper than the trick order it replaces in every class (timed over
+// 44,857 in-search states; see MOVE_ORDERING.md).
+//
+// Ordering only: the same moves are searched, so every value, verdict and --
+// with MODE_FULL's canonical re-derivation -- every principal variation is
+// unchanged.  Off with --no-shed-order (CLI and nil_bench).  It rides on
+// trick_order, so --no-trick-order and NIL_FLAG_NO_LIVE_ORDER restore the
+// older trees whole.
+inline int shed_order_moves(const State& st, int seat, Hand moves, CardId* out) {
+    const Hand hand = st.hands[seat];
+    int key[16];
+    int n = 0;
+    if (st.trick_len == 0) {
+        const Hand all = st.hands[0] | st.hands[1] | st.hands[2] | st.hands[3];
+        const Hand lho = st.hands[(seat + 1) & 3];
+        const Hand rho = st.hands[(seat + 3) & 3];
+        const Hand par = st.hands[seat ^ 2];
+        for (Hand m = moves; m;) {
+            const CardId c = take_lowest(m);
+            const int s = card_suit(c);
+            const Hand sm = suit_mask(s);
+            const Hand mine = hand & sm;
+            int score = 0;
+            if (c == static_cast<CardId>(lowest_card(mine))) score += 2;
+            if (c == static_cast<CardId>(highest_card(all & sm))) score -= 3;
+            if (!(lho & sm) || !(rho & sm)) score -= 3;
+            if (!(par & sm)) score += 2;
+            if ((mine & (mine - 1)) == 0) score += 1;
+            if (s == SUIT_SPADES) score -= 1;
+            insert_scored(out, key, n, c, score * 16 + (15 - (c & 15)));
+        }
+        return n;
+    }
+
+    // Following suit: two classes, as masks -- bit order is rank order.
+    const int led = card_suit(st.trick[0]);
+    const Hand led_mask = suit_mask(led);
+    const CardId best = trick_best_card(st.trick, st.trick_len);
+    if (moves & led_mask) {
+        const Hand win_mask =
+            card_suit(best) == led ? moves & ~((card_bit(best) << 1) - 1) : Hand{0};
+        for (Hand m = moves & ~win_mask; m;) {
+            const CardId c = static_cast<CardId>(highest_card(m));
+            m &= ~card_bit(c);
+            out[n++] = c;
+        }
+        for (Hand m = win_mask; m;) out[n++] = take_lowest(m);
+        return n;
+    }
+
+    // Void in the led suit: anything goes, and ranks compare across suits, so
+    // the two classes are scored card by card -- every card that does not win
+    // the trick as it stands, highest rank first, then every card that does.
+    for (Hand m = moves; m;) {
+        const CardId c = take_lowest(m);
+        const int r = c & 15;
+        insert_scored(out, key, n, c, (beats(c, best) ? r - 20 : r + 20) * 16 + (15 - r));
+    }
+    return n;
+}
+
 // `moves` is the reduced move set of a seat holding no live bid.  Writes all
 // of them to `out`, best first, and returns how many.
 inline int trick_order_moves(const Ctx& ctx, const State& st, int seat, Hand moves, CardId* out) {
+    if (ctx.shed_order) return shed_order_moves(st, seat, moves, out);
     const unsigned live = ctx.nil_mask & ~st.nils_broken;
     const Hand all = st.hands[0] | st.hands[1] | st.hands[2] | st.hands[3];
     const Hand sp = suit_mask(SUIT_SPADES);
@@ -2639,7 +2764,7 @@ int search_core(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
         // nothing to spend deciding so.  Common deep in the tree.
     } else if (ctx.trick_order && !(((ctx.nil_mask & ~st.nils_broken) >> seat) & 1u)) {
         n_scored = trick_order_moves(ctx, st, seat, moves, scored);
-        if (st.trick_len == 0) {
+        if (st.trick_len == 0 && ctx.attack_first) {
             // Against exactly one live bid, 6b's attacking lead goes first.
             const unsigned live = ctx.nil_mask & ~st.nils_broken;
             const unsigned targets = live & ((seat & 1) ? 0x5u : 0xAu);
@@ -3072,6 +3197,14 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
     // MODE_FULL only: in MODE_FAST it measured +1.8% of nodes on the 400-deal
     // verdict corpus, where the per-card rows it feeds on do not exist.
     ctx.killer_order = ctx.trick_order && opts.killer_order && opts.mode == MODE_FULL;
+    // The minimise direction only, and MODE_FULL only: MODE_FAST asks the nil
+    // question, which has no direction (minimise_own_tricks is inert there),
+    // so its order -- and the presolve every single-nil solve() spends first --
+    // stays exactly what it was.  Rides on trick_order, so --no-trick-order and
+    // NIL_FLAG_NO_LIVE_ORDER still restore the older trees whole.
+    ctx.shed_order = ctx.trick_order && opts.shed_order && opts.minimise_own_tricks &&
+                     opts.mode == MODE_FULL;
+    ctx.attack_first = !ctx.shed_order || ctx.opposing || ctx.multi_nil || opts.shed_single_attack;
     for (CardId& k : ctx.killer) k = NO_CARD;
     ctx.moves_aspiration = opts.moves_aspiration;
     ctx.last_trick = opts.last_trick_eval;
@@ -4405,7 +4538,8 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
             if (ctx.trick_order && !((live >> seat) & 1u)) {
                 n_rows = trick_order_moves(ctx, root, seat, reps, row_cards);
                 const unsigned targets = live & ((seat & 1) ? 0x5u : 0xAu);
-                if (root.trick_len == 0 && targets && !(targets & (targets - 1))) {
+                if (root.trick_len == 0 && ctx.attack_first && targets &&
+                    !(targets & (targets - 1))) {
                     const CardId attack =
                         opponent_attack_lead(root, lowest_card(static_cast<Hand>(targets)), reps);
                     if (attack != NO_CARD && row_cards[0] != attack) {
