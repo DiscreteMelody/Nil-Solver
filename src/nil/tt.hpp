@@ -81,6 +81,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "nil/bigalloc.hpp"
 #include "nil/statekey.hpp"
 
 namespace nil {
@@ -217,14 +218,16 @@ public:
 
     // Rounds DOWN to a power-of-two bucket count that fits in `megabytes`.
     // Zero disables the table entirely.  Re-requesting the same size is free.
-    void resize(std::size_t megabytes);
+    // `huge_pages` asks for 2 MiB pages (bigalloc.hpp); changing it reallocates.
+    void resize(std::size_t megabytes, bool huge_pages = true);
 
     void clear();       // wipe, O(size)
     void new_search();  // invalidate everything, O(1)
 
     bool enabled() const { return buckets_ != 0; }
     std::size_t buckets() const { return buckets_; }
-    std::size_t bytes() const { return table_.size() * sizeof(TTEntry); }
+    std::size_t bytes() const { return buckets_ * WAYS * sizeof(TTEntry); }
+    bool huge_pages() const { return block_.huge(); }
 
     // Returns a live entry for `key` with this `tag` if the table holds one,
     // and sets `answers` to say whether it settles the question "where does the
@@ -253,7 +256,11 @@ public:
     void reset_stats() { stats_ = TTStats(); }
 
 private:
-    std::vector<TTEntry> table_;
+    // All-zero memory from the OS is a valid empty table: generation 0 means
+    // "never written", so a page no probe has touched needs no initialising.
+    // See bigalloc.hpp for why this is not a std::vector.
+    BigBlock block_;
+    TTEntry* table_ = nullptr;
     std::size_t buckets_ = 0;
     std::size_t mask_ = 0;
     std::uint16_t generation_ = 0;

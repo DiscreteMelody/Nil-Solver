@@ -185,31 +185,35 @@ constexpr int HEADER_WAYS = 4;
 
 Engine::Engine() { resize(DD_DEFAULT_MEGABYTES); }
 
-void Engine::resize(std::size_t megabytes) {
+void Engine::resize(std::size_t megabytes, bool huge_pages) {
     megabytes_ = megabytes;
-    if (megabytes == 0) {
-        table_.clear();
-        table_.shrink_to_fit();
-        headers_.clear();
-        headers_.shrink_to_fit();
-        mask_ = hmask_ = 0;
-        return;
-    }
+    facts_.release();
+    heads_.release();
+    table_ = nullptr;
+    headers_ = nullptr;
+    mask_ = hmask_ = 0;
+    if (megabytes == 0) return;
     // Seven eighths to facts, one eighth to the profile headers.
     const std::size_t budget = megabytes * 1024u * 1024u;
     std::size_t buckets = 1;
     while (buckets * 2 * WAYS * sizeof(Entry) <= budget / 8 * 7) buckets *= 2;
-    table_.assign(buckets * WAYS, Entry{});
-    mask_ = buckets - 1;
     std::size_t hbuckets = 1;
     while (hbuckets * 2 * HEADER_WAYS * sizeof(Header) <= budget / 8) hbuckets *= 2;
-    headers_.assign(hbuckets * HEADER_WAYS, Header{});
+    if (!facts_.allocate(buckets * WAYS * sizeof(Entry), huge_pages) ||
+        !heads_.allocate(hbuckets * HEADER_WAYS * sizeof(Header), huge_pages)) {
+        facts_.release();
+        heads_.release();
+        return;  // no table: correct, slow
+    }
+    table_ = static_cast<Entry*>(facts_.data());
+    mask_ = buckets - 1;
+    headers_ = static_cast<Header*>(heads_.data());
     hmask_ = hbuckets - 1;
 }
 
 void Engine::clear() {
-    std::fill(table_.begin(), table_.end(), Entry{});
-    std::fill(headers_.begin(), headers_.end(), Header{});
+    if (table_) std::fill(table_, table_ + (mask_ + 1) * WAYS, Entry{});
+    if (headers_) std::fill(headers_, headers_ + (hmask_ + 1) * HEADER_WAYS, Header{});
 }
 
 namespace {
@@ -232,16 +236,19 @@ inline void truncate(const std::uint32_t code[4], const int n[4], std::uint16_t 
 }  // namespace
 
 Engine::Header* Engine::header(const Key& key, bool create) {
-    if (headers_.empty()) return nullptr;
+    if (!headers_) return nullptr;
     const std::uint8_t meta = static_cast<std::uint8_t>(key.meta | 0x80);
     Header* b = &headers_[(mix(key.lengths, key.meta ^ 0x5A) & hmask_) * HEADER_WAYS];
     for (int i = 0; i < HEADER_WAYS; ++i) {
-        if (b[i].meta == meta && b[i].lengths == key.lengths) return &b[i];
+        if (b[i].meta == meta && b[i].lengths == key.lengths) {
+            if (create) b[i].pad = epoch_;
+            return &b[i];
+        }
     }
     if (!create) return nullptr;
     Header* victim = &b[0];
     for (int i = 0; i < HEADER_WAYS; ++i) {
-        if (!(b[i].meta & 0x80)) {
+        if (!(b[i].meta & 0x80) || stale(b[i].pad)) {
             victim = &b[i];
             break;
         }
@@ -250,6 +257,7 @@ Engine::Header* Engine::header(const Key& key, bool create) {
     *victim = Header{};
     victim->lengths = key.lengths;
     victim->meta = meta;
+    victim->pad = epoch_;
     return victim;
 }
 
@@ -261,13 +269,14 @@ Engine::Entry* Engine::fact(std::uint64_t lengths, std::uint8_t meta, const std:
         Entry& e = b[i];
         if (e.meta == meta && e.lengths == lengths && e.pat[0] == pat[0] && e.pat[1] == pat[1] &&
             e.pat[2] == pat[2] && e.pat[3] == pat[3]) {
+            if (create) e.pad[0] = epoch_;
             return &e;
         }
     }
     if (!create) return nullptr;
     Entry* victim = &b[0];
     for (int i = 0; i < WAYS; ++i) {
-        if (!(b[i].meta & 0x80)) {
+        if (!(b[i].meta & 0x80) || stale(b[i].pad[0])) {
             victim = &b[i];
             break;
         }
@@ -276,6 +285,7 @@ Engine::Entry* Engine::fact(std::uint64_t lengths, std::uint8_t meta, const std:
     *victim = Entry{};
     victim->lengths = lengths;
     victim->meta = meta;
+    victim->pad[0] = epoch_;
     for (int s = 0; s < 4; ++s) victim->pat[s] = pat[s];
     victim->lo = 0;
     victim->hi = static_cast<std::int8_t>(depth);
@@ -286,14 +296,58 @@ Engine::Entry* Engine::fact(std::uint64_t lengths, std::uint8_t meta, const std:
 
 bool Engine::probe(const Key& key, int target, bool& result, CardId& move, const Hand h[4],
                    std::uint32_t pat_out[4]) {
-    if (table_.empty()) return false;
+    if (!table_) return false;
     ++stats_.tt_probes;
     Header* hd = header(key, false);
     if (!hd) return false;
-    for (int i = 0; i < hd->count; ++i) {
-        std::uint32_t pat[4];
-        truncate(key.code, key.n, hd->prof[i], pat);
-        const Entry* e = fact(key.lengths, key.meta, pat, false, 0);
+    // THE PROFILE SCAN IS A CHAIN OF CACHE MISSES, AND IT NEED NOT BE (Q9b).
+    //
+    // Each profile is one exact-key lookup at a random bucket of a 56 MiB
+    // array, so a probe that tries n profiles waits for n misses one after the
+    // other.  Measured over the 155-deal per-card benchmark: 189M probes, 485M
+    // fact lookups, 1.86 profiles per hit and 8.67 per miss (a miss reads every
+    // profile the header holds, 10.8M of them all twelve), and the lookup
+    // itself was the largest single line of the profile at 16% of wall time.
+    //
+    // The addresses do not depend on each other -- truncating the key to a
+    // profile needs only the key -- so after the MRU profile (which answers
+    // 65% of the hits on its own) every remaining bucket is requested at once
+    // and then read in the same order as before.  The scan, its order, what it
+    // returns and the MRU update are unchanged; only the waiting overlaps.
+    //
+    // MEASURED, per-card call, 155 thirteen-card deals, leave-one-out against
+    // everything else in the Sept 2026 pass: on ordinary 4 KiB pages -- what a
+    // Windows service gets without the large-page privilege -- switching this
+    // off costs 1.3% of wall time (68 deals slower, 33 faster by 2%+).  On
+    // 2 MiB pages it is within noise (+0.2%): with the table's page walks gone
+    // the serial misses were already cheap.  Kept for the 4 KiB case.
+    const int count = hd->count;
+    std::uint32_t pats[PROFILES][4];
+    const Entry* buckets[PROFILES];
+    const std::uint8_t fmeta = static_cast<std::uint8_t>(key.meta | 0x80);
+    constexpr int ahead = 1;  // the MRU profile is read before the rest are requested
+    for (int i = 0; i < count; ++i) {
+        if (prefetch_ && i == ahead) {
+            for (int j = ahead; j < count; ++j) {
+                truncate(key.code, key.n, hd->prof[j], pats[j]);
+                buckets[j] = &table_[(fact_hash(key.lengths, fmeta, pats[j]) & mask_) * WAYS];
+                prefetch_line(buckets[j]);
+                prefetch_line(buckets[j] + WAYS - 1);
+            }
+        }
+        if (!prefetch_ || i < ahead) {
+            truncate(key.code, key.n, hd->prof[i], pats[i]);
+            buckets[i] = &table_[(fact_hash(key.lengths, fmeta, pats[i]) & mask_) * WAYS];
+        }
+        const Entry* e = nullptr;
+        for (int w = 0; w < WAYS; ++w) {
+            const Entry& c = buckets[i][w];
+            if (c.meta == fmeta && c.lengths == key.lengths && c.pat[0] == pats[i][0] &&
+                c.pat[1] == pats[i][1] && c.pat[2] == pats[i][2] && c.pat[3] == pats[i][3]) {
+                e = &c;
+                break;
+            }
+        }
         if (!e) continue;
         if (move == NO_CARD && e->move != 0xFF) move = from_rel(e->move, h);
         if (e->lo >= target || e->hi < target) {
@@ -312,7 +366,7 @@ bool Engine::probe(const Key& key, int target, bool& result, CardId& move, const
 
 void Engine::store(const Key& key, const unsigned rel[4], int lo, int hi, CardId move,
                    const Hand h[4], int depth) {
-    if (table_.empty()) return;
+    if (!table_) return;
     std::uint16_t prof = 0;
     for (int s = 0; s < 4; ++s) {
         const unsigned r = rel[s] & key.all[s];

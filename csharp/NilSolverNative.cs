@@ -312,6 +312,25 @@ namespace NilSolver
         NoPresolve = 0x800u,
 
         /// <summary>
+        /// NIL_FLAG_FAST_LINE. On <c>ScoreMoves</c>/<c>ScoreMovesFull</c> it means
+        /// VALUES-ONLY ROWS: no line is recovered for any card, and each card's counts
+        /// are decoded from its exact value instead.
+        ///
+        /// Unchanged, card for card: the value, <c>NilsSet</c>, the nils-set mask,
+        /// <c>NilSideTricks</c>, <c>OpponentTricks</c> and which cards are flagged best.
+        /// Lost: <c>NilTricks</c> (the nil seat's own count), which reads
+        /// <see cref="NilSolverNative.TricksUnknown"/>. Under the charged-once objective
+        /// that count is not pinned by the value anyway: a nil pays only for its first
+        /// trick, so once it is broken the split of the pair's tricks is a free choice.
+        /// A caller that reads the verdict and the two sides' tricks loses nothing.
+        /// Measured on 155 thirteen-card deals (Sept 2026): the per-card call 17.8%
+        /// faster in total, 145 deals faster and 2 slower by more than 2%.
+        /// On the plain solves it keeps its older meaning (skip the canonical
+        /// re-derivation of the reported move); ignored by <c>SolveWithLine</c>.
+        /// </summary>
+        FastLine = 0x1000u,
+
+        /// <summary>
         /// Search the forced final trick instead of evaluating it. At a trick boundary
         /// with one card per hand the trick is fully determined, so five nodes collapse
         /// to one. Same value and same principal variation; diagnostic and a control arm.
@@ -579,6 +598,13 @@ namespace NilSolver
         /// that mistook one for the other would read a failing nil as a made one.
         /// </summary>
         public const int TricksUnknown = -1;
+
+        /// <summary>
+        /// NIL_TABLE_AUTO: pass to <see cref="Nil.SetTableSize"/> to let the library
+        /// choose the transposition table size, which is 512 MiB (the solver's
+        /// TT_DEFAULT_MEGABYTES). What a thread that never sets a size gets.
+        /// </summary>
+        public const uint TableAuto = 0xFFFFFFFFu;
 
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
         public static extern int nil_solve(

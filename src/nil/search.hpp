@@ -618,7 +618,83 @@ struct SearchOptions {
     // order of magnitude in either direction: a 13-card MODE_FULL solve at a
     // flat 32 MiB spends 688 million nodes where 256 spends 46 million.  An
     // explicit number wins over TT_AUTO, and 0 is the same as use_memo = false.
+    // Re-measured Sept 2026 on the per-card call (solve_moves, 155 thirteen-card
+    // deals, 512 MiB as the baseline): 256 MiB +3% wall, 128 +13%, 64 +35%, 32
+    // +85%; the slowest deal (one bid per side) 39.6 s at 512 and 189 s at 32.
+    // The median deal is the same at every size -- it is the tail that
+    // overflows the table.  1024 bought nothing further on the ten slowest.
     std::size_t tt_megabytes = TT_AUTO;
+
+    // Ask the operating system for 2 MiB pages for both tables (optimization
+    // Q5, Sept 2026; nil/bigalloc.hpp says how and why).  The tables live in
+    // demand-zero OS pages either way; this only decides whether huge pages
+    // are requested.  Best-effort: where they cannot be had -- Windows without
+    // the "Lock pages in memory" privilege, or Linux with transparent huge
+    // pages set to "never" -- the request falls back silently.  Changing it
+    // between solves reallocates both tables.  Same answers and same nodes
+    // either way; `--no-huge-pages` is the control arm.
+    //
+    // Measured on the per-card call, 155 thirteen-card deals, two long-lived
+    // processes interleaved deal by deal (Linux, transparent huge pages in
+    // "madvise"): 2 MiB pages -9.9% wall time, 139 deals faster and 6 slower
+    // by 2%+; the slowest deal 36.9 s -> 33.6 s.  Demand-zero, page-aligned
+    // tables on their own, against the old vector fill: -3.0% steady state,
+    // and ~250 ms less per new process or thread (the eager fill is gone).
+    bool huge_pages = true;
+
+    // The double-dummy engine's table probe requests every candidate profile's
+    // bucket at once after the most recently used one, instead of waiting for
+    // each miss in turn (Q9b, Sept 2026; dd::Engine::probe has the numbers).
+    // Same answers, same nodes -- only the waiting changes.  Worth 1.3% of
+    // per-card wall time on 4 KiB pages, nothing measurable on 2 MiB pages.
+    // `--no-dd-prefetch` is the control arm.
+    bool dd_prefetch = true;
+
+    // The double-dummy engine's table persists across solves; age its entries
+    // so that what earlier solves stored is replaced first (Sept 2026; see
+    // dd::Engine::Entry for the measurement).  Same answers -- every stored
+    // fact stays true in every deal -- and `--no-dd-age` is the control arm.
+    bool dd_age = true;
+
+    // Ask the two every-line nil predicates once per trick boundary rather than
+    // once per call site (Q7, Sept 2026): the doom check, the double-dummy
+    // handoff's pin test and the full-mode static block all asked them of the
+    // same state.  A pure cache -- the node count is identical with it off,
+    // which is what `--no-boundary-facts` checks.  Worth 0.5% of instructions
+    // (callgrind, four 13-card deals); below the wall-time noise.
+    bool boundary_facts = true;
+
+    // solve_moves only: recover and replay a line per row (the default), or
+    // decode each row's counts from its exact value (false; Q3, Sept 2026).
+    // Off, every row keeps its value, nils_set, nils_set_mask (where the
+    // objective pins it), nil_side_tricks, opponent_tricks and is_best --
+    // identical to the default -- and loses nil_tricks (TRICKS_NOT_COMPUTED)
+    // and the position's principal variation.  A row whose mask the value
+    // cannot pin (a pair that both bid, one bid down) still walks its line.
+    // `--values-only`.
+    bool row_lines = true;
+
+    // solve_moves: score the rows best-first by the search's own move order,
+    // then report them in canonical order (Q4, Sept 2026).  Same rows, same
+    // values, same line; the node count moves.  `--no-row-order`.
+    bool row_order = true;
+
+    // M4 (Sept 2026): with a bid on each side or a pair that both bid, spend the
+    // adversarial proofs (duck or cover; forcing lead) as band bounds wherever
+    // exactly one bid is still live.  Honours adversarial_safe/adversarial_doom
+    // (--no-duck-cover, --no-forcing-lead, --no-adversarial-proofs).  Same
+    // answers; `--no-multi-live-proofs` is the control arm.  -7.7% nodes and
+    // -4.4% wall on the per-card benchmark, all of it on two-bid deals.
+    bool multi_live_proofs = true;
+
+    // A4 (Sept 2026): with a single live nil and a safe-band window, bound the
+    // node by the pair's double-dummy count on the deal with the nil's cards
+    // moved to the bottom of every suit (one engine probe).  Runs only at
+    // boundaries with at least this many tricks left; 0 is off.  Same answers.
+    // 8 measured best (search.cpp, demoted_dd_bound, has the sweep): -3.7%
+    // nodes and -3.2% wall on the single-nil deals of the per-card benchmark.
+    // `--demoted-dd 0` is the control arm.
+    int demoted_dd_min_t = 8;
 
     // Back up which card ranks a subtree's value actually depended on, and
     // record how coarse the resulting table entries would have been.

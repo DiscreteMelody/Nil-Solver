@@ -396,8 +396,10 @@ namespace NilSolver
 
         /// <summary>
         /// Transposition table size in mebibytes for subsequent solves on the
-        /// CALLING thread. Default 32. Zero is the same as
-        /// <see cref="NilFlags.NoMemo"/>.
+        /// CALLING thread. A thread that never calls this gets the library default,
+        /// 512 MiB (<see cref="NilSolverNative.TableAuto"/>). Zero is the same as
+        /// <see cref="NilFlags.NoMemo"/>. Smaller tables cost the hard 13-card deals
+        /// dearly: see <see cref="NilSolverPool"/> for the measured curve.
         /// </summary>
         public static void SetTableSize(uint megabytes) => NilSolverNative.nil_set_table_size(megabytes);
 

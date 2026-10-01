@@ -102,6 +102,20 @@ void usage(const char* argv0) {
         << "  --no-tight-pv           re-derive each line step under the caller's window\n"
         << "                          rather than a (v-1, v+1) one (same answer and PV)\n"
         << "  --no-tt-two-bounds      keep one bound per table entry (same answer and PV)\n"
+        << "  --no-huge-pages         do not ask for 2 MiB pages for the tables (same\n"
+        << "                          answer, same nodes; a control arm)\n"
+        << "  --no-dd-prefetch        read the engine's table profiles one miss at a\n"
+        << "                          time (same answer, same nodes; a control arm)\n"
+        << "  --no-dd-age             keep the engine's table entries from earlier solves\n"
+        << "                          on equal terms (same answer; a control arm)\n"
+        << "  --no-boundary-facts     re-ask the nil proofs at every call site of a\n"
+        << "                          boundary (same answer, same nodes; a control arm)\n"
+        << "  --values-only           --moves: decode each card's counts from its value\n"
+        << "                          instead of walking its line (nil_tricks unknown)\n"
+        << "  --no-row-order          --moves: score the cards in canonical order rather\n"
+        << "                          than best-first (same rows and line; control arm)\n"
+        << "  --no-multi-live-proofs  two-bid shapes: no adversarial proofs where one bid\n"
+        << "                          is still live (same answer, more nodes)\n"
         << "  --no-dd-engine          once no bid is live, keep searching with the\n"
         << "                          general search instead of the double-dummy\n"
         << "                          engine (same answer and PV, much slower)\n"
@@ -375,6 +389,22 @@ int main(int argc, char** argv) {
             opts.moves_aspiration = false;
         } else if (arg == "--no-tt-two-bounds") {
             opts.tt_two_bounds = false;
+        } else if (arg == "--no-huge-pages") {
+            opts.huge_pages = false;
+        } else if (arg == "--no-dd-prefetch") {
+            opts.dd_prefetch = false;
+        } else if (arg == "--no-dd-age") {
+            opts.dd_age = false;
+        } else if (arg == "--no-boundary-facts") {
+            opts.boundary_facts = false;
+        } else if (arg == "--values-only") {
+            opts.row_lines = false;
+        } else if (arg == "--no-row-order") {
+            opts.row_order = false;
+        } else if (arg == "--no-multi-live-proofs") {
+            opts.multi_live_proofs = false;
+        } else if (arg == "--demoted-dd" && i + 1 < argc) {
+            opts.demoted_dd_min_t = std::atoi(argv[++i]);
         } else if (arg == "--no-dd-engine") {
             opts.dd_engine = false;
         } else if (arg == "--no-canonical-pv") {

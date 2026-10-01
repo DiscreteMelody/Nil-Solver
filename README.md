@@ -362,7 +362,7 @@ One thing worth knowing before wiring this into a request path, because it is
 the opposite of the usual native-library caveat: **the solver needs no locking
 and no thread-id argument**, so concurrent calls are safe as they stand. What it
 does need is a bound on *how many threads ever call it*, since the transposition
-table is `thread_local` and a thread that has solved once holds 32 MiB until it
+table is `thread_local` and a thread that has solved once holds 512 MiB until it
 exits. `csharp/README.md` covers that, along with deployment, the flags, and the
 three P/Invoke declarations that are easy to write wrongly.
 
@@ -628,6 +628,30 @@ bit left for it alone; `NIL_FLAG_NO_LIVE_ORDER` turns it off together with the
 rest of the Sept 2026 ordering. `--no-killer-order` switches off only the killer
 move that rides on it in full mode (the last move to cut at the same depth,
 tried second), with `corpus_no_killer_order` as its arm.
+
+The second Sept 2026 optimization pass added these, each with a corpus arm
+(`corpus_<name>` on positions.txt with `--check-moves --check-pv`, and the
+per-card ones on the two-nil corpus too):
+
+- `--no-huge-pages`: both tables still live in demand-zero OS pages, but
+  without asking for 2 MiB pages (memory layout only; same nodes).
+- `--no-dd-prefetch`: the double-dummy engine's table probe waits for each
+  profile's bucket in turn instead of requesting them together.
+- `--no-dd-age`: the double-dummy engine's table, which outlives the solve,
+  stops preferring to replace what earlier solves stored (same answers).
+- `--no-boundary-facts`: the every-line nil proofs are re-asked at each call
+  site of a trick boundary instead of once (same nodes).
+- `--no-row-order`: per-card rows are scored in canonical order instead of
+  best-first (same rows and line; the node count moves).
+- `--no-multi-live-proofs`: with two bids, no adversarial proofs where exactly
+  one bid is still live (same answers; more nodes).
+- `--demoted-dd T`: the nil-demoted double-dummy bound on safe-band windows from
+  T tricks up (8 by default); `--demoted-dd 0` switches it off.
+  `corpus_demoted_dd_low` runs the corpus with it at 2 tricks, where it fires.
+- `--values-only` (the ON arm of an opt-in, also `NIL_FLAG_FAST_LINE` on
+  `nil_solve_moves`): each card's counts decoded from its exact value instead of
+  read off a walked line; `nil_tricks` is withheld. `corpus_values_only` checks
+  every pinned field against the walked rows, position by position.
 
 `--no-narrow` is the control arm for window narrowing (roadmap item 22), and it
 is the one with the most riding on it. Full mode narrows its window as a node's
@@ -946,7 +970,7 @@ word.
 Positions live in a fixed-size table — four-way buckets, evict the shallowest
 entry, generation-stamped so consecutive solves cannot see each other's values.
 Entries store the full 128-bit key, so a hash collision costs one comparison and
-never an answer. `--tt-mb` sets the size (default 32); `--no-memo` or
+never an answer. `--tt-mb` sets the size (default 512); `--no-memo` or
 `NIL_FLAG_NO_MEMO` turns the table off entirely and the cross-check passes
 either way.
 

@@ -2,10 +2,10 @@
 
 namespace nil {
 
-void TranspositionTable::resize(std::size_t megabytes) {
+void TranspositionTable::resize(std::size_t megabytes, bool huge_pages) {
     if (megabytes == 0) {
-        table_.clear();
-        table_.shrink_to_fit();
+        block_.release();
+        table_ = nullptr;
         buckets_ = 0;
         mask_ = 0;
         return;
@@ -16,19 +16,26 @@ void TranspositionTable::resize(std::size_t megabytes) {
     std::size_t want = 1;
     while (want * 2 * bucket_bytes <= budget) want *= 2;
 
-    if (want == buckets_) {
+    if (want == buckets_ && huge_pages == block_.requested_huge()) {
         new_search();
         return;
     }
+    // Fresh demand-zero pages rather than a fill: see bigalloc.hpp.
+    if (!block_.allocate(want * bucket_bytes, huge_pages)) {
+        table_ = nullptr;
+        buckets_ = 0;
+        mask_ = 0;
+        return;
+    }
+    table_ = static_cast<TTEntry*>(block_.data());
     buckets_ = want;
     mask_ = want - 1;
-    table_.assign(buckets_ * WAYS, TTEntry());
     generation_ = 1;
     stats_ = TTStats();
 }
 
 void TranspositionTable::clear() {
-    table_.assign(table_.size(), TTEntry());
+    for (std::size_t i = 0; i < buckets_ * WAYS; ++i) table_[i] = TTEntry();
     generation_ = 1;
     stats_ = TTStats();
 }
@@ -47,7 +54,7 @@ const TTEntry* TranspositionTable::probe(const StateKey& key, std::uint64_t hash
     answers = false;
     if (!buckets_) return nullptr;
     ++stats_.probes;
-    const TTEntry* bucket = &table_[(hash & mask_) * WAYS];
+    const TTEntry* bucket = table_ + (hash & mask_) * WAYS;
     for (int i = 0; i < WAYS; ++i) {
         const TTEntry& e = bucket[i];
         if (e.generation != generation_ || e.tag() != tag || e.lo != key.lo || e.hi != key.hi) {
@@ -74,7 +81,7 @@ void TranspositionTable::store(const StateKey& key, std::uint64_t hash, int valu
                                int depth, std::uint8_t bound, std::uint8_t tag, bool maximizing) {
     (void)depth;  // read back out of the key; see key_card_count
     if (!buckets_) return;
-    TTEntry* bucket = &table_[(hash & mask_) * WAYS];
+    TTEntry* bucket = table_ + (hash & mask_) * WAYS;
 
     // Lower score wins the eviction.  A dead entry scores 0; a live one scores
     // 1 + depth, so anything from an earlier search always goes first and among

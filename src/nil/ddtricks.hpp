@@ -48,6 +48,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "nil/bigalloc.hpp"
 #include "nil/cards.hpp"
 
 namespace nil {
@@ -68,9 +69,16 @@ public:
     Engine();
 
     // Table size.  0 disables the table (correct, slow).  Resizing wipes it.
-    void resize(std::size_t megabytes);
+    // `huge_pages` asks for 2 MiB pages (bigalloc.hpp).
+    void resize(std::size_t megabytes, bool huge_pages = true);
     std::size_t megabytes() const { return megabytes_; }
     void clear();
+    // Reallocate (and so wipe) only if the huge-page request changed.  Called
+    // once per solve by the search, which is where the switch arrives.
+    void set_huge_pages(bool on) {
+        if (on != facts_.requested_huge()) resize(megabytes_, on);
+    }
+    bool huge_pages() const { return facts_.huge(); }
 
     // Can N/S take at least `target` of the remaining tricks?  The position
     // must be at a trick boundary (no cards on the table).  When `witness` is
@@ -84,6 +92,17 @@ public:
     int ns_exact(const Hand hands[4], int leader, bool broken, int lo, int hi, CardId* best);
 
     void set_mru(bool on) { mru_ = on; }
+    // On (the default): after the most recently used profile, request every
+    // other profile's bucket at once.  Off: read them one miss at a time, as
+    // before.  Same answers either way; see probe().
+    void set_prefetch(bool on) { prefetch_ = on; }
+    // A new solve begins.  With aging on (the default), what earlier solves
+    // stored stays readable -- a fact about a position is true in every deal --
+    // but is the first thing replaced.  See the note on Entry::age.
+    void new_solve(bool age) {
+        age_ = age;
+        if (++epoch_ == 0) epoch_ = 1;
+    }
     const DDStats& stats() const { return stats_; }
     void reset_stats() { stats_ = DDStats(); }
     DDStats& mutable_stats() { return stats_; }
@@ -109,7 +128,21 @@ private:
         std::int8_t hi;
         std::uint8_t depth;      // tricks remaining; replacement priority
         std::uint8_t move;       // stored best lead, relative
-        std::uint8_t pad[3];
+        // AGE: the solve that last stored this fact (Engine::new_solve).
+        //
+        // The table outlives the solve -- its facts are true of a position in
+        // any deal -- and replacement keeps the DEEPEST entry of a bucket.  With
+        // no notion of age, deep entries from earlier deals then sit in their
+        // buckets for good, and the shallow facts the current search keeps
+        // re-proving are what gets evicted.  A worker that solves determinization
+        // after determinization paid for it: 120 thirteen-card per-card calls
+        // took 181.9 s with the table kept, against 149.6 s with it cleared
+        // before every solve (which is what every benchmark in this project did,
+        // so none of them saw it).  Engine nodes +41%.  Facts from an earlier
+        // solve are now the first victims, but still readable: 149.5 s, and
+        // slightly fewer nodes than clearing (1,233.7M against 1,237.8M), at no
+        // cost per solve.  Headers carry the same mark.  `--no-dd-age`.
+        std::uint8_t pad[3];     // pad[0] is the age
     };
     // Which k-profiles have been stored for one (lengths, leader, broken).  A
     // probe tries each: truncating the position's own patterns to a profile
@@ -121,7 +154,7 @@ private:
         std::uint8_t meta;       // | 0x80 when used
         std::uint8_t count;
         std::uint8_t next;       // round-robin replacement cursor
-        std::uint8_t pad;
+        std::uint8_t pad;        // the age, as Entry's
         std::uint16_t prof[PROFILES];  // k per suit, 4 bits each
     };
     struct Key {
@@ -145,12 +178,20 @@ private:
     Entry* fact(std::uint64_t lengths, std::uint8_t meta, const std::uint32_t pat[4], bool create,
                 int depth);
 
-    std::vector<Entry> table_;
+    // Zeroed OS pages, used as they come: meta 0 is "unused" in both arrays, so
+    // an untouched page is already an empty table.  See bigalloc.hpp.
+    BigBlock facts_;
+    BigBlock heads_;
+    Entry* table_ = nullptr;
     std::size_t mask_ = 0;
-    std::vector<Header> headers_;
+    Header* headers_ = nullptr;
     std::size_t hmask_ = 0;
     std::size_t megabytes_ = 0;
     bool mru_ = true;
+    bool prefetch_ = true;
+    std::uint8_t epoch_ = 1;  // the current solve, for aging; never 0
+    bool age_ = true;
+    bool stale(std::uint8_t e) const { return age_ && e != epoch_; }
     DDStats stats_;
 };
 

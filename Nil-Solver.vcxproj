@@ -128,12 +128,18 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="include\nil_solver\nil_solver.h" />
+    <ClInclude Include="src\nil\bigalloc.hpp" />
+    <ClInclude Include="src\nil\bitpack.hpp" />
     <ClInclude Include="src\nil\bounds.hpp" />
     <ClInclude Include="src\nil\cards.hpp" />
+    <ClInclude Include="src\nil\cooperative.hpp" />
     <ClInclude Include="src\nil\corpus.hpp" />
+    <ClInclude Include="src\nil\ddtricks.hpp" />
+    <ClInclude Include="src\nil\outcome_constraint.hpp" />
     <ClInclude Include="src\nil\position.hpp" />
     <ClInclude Include="src\nil\ranks.hpp" />
     <ClInclude Include="src\nil\rules.hpp" />
+    <ClInclude Include="src\nil\same_lean.hpp" />
     <ClInclude Include="src\nil\search.hpp" />
     <ClInclude Include="src\nil\seats.hpp" />
     <ClInclude Include="src\nil\statekey.hpp" />
@@ -145,9 +151,14 @@
     <!-- Exactly CMake's nil_solver_core plus src\api.cpp; keep the two lists in
          step, or the IDE build and the CI build stop being the same thing. -->
     <ClCompile Include="src\api.cpp" />
+    <ClCompile Include="src\nil\bigalloc.cpp" />
     <ClCompile Include="src\nil\cards.cpp" />
+    <ClCompile Include="src\nil\cooperative.cpp" />
     <ClCompile Include="src\nil\corpus.cpp" />
+    <ClCompile Include="src\nil\ddtricks.cpp" />
+    <ClCompile Include="src\nil\outcome_constraint.cpp" />
     <ClCompile Include="src\nil\position.cpp" />
+    <ClCompile Include="src\nil\same_lean.cpp" />
     <ClCompile Include="src\nil\search.cpp" />
     <ClCompile Include="src\nil\seats.cpp" />
     <ClCompile Include="src\nil\statekey.cpp" />

@@ -28,11 +28,40 @@ foreach(_cfg "" _DEBUG _RELEASE _RELWITHDEBINFO _MINSIZEREL)
   set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY${_cfg} "${CMAKE_BINARY_DIR}/lib")
 endforeach()
 
+# Link-time optimization (optimization Q6, Sept 2026).  The hot path crosses
+# translation units on every trick boundary -- search.cpp calls
+# encode_state_key and mix_key (statekey.cpp) and the table's probe and store
+# (tt.cpp) -- and without LTO those are real calls.  CMake's IPO support is
+# -flto on GCC/Clang and /GL + /LTCG on MSVC.  Release-type configurations
+# only; Debug stays quick to build.
+#
+# MEASURED, GCC 13 on Linux, per-card call over 155 thirteen-card deals, two
+# processes interleaved: -0.02% wall, i.e. nothing.  GCC already inlines what
+# matters inside search.cpp, and the cross-unit calls left are a few
+# nanoseconds against a table miss.  So it is OFF by default.  MSVC /GL is
+# unmeasured; note the Visual Studio project already turns on whole-program
+# optimization for Release.  Profile-guided optimization is a different
+# matter: GCC -fprofile-use measured -5.5% on the same workload (ROADMAP.md),
+# and is worth doing for a shipped build, outside this file.
+option(NIL_SOLVER_LTO "Link-time optimization for optimized configurations" OFF)
+if(NIL_SOLVER_LTO)
+  include(CheckIPOSupported)
+  check_ipo_supported(RESULT NIL_SOLVER_IPO_OK OUTPUT NIL_SOLVER_IPO_MSG LANGUAGES CXX)
+  if(NIL_SOLVER_IPO_OK)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO ON)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_MINSIZEREL ON)
+  else()
+    message(STATUS "NIL_SOLVER_LTO requested but not supported: ${NIL_SOLVER_IPO_MSG}")
+  endif()
+endif()
+
 # ---------------------------------------------------------------------------
 # Core: the rules, the position type and the search.  Built once, linked into
 # the shared library, the CLI and the tests.
 # ---------------------------------------------------------------------------
 add_library(nil_solver_core STATIC
+  src/nil/bigalloc.cpp
   src/nil/cards.cpp
   src/nil/cooperative.cpp
   src/nil/ddtricks.cpp
@@ -427,6 +456,36 @@ if(NIL_SOLVER_BUILD_TESTS)
              COMMAND nil_bench --corpus "${NIL_CORPUS}" --mode fast --check-moves
                      --no-adversarial-proofs --quiet --slowest 0)
     set_tests_properties(corpus_no_adversarial_fast PROPERTIES TIMEOUT 900)
+
+    # The second Sept 2026 optimization pass.  Each switch below is a control
+    # arm in the usual sense -- default runs above take the optimization, these
+    # do not, and every one must land on the oracle's values and lines.
+    #   --no-huge-pages        tables on ordinary pages (memory layout only)
+    #   --no-dd-prefetch       engine profiles read one miss at a time
+    #   --no-dd-age            the engine's old entries replaced on equal terms
+    #   --no-boundary-facts    nil proofs re-asked at every call site
+    #   --no-row-order         per-card rows scored in canonical order
+    # --values-only is the ON arm of an opt-in: rows decoded from their values,
+    # held field by field against the walked lines by nil_bench itself.
+    foreach(_arm no-huge-pages no-dd-prefetch no-dd-age no-boundary-facts no-row-order)
+      string(REPLACE "-" "_" _name "${_arm}")
+      add_test(NAME corpus_${_name}
+               COMMAND nil_bench --corpus "${NIL_CORPUS}" --check-moves --check-pv --${_arm}
+                       --quiet --slowest 0)
+      set_tests_properties(corpus_${_name} PROPERTIES TIMEOUT 900)
+    endforeach()
+    add_test(NAME corpus_values_only
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --check-moves --values-only
+                     --quiet --slowest 0)
+    set_tests_properties(corpus_values_only PROPERTIES TIMEOUT 900)
+    # The nil-demoted double-dummy bound (A4) runs from 8 tricks up by default,
+    # which no row of this corpus reaches -- so the default run above is its
+    # OFF arm here, and this one pushes it down to 2 tricks, where it fires on
+    # most safe-band boundaries, against the oracle's values and lines.
+    add_test(NAME corpus_demoted_dd_low
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --check-moves --check-pv
+                     --demoted-dd 2 --quiet --slowest 0)
+    set_tests_properties(corpus_demoted_dd_low PROPERTIES TIMEOUT 900)
   endif()
 
   # TWO NILS ON ONE SIDE.  A separate corpus because it is a separate question:
@@ -502,6 +561,21 @@ if(NIL_SOLVER_BUILD_TESTS)
              COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-moves --check-pv
                      --no-tt-two-bounds --quiet --slowest 0)
     set_tests_properties(corpus_multinil_no_tt_two_bounds PROPERTIES TIMEOUT 900)
+
+    # Second Sept 2026 pass, on two nils: the per-card driver changes (row
+    # order; values-only rows, whose mask the value cannot always pin here, so
+    # those rows still walk their line) and the memory-layout arms.
+    foreach(_arm no-row-order no-huge-pages no-dd-prefetch no-multi-live-proofs)
+      string(REPLACE "-" "_" _name "${_arm}")
+      add_test(NAME corpus_multinil_${_name}
+               COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-moves --check-pv
+                       --${_arm} --quiet --slowest 0)
+      set_tests_properties(corpus_multinil_${_name} PROPERTIES TIMEOUT 900)
+    endforeach()
+    add_test(NAME corpus_multinil_values_only
+             COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-moves --values-only
+                     --quiet --slowest 0)
+    set_tests_properties(corpus_multinil_values_only PROPERTIES TIMEOUT 900)
 
     add_test(NAME corpus_multinil_no_tt
              COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --cards-only 4

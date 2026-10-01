@@ -238,6 +238,24 @@ struct Ctx {
                                 ((mask >> far_nil_seat) & 1u));
     }
     QuickTrickStats* quick_stats = nullptr;  // roadmap item 43, measurement only
+
+    // BOUNDARY FACTS, ASKED ONCE (Q7, Sept 2026; SearchOptions::boundary_facts).
+    // At a trick boundary three call sites ask the same two every-line
+    // predicates about the same state: search_impl's doom check asks
+    // nil_must_take_a_trick, dd_pinned_offset asks nil_cannot_be_forced, and
+    // the full-mode static block asks both again.  With default flags each is
+    // evaluated twice per boundary.  search_impl leaves its answer here for the
+    // search_core call it makes next, which takes it and clears it before
+    // anything else can recurse; -1 is "not asked".
+    bool boundary_facts = true;
+    signed char bf_must_take = -1;  // nil_must_take_a_trick for nil_seat
+    // M4: the adversarial proofs in the one-live-bid regions of the two-bid
+    // shapes.  Separate from adversarial_safe/doom because
+    // disable_single_nil_machinery() clears those for exactly these shapes.
+    bool multi_live_proofs = true;
+    bool m4_safe = true;
+    bool m4_doom = true;
+    int demoted_dd_min_t = 0;  // SearchOptions::demoted_dd_min_t (A4); 0 is off
 };
 
 // Roadmap item 32's population count.  Split out so the expression at the call
@@ -855,7 +873,11 @@ bool triangle_once(const Ctx& ctx, const State& st, int kn, int kp, int room, in
 // plain double dummy plus a constant.  Both proofs are unconditional -- they
 // quantify over every line, not over one side's best play -- which is what
 // makes the constant a constant.  Returns false when some live bid is neither.
-bool dd_pinned_offset(const Ctx& ctx, const State& st, int& offset) {
+// `nil_cbf`, when given, receives what nil_cannot_be_forced said about
+// ctx.nil_seat if it was asked (Q7): the static block asks the same question
+// of the same state a few lines later.
+bool dd_pinned_offset(const Ctx& ctx, const State& st, int& offset,
+                      signed char* nil_cbf = nullptr) {
     const unsigned live = ctx.nil_mask & ~st.nils_broken;
     unsigned final_mask = st.nils_broken;
     for (int seat = 0; seat < 4; ++seat) {
@@ -864,9 +886,11 @@ bool dd_pinned_offset(const Ctx& ctx, const State& st, int& offset) {
         // reaching here is doomed -- search_impl has already asked.
         if (!ctx.doom_charge && nil_must_take_a_trick(st.hands, seat)) {
             final_mask |= 1u << seat;
-        } else if (!((st.hands[seat] & suit_mask(SUIT_SPADES)) == 0 &&
-                     nil_cannot_be_forced(st.hands, seat, st.leader == seat))) {
-            return false;
+        } else {
+            const bool safe = (st.hands[seat] & suit_mask(SUIT_SPADES)) == 0 &&
+                              nil_cannot_be_forced(st.hands, seat, st.leader == seat);
+            if (nil_cbf && seat == ctx.nil_seat) *nil_cbf = safe ? 1 : 0;
+            if (!safe) return false;
         }
     }
     if (ctx.opposing) {
@@ -985,6 +1009,80 @@ int dd_settled_value(Ctx& ctx, const State& st, CardId& best_move, int alpha, in
 // that bound without searching.  Sound for any window; it only ever cuts.
 //
 // Returns true and sets `value` when it cuts.
+// A4: THE NIL-DEMOTED DOUBLE-DUMMY BOUND (Sept 2026; SearchOptions::demoted_dd_min_t).
+//
+// A single live nil, the default direction, a trick boundary, and a window in
+// the SAFE band (beta <= 0): the question is "keeping the nil clean, can the
+// pair still take x + 1 tricks?", x = floor(-beta / K).  Relabel the nil's
+// cards to the bottom of every suit, keeping every other card's order, and let
+// D' be the pair's plain double-dummy count there.  Then the value is at least
+// -K * D', and the node fails high whenever D' <= x.
+//
+// WHY.  Map any line of the real game on which the nil stays clean onto the
+// relabelled deal card for card.  Legality reads suits only, and the order of
+// the other cards is unchanged.  On a clean line every trick is won by a card
+// that beats the nil's card; it still does after the nil's card sinks to the
+// bottom of its suit, and it still beats the same other cards -- so every
+// trick has the same winner.  A strategy that keeps the nil clean and takes T
+// tricks against every defence therefore takes T against every defence of
+// the relabelled deal too: T <= D'.  A safe value is -K * T >= -K * D', and a
+// broken value is above every safe one.
+//
+// WHY IT IS TIGHTER THAN dd_one_live_bound's PLAIN COUNT.  Plain double dummy
+// credits the pair with the nil's own high cards, which a clean nil can never
+// cash.  Demotion removes exactly those.  In a lab build the demoted count cut
+// 50% of eligible safe-band boundaries against 36% for the plain count, with
+// zero disagreements with the search over 6.55M checks.
+//
+// COST, AND THE GATE.  One zero-window engine probe per use -- the reason the
+// plain-count bound (dd_live_bounds) lost on the slowest deals.  A probe only
+// pays where the subtree it can remove is deep, so it runs only from
+// `demoted_dd_min_t` tricks up, and only on nodes the table did not answer.
+// Measured on the 123 single-nil deals of the 155-deal per-card benchmark
+// (values-only rows, two interleaved reps), against the bound off:
+//
+//     from t >= 12   nodes -2.7%   wall -0.2%
+//     from t >= 10   nodes -3.3%   wall -2.3%
+//     from t >=  8   nodes -3.7%   wall -3.2%   <- the default
+//     from t >=  6   nodes -3.8%   wall -1.5%
+//     from t >=  4   nodes -3.7%   wall -0.3%
+//
+// The saving is lumpy: s1-27 34.1M -> 9.8M nodes (3.8 s -> 1.1 s), and a
+// handful of deals lose up to a quarter on a fraction of a second, where a cut
+// bound displaced table entries the rest of the search would have reused.
+bool demoted_dd_bound(Ctx& ctx, const State& st, int beta, int& value) {
+    const int t = count_cards(st.hands[st.leader]);
+    const int K = -ctx.secondary_weight;
+    const int x = (-beta) / K;  // beta <= 0, so this is a floor
+    if (x + 1 > t) return false;  // the pair cannot even be asked for x + 1
+    const int nil = ctx.nil_seat;
+    Hand demoted[4] = {0, 0, 0, 0};
+    for (int su = 0; su < 4; ++su) {
+        const Hand m = suit_mask(su);
+        Hand slots = (st.hands[0] | st.hands[1] | st.hands[2] | st.hands[3]) & m;
+        const int nn = count_cards(st.hands[nil] & m);
+        for (int i = 0; i < nn; ++i) demoted[nil] |= card_bit(take_lowest(slots));
+        // The other cards, in rank order, take the remaining slots in order.
+        Hand others = (st.hands[0] | st.hands[1] | st.hands[2] | st.hands[3]) & m & ~st.hands[nil];
+        while (others) {
+            const CardId c = take_lowest(others);
+            const CardId slot = take_lowest(slots);
+            for (int q = 0; q < 4; ++q) {
+                if (st.hands[q] & card_bit(c)) demoted[q] |= card_bit(slot);
+            }
+        }
+    }
+    dd::Engine& eng = dd::engine();
+    const std::uint64_t before = eng.stats().nodes;
+    const bool nil_ns = (nil & 1) == 0;
+    const bool reach = nil_ns ? eng.ns_reach(demoted, st.leader, st.broken, x + 1, nullptr)
+                              : !eng.ns_reach(demoted, st.leader, st.broken, t - x, nullptr);
+    ctx.nodes += eng.stats().nodes - before;
+    if (reach) return false;
+    value = -K * x;  // D' <= x, so the value is at least -K * x, which is >= beta
+    return true;
+}
+
 bool dd_one_live_bound(Ctx& ctx, const State& st, int alpha, int beta, int& value) {
     const unsigned live = ctx.nil_mask & ~st.nils_broken;
     if (!live || (live & (live - 1))) return false;  // exactly one live bid
@@ -1482,7 +1580,12 @@ int search_impl(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
         unsigned doomed = 0;
         for (unsigned rest = live; rest; rest &= rest - 1) {
             const int seat = lowest_card(static_cast<Hand>(rest));
-            if (nil_must_take_a_trick(st.hands, seat)) doomed |= 1u << seat;
+            const bool must = nil_must_take_a_trick(st.hands, seat);
+            if (must) doomed |= 1u << seat;
+            // Handed to the search_core call below (Q7).  Only a `false`
+            // survives to be read: a doomed nil is charged, and the charged
+            // state skips every block that asks.
+            if (seat == ctx.nil_seat && ctx.boundary_facts) ctx.bf_must_take = must ? 1 : 0;
         }
         if (doomed) {
             State charged = st;
@@ -1514,11 +1617,16 @@ int search_core(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
     // where nearly all of them are.
     const bool want_move = ctx.want_move;
     ctx.want_move = false;
+    // Q7: what search_impl already asked about this very state, taken before
+    // anything below can recurse and clear or overwrite it.
+    const signed char known_must_take = ctx.bf_must_take;
+    ctx.bf_must_take = -1;
+    signed char known_cbf = -1;
     if (st.empty()) return 0;
     if (ctx.dd_engine && st.trick_len == 0) {
         int offset = 0;
         if ((ctx.nil_mask & ~st.nils_broken) == 0 ||
-            dd_pinned_offset(ctx, st, offset)) {
+            dd_pinned_offset(ctx, st, offset, ctx.boundary_facts ? &known_cbf : nullptr)) {
             if constexpr (TRACK)
                 *essential = st.hands[0] | st.hands[1] | st.hands[2] | st.hands[3];
             return dd_settled_value(ctx, st, best_move, alpha, beta, offset);
@@ -1801,6 +1909,74 @@ int search_core(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
                 if (followers >= 2) *essential = card_bit(won);
             }
             return gained;
+        }
+    }
+
+    // ---- M4: THE ADVERSARIAL PROOFS WHERE ONE BID OF TWO IS STILL LIVE ------
+    //
+    // Item 81, revived (Sept 2026).  With a bid on each side, or a pair that
+    // both bid, disable_single_nil_machinery() switches the proofs off, because
+    // their consumers speak about "the nil" and "its cover".  But once exactly
+    // one bid L is still live, the objective IS a single-nil question in
+    // disguise: the value is
+    //
+    //     delta * [L breaks] + S * (tricks)      |delta| >= K*K > |S| * t
+    //
+    // (delta = one step of outcome rank for a bid each side, one bid down for
+    // a pair), and L's own side prefers L alive in every strictly opposed lean
+    // and in a pair (side_rank; bids down).  So whichever side can FORCE L's
+    // outcome pins the band the value lies in under optimal play: every alive
+    // outcome beats every broken one for L's side, so if L's side can keep L
+    // clean the minimax value is an alive outcome, and if the other side can
+    // break it the value is a broken one.
+    //
+    // THE PROOFS APPLY UNCHANGED.  nil_duck_or_cover (S11) and the forcing
+    // leads (D1/D1b) are statements about L's hand, its partner's and the two
+    // opponents'; they read no roles.  In a pair, the partner whose bid is
+    // already down is exactly a cover -- it plays freely and its tricks count
+    // for the pair -- and in a bid-each-side deal the broken bidder across the
+    // table is exactly an opponent.  That is item 81's "what would revive it":
+    // a cheap proof that covers a live bidder holding spades with covers,
+    // which the every-line proofs cannot.
+    //
+    // ADVERSARIAL, SO BAND BOUNDS ONLY -- never dd_pinned_offset, never the
+    // doom charge (the invariant in bounds.hpp).  The window test comes first:
+    // a proof is only asked when its band misses the window.  Fail-soft, stored
+    // nowhere.  Verified in a lab build before it was allowed to cut: zero
+    // disagreements over 9.2M firings on 15 hard deals, and none in 110,000
+    // random 2-9 card positions in every seat shape against the arm off.
+    // Measured on the per-card call over 155 thirteen-card deals: -7.7% of
+    // nodes and -4.4% of wall time in all, all of it on the two-bid deals --
+    // one bid per side #4, the slowest deal of the set, 24.5 s -> 22.3 s;
+    // #6 2.1 s -> 0.6 s.
+    if (ctx.multi_live_proofs && st.trick_len == 0 && (ctx.multi_nil || ctx.opposing) &&
+        !ctx.conjunction && !ctx.value_is_nil_tricks) {
+        const unsigned live = ctx.nil_mask & ~st.nils_broken;
+        if (live && !(live & (live - 1))) {
+            const int L = lowest_card(static_cast<Hand>(live));
+            const int t = count_cards(st.hands[st.leader]);
+            const int span = ctx.secondary_weight * t;
+            const int slo = span < 0 ? span : 0;
+            const int shi = span > 0 ? span : 0;
+            if (ctx.m4_safe && st.leader != L && (shi <= alpha || slo >= beta) &&
+                nil_duck_or_cover(st.hands, L, false)) {
+                best_move = first_legal_move(st);
+                return shi <= alpha ? shi : slo;
+            }
+            if (ctx.m4_doom && ((st.leader ^ L) & 1)) {
+                const int delta =
+                    ctx.opposing ? ctx.primary_weight * (far_side_rank(st.nils_broken | live, ctx) -
+                                                         far_side_rank(st.nils_broken, ctx))
+                                 : ctx.primary_weight;
+                const int dlo = delta + slo;
+                const int dhi = delta + shi;
+                if ((dhi <= alpha || dlo >= beta) &&
+                    (forcing_lead_suit(st.hands, L, st.leader, st.broken) >= 0 ||
+                     forced_ruff_lead(st.hands, L, st.leader))) {
+                    best_move = first_legal_move(st);
+                    return dhi <= alpha ? dhi : dlo;
+                }
+            }
         }
     }
 
@@ -2187,7 +2363,9 @@ int search_core(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
         st.trick_len == 0) {
         const int t = count_cards(st.hands[ctx.nil_seat]);
         if ((st.hands[ctx.nil_seat] & suit_mask(SUIT_SPADES)) == 0) {
-            if (nil_cannot_be_forced(st.hands, ctx.nil_seat, st.leader == ctx.nil_seat)) {
+            if (known_cbf >= 0
+                    ? known_cbf != 0
+                    : nil_cannot_be_forced(st.hands, ctx.nil_seat, st.leader == ctx.nil_seat)) {
                 // n = 0 exactly, so the primary term vanishes and
                 // the value is secondary * p for some p in [0, t].  Two ends,
                 // ordered by the sign of the weight rather than assumed.
@@ -2216,7 +2394,8 @@ int search_core(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
             // for a reason that happens to hold for today's weights.
             const int per_nil = ctx.primary_weight + ctx.secondary_weight;
             if (per_nil > 0 && !(st.nils_broken & (1u << ctx.nil_seat)) &&
-                nil_must_take_a_trick(st.hands, ctx.nil_seat)) {
+                (known_must_take >= 0 ? known_must_take != 0
+                                      : nil_must_take_a_trick(st.hands, ctx.nil_seat))) {
                 const int worst_partner =
                     ctx.secondary_weight < 0 ? ctx.secondary_weight * (t - 1) : 0;
                 const int lo = per_nil + worst_partner;
@@ -2373,6 +2552,20 @@ int search_core(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
                     }
                 }
             }
+        }
+    }
+
+    if (ctx.demoted_dd_min_t > 0 && st.trick_len == 0 && beta <= 0 && ctx.dd_engine &&
+        !ctx.multi_nil && !ctx.opposing && !ctx.conjunction && !ctx.value_is_nil_tricks &&
+        ctx.primary_weight > 0 && ctx.secondary_weight < 0 &&
+        ((ctx.nil_mask >> ctx.nil_seat) & 1) && !(st.nils_broken & (1u << ctx.nil_seat)) &&
+        count_cards(st.hands[st.leader]) >= ctx.demoted_dd_min_t) {
+        int bound = 0;
+        if (demoted_dd_bound(ctx, st, beta, bound)) {
+            best_move = first_legal_move(st);
+            if constexpr (TRACK)
+                *essential = st.hands[0] | st.hands[1] | st.hands[2] | st.hands[3];
+            return bound;
         }
     }
 
@@ -2857,6 +3050,11 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
     ctx.order_moves = opts.order_moves;
     ctx.live_order = opts.live_order;
     ctx.tight_pv = opts.tight_pv;
+    ctx.boundary_facts = opts.boundary_facts;
+    ctx.multi_live_proofs = opts.multi_live_proofs;
+    ctx.demoted_dd_min_t = opts.demoted_dd_min_t;
+    ctx.m4_safe = opts.adversarial_safe;
+    ctx.m4_doom = opts.adversarial_doom;
     // MODE_FULL only.  The nil question asks whether a bidder can be made to
     // take a trick, and who else wins which trick is no part of it; measured,
     // the rule cost MODE_FAST 37% of its nodes on large.txt and 1.6% on the
@@ -2969,10 +3167,18 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
         opts.tt_megabytes == TT_AUTO ? TT_DEFAULT_MEGABYTES : opts.tt_megabytes;
     if (opts.use_memo && table_mb > 0) {
         TranspositionTable& table = shared_table();
-        table.resize(table_mb);  // a no-op at the size it already is
+        table.resize(table_mb, opts.huge_pages);  // a no-op at the size it already is
         table.new_search();               // this solve may not see the last one's values
         table.set_merge(opts.tt_two_bounds);
         ctx.tt = &table;
+    }
+
+    // The engine's table persists across solves, so this reallocates it only
+    // when the request actually changes.
+    if (opts.dd_engine) {
+        dd::engine().set_huge_pages(opts.huge_pages);
+        dd::engine().set_prefetch(opts.dd_prefetch);
+        dd::engine().new_solve(opts.dd_age);
     }
 
     // Last, so that nothing set above can turn a gate back on.  The opposing
@@ -4152,10 +4358,66 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
     const bool root_first = fast || opts.moves_root_search;
     int root_value = root_first ? search(ctx, root, root_move, alpha, beta) : 0;
 
+    // ROWS IN A PROMISING ORDER, REPORTED IN CANONICAL ORDER (Q4, Sept 2026;
+    // SearchOptions::row_order).
+    //
+    // Every row is an exact value whatever order the rows are scored in, so
+    // the order is free to choose -- and it matters twice.  Each row's MTD(f)
+    // sequence is seeded with the best row so far, so a best row scored first
+    // makes that seed right for every other row that ties it (two probes) and
+    // close for the rest.  And the first row fills the shared table with the
+    // principal subtree, which the other rows' refutations transpose into.
+    // This is DDS's "solutions = 3" shape: the best card first, then the others
+    // against its score.  The order is the one the search itself gives this
+    // node: the trick-oriented score (with 6b's attack first) for a seat
+    // without a live bid, 6a/6d's promotion for a live bidder.
+    //
+    // The rows are put back into canonical order below, before anything reads
+    // their order: is_best is set from the values, and the reported line is
+    // the first best row's in canonical order, re-derived canonically, exactly
+    // as before.  Measured on 155 thirteen-card deals (values-only rows, the
+    // rest of the Sept 2026 pass on): -4.9% of nodes and -4.8% of wall time in
+    // all, but per deal it is a coin flip (46 faster, 50 slower by 2%+): the
+    // total is carried by the pathological deal where the first canonical row
+    // is a poor seed, 14.1 s -> 6.2 s, against one bid per side #4 21.3 ->
+    // 22.3 s the other way.
+    CardId row_cards[16];
+    int n_rows = 0;
+    {
+        Hand rest = reps;
+        if (!fast && opts.row_order && (reps & (reps - 1)) != 0) {
+            const unsigned live = ctx.nil_mask & ~root.nils_broken;
+            if (ctx.trick_order && !((live >> seat) & 1u)) {
+                n_rows = trick_order_moves(ctx, root, seat, reps, row_cards);
+                const unsigned targets = live & ((seat & 1) ? 0x5u : 0xAu);
+                if (root.trick_len == 0 && targets && !(targets & (targets - 1))) {
+                    const CardId attack =
+                        opponent_attack_lead(root, lowest_card(static_cast<Hand>(targets)), reps);
+                    if (attack != NO_CARD && row_cards[0] != attack) {
+                        int j = 0;
+                        while (row_cards[j] != attack) ++j;
+                        for (; j > 0; --j) row_cards[j] = row_cards[j - 1];
+                        row_cards[0] = attack;
+                    }
+                }
+                rest = 0;
+                for (int i = 0; i < n_rows; ++i) rest |= card_bit(row_cards[i]);
+                rest = reps & ~rest;  // anything the score did not place (none, today)
+            } else if (ctx.order_moves && ctx.live_order) {
+                const CardId promoted = live_bid_promotion(ctx, root, seat, reps);
+                if (promoted != NO_CARD) {
+                    row_cards[n_rows++] = promoted;
+                    rest &= ~card_bit(promoted);
+                }
+            }
+        }
+        while (rest) row_cards[n_rows++] = take_lowest(rest);
+    }
+
     int best_value = 0;
     bool have_best = false;
-    for (Hand h = reps; h;) {
-        const CardId card = take_lowest(h);
+    for (int row = 0; row < n_rows; ++row) {
+        const CardId card = row_cards[row];
         MoveScore ms;
         ms.card = card;
         ms.equals =
@@ -4220,6 +4482,10 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
         }
         moves_out.push_back(ms);
     }
+    // Canonical order again (Q4): suit-major, ascending rank, which is card id
+    // order.  Everything after this line sees the list exactly as before.
+    std::sort(moves_out.begin(), moves_out.end(),
+              [](const MoveScore& a, const MoveScore& b) { return a.card < b.card; });
 
     if (moves_out.empty()) {
         err = "internal error: no legal move at a non-terminal position";
@@ -4254,6 +4520,62 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
         return false;
     }
 
+    // VALUES-ONLY ROWS (Q3, Sept 2026; SearchOptions::row_lines = false).
+    //
+    // Everything below the value in a row -- how many bids fall and which, the
+    // pair's tricks, the opponents' -- is a function of the value wherever the
+    // objective pins it, because the value IS those numbers packed.  So the
+    // packing is inverted rather than a line walked and replayed: every
+    // (broken mask, side tricks) pair the row could have is packed exactly the
+    // way the replay check below packs a replayed line, and the row is decoded
+    // when exactly one pair lands on its value.  The value is exact, so the
+    // decoded fields are exact; nothing is estimated.
+    //
+    // What is lost is what the value does not pin: the nil seat's own trick
+    // count (a nil pays only for its first trick, so the split with its
+    // partner is free once it is broken) and the line itself.  nil_tricks
+    // comes back TRICKS_NOT_COMPUTED and there is no principal variation.  A
+    // row the value does not pin -- a pair that both bid with one of them down,
+    // where the value cannot say which -- falls through to the line walk below,
+    // so every field that is reported is still exact.  Measured: the per-row
+    // line walk and replay was 17% of the per-card call's nodes.  Measured on
+    // 155 thirteen-card deals, two interleaved reps: -16.7% nodes and -17.8%
+    // wall time, 145 deals faster and 2 slower by 2%+.
+    const unsigned live_bids = live_nil_mask(roles);
+    int row_tricks = root.trick_len;
+    for (int s = 0; s < 4; ++s) row_tricks += count_cards(root.hands[s]);
+    row_tricks /= 4;
+    auto decode_row = [&](MoveScore& ms) -> bool {
+        int found = 0;
+        unsigned mask = 0;
+        int side = 0;
+        for (unsigned m = live_bids;; m = (m - 1) & live_bids) {
+            int broken = 0;
+            for (unsigned r = m; r; r &= r - 1) ++broken;
+            for (int T = 0; T <= row_tricks; ++T) {
+                const int packed =
+                    ctx.opposing ? weights.primary * (far_side_rank(m, ctx) - far_side_rank(0, ctx)) +
+                                       weights.secondary * (row_tricks - T)
+                                 : weights.primary * broken + weights.secondary * T;
+                if (packed != ms.value) continue;
+                if (found && (T != side || m != mask)) return false;  // not pinned
+                found = 1;
+                mask = m;
+                side = T;
+            }
+            if (m == 0) break;
+        }
+        if (!found) return false;
+        int broken = 0;
+        for (unsigned r = mask; r; r &= r - 1) ++broken;
+        ms.nils_set = broken + nil_set_count(roles);
+        ms.nils_set_mask = mask | nil_set_mask(roles);
+        ms.nil_side_tricks = side;
+        ms.opponent_tricks = row_tricks - side;
+        ms.nil_tricks = TRICKS_NOT_COMPUTED;
+        return true;
+    };
+
     for (MoveScore& ms : moves_out) {
         ms.is_best = ms.value == best_value;
         if (fast) {
@@ -4263,6 +4585,7 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
             ms.nils_set_mask = ms.nils_set ? (1u << roles.nil_seat()) : 0u;
             continue;
         }
+        if (!opts.row_lines && decode_row(ms)) continue;
         // MODE_FULL owes each move its trick counts, and they are recovered the
         // way solve() recovers the position's: walk the line this move leads
         // to, replay it from the ORIGINAL position with the move at its head,
@@ -4350,7 +4673,7 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
         // picked -- it enumerates from the bottom and replaces the incumbent
         // only on a strict improvement -- so keeping its line gives this entry
         // point the same principal variation, already replay-checked above.
-        if (out.pv.empty() && ms.value == best_value) out.pv = line;
+        if (out.pv.empty() && ms.value == best_value && opts.row_lines) out.pv = line;
     }
 
     // The position's own answer, taken from a best move rather than searched

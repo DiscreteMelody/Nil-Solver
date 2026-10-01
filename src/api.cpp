@@ -287,7 +287,10 @@ NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve_moves(
         prepare(pbn, leader, current_trick, seats, flags, pos, roles, opts, err_buf, err_len);
     if (rc != NIL_OK) return rc;
 
-    opts.canonical_pv = (flags & NIL_FLAG_FAST_LINE) == 0;
+    // FAST_LINE on the per-card call means VALUES-ONLY ROWS (Q3, Sept 2026):
+    // each row's counts are decoded from its exact value rather than read off
+    // a walked line.  See the header note on NIL_FLAG_FAST_LINE.
+    if (flags & NIL_FLAG_FAST_LINE) opts.row_lines = false;
 
     std::string err;
     nil::Solution sol;

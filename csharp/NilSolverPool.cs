@@ -6,7 +6,7 @@
 // solver safe to call concurrently with no locking and no thread-id argument --
 // unlike DDS, there is no scratch slot to collide on and nothing to serialise
 // for correctness.  The cost is that the table is allocated per thread and
-// stays there: the FIRST solve on a thread allocates 32 MiB (or whatever
+// stays there: the FIRST solve on a thread allocates 512 MiB (or whatever
 // nil_set_table_size last said on that thread) and the memory is held until
 // that thread calls nil_release_table or exits.
 //
@@ -14,7 +14,7 @@
 // cause.  Continuations land on whatever pool thread is free, so over a few
 // thousand requests the set of threads that have ever run a solve converges on
 // the set of pool threads, and each one is holding a table.  Fifty threads at
-// 32 MiB is 1.6 GB of transposition table for a workload that never has more
+// 512 MiB is 25 GB of transposition table for a workload that never has more
 // than a handful of solves in flight.  Bounding *concurrency* with a semaphore
 // -- the shape the DDS wrapper uses -- does not fix it, because the semaphore
 // bounds how many run at once and not which threads they run on.
@@ -51,11 +51,30 @@ namespace NilSolver
         /// reasonable starting point rather than all of them.
         /// </param>
         /// <param name="tableMegabytes">
-        /// Table size per worker. The default of 32 is the solver's own default.
-        /// Bigger helps deep positions and does nothing for shallow ones; total
-        /// resident memory is this times <paramref name="workers"/>.
+        /// Table size per worker. The default, <see cref="NilSolverNative.TableAuto"/>,
+        /// is the library's own default of 512 MiB; each worker also holds the
+        /// double-dummy engine's 64 MiB table, so resident memory is about
+        /// (this + 64 MiB) times <paramref name="workers"/>.
+        ///
+        /// This default used to be 32, which quietly made the hard deals several
+        /// times slower. Measured on the bot's call (ScoreMovesFull) over 155
+        /// thirteen-card deals, in-process, one worker, Sept 2026 (Linux, Xeon with a
+        /// 33 MiB L3; re-measure on very different hardware, since the optimum
+        /// tracks the cache):
+        ///
+        ///     MiB   total wall   nodes    slowest deal
+        ///     512   (baseline)            39.6 s
+        ///     256     +3.1%      +3.9%    46.8 s
+        ///     128    +12.9%     +16.0%    66.8 s
+        ///      64    +34.7%     +44.1%   108.0 s
+        ///      32    +85.4%    +104.8%   189.4 s
+        ///
+        /// The median deal does not care (0.36-0.37 s at every size); the tail does,
+        /// because it is where the table overflows. 1024 MiB bought nothing
+        /// further on the ten slowest deals (-0.5% wall, within noise). Pass a smaller
+        /// size only when memory per worker matters more than the tail.
         /// </param>
-        public NilSolverPool(int workers = 0, uint tableMegabytes = 32)
+        public NilSolverPool(int workers = 0, uint tableMegabytes = NilSolverNative.TableAuto)
         {
             if (workers <= 0) workers = Math.Max(1, Environment.ProcessorCount / 2);
 

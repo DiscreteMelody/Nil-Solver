@@ -248,6 +248,11 @@ int main(int argc, char** argv) {
             }
             int got = 0, want = 0;
             CardId best = NO_CARD;
+            // Every position is a new solve as far as the engine's aging is
+            // concerned (dd::Engine::new_solve): facts from earlier positions
+            // stay readable but are replaced first -- and must still be right
+            // when they are read back here.
+            dd::engine().new_solve(true);
             if (check_position(h, leader, broken, t, got, want, best)) continue;
             ++failures;
             if (failures <= 10) {

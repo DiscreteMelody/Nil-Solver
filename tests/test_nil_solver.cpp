@@ -2811,6 +2811,59 @@ int main(int argc, char** argv) {
         check("fast mode lists the same three", static_cast<long long>(n3), 3LL);
         check("fast mode withholds a row's count", static_cast<long long>(rows[0].nil_tricks),
               static_cast<long long>(NIL_TRICKS_UNKNOWN));
+
+        // NIL_FLAG_FAST_LINE on the per-card call: values-only rows (Q3, Sept
+        // 2026).  Every field the value pins must match the walked lines, row
+        // for row, on every seat shape; only nil_tricks is withheld.
+        const char* deals[] = {"N:KJ.7.A3.Q6 .A.Q8.AKJ3 .T9863.74. AT764..T2.",
+                               "N:.84.97.JT9 .A93.K62.7 J8.2..Q543 A65.J75.Q."};
+        const std::int32_t shapes[][4] = {
+            {NIL_ROLE_NIL, NIL_ROLE_OPPONENT, NIL_ROLE_COVER, NIL_ROLE_OPPONENT},
+            {NIL_ROLE_NIL_SET, NIL_ROLE_OPPONENT, NIL_ROLE_COVER, NIL_ROLE_OPPONENT},
+            {NIL_ROLE_NIL, NIL_ROLE_NIL, NIL_ROLE_COVER, NIL_ROLE_OPPONENT},
+            {NIL_ROLE_NIL, NIL_ROLE_OPPONENT, NIL_ROLE_NIL, NIL_ROLE_OPPONENT}};
+        int values_rows = 0;
+        int values_diff = 0;
+        int values_known = 0;
+        for (const char* deal : deals) {
+            for (const auto& shape : shapes) {
+                for (std::uint32_t dir : {0u, static_cast<std::uint32_t>(NIL_FLAG_MINIMISE_OWN_TRICKS)}) {
+                    nil_result ra, rb;
+                    nil_move ma[NIL_MAX_MOVES], mb[NIL_MAX_MOVES];
+                    std::int32_t na = 0, nb = 0;
+                    const std::int32_t e1 = nil_solve_moves(deal, NIL_SEAT_EAST, "", shape, dir, &ra,
+                                                            ma, NIL_MAX_MOVES, &na, err, sizeof err);
+                    const std::int32_t e2 = nil_solve_moves(deal, NIL_SEAT_EAST, "", shape,
+                                                            dir | NIL_FLAG_FAST_LINE, &rb, mb,
+                                                            NIL_MAX_MOVES, &nb, err, sizeof err);
+                    if (e1 != NIL_OK && e1 == e2) continue;  // a shape this build refuses
+                    if (e1 != NIL_OK || e2 != NIL_OK || na != nb ||
+                        ra.nils_set != rb.nils_set || ra.nil_side_tricks != rb.nil_side_tricks ||
+                        ra.opponent_tricks != rb.opponent_tricks) {
+                        ++values_diff;
+                        continue;
+                    }
+                    for (std::int32_t i = 0; i < na; ++i) {
+                        ++values_rows;
+                        if (ma[i].suit != mb[i].suit || ma[i].rank != mb[i].rank ||
+                            ma[i].nils_set != mb[i].nils_set ||
+                            ma[i].nils_set_mask != mb[i].nils_set_mask ||
+                            ma[i].nil_side_tricks != mb[i].nil_side_tricks ||
+                            ma[i].opponent_tricks != mb[i].opponent_tricks ||
+                            ma[i].is_best != mb[i].is_best) {
+                            ++values_diff;
+                        }
+                        // Withheld unless the row still walked its line (a
+                        // pair that both bid, one of them down).
+                        if (mb[i].nil_tricks != NIL_TRICKS_UNKNOWN) ++values_known;
+                    }
+                }
+            }
+        }
+        check("FAST_LINE values-only rows scored", values_rows > 50, true);
+        check("FAST_LINE values-only rows equal the walked rows", values_diff, 0);
+        check("FAST_LINE withholds nil_tricks where the value pins the mask",
+              values_known < values_rows, true);
     }
 
     // ---------------------------------------------------------------------

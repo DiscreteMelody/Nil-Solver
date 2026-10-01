@@ -510,15 +510,15 @@ extern "C" {
 /* Pass to nil_set_table_size to go back to letting the library choose the
  * table size, which is what a process that never calls it already gets.
  *
- * It resolves to a FIXED 256 MiB, for every hand size and both modes, as of
- * patch 33.  It used to be a schedule that sized the table to the position;
+ * It resolves to a FIXED 512 MiB (256 MiB from patch 33, 512 since patch 95),
+ * for every hand size and both modes.  It used to be a schedule that sized the table to the position;
  * that is a worse idea than it looks, because the table is re-zeroed whenever
  * the requested size changes and a hand played out asks for a smaller table
  * every trick or two.  A worker following a live game paid 51 ms per deal
  * walking the schedule down and back up.  One size makes every resize after the
  * first free.
  *
- * The table is thread_local and never shrinks, so 256 MiB per worker thread is
+ * The table is thread_local and never shrinks, so 512 MiB per worker thread is
  * both the steady state and the high-water mark -- which is the point: the
  * footprint is now predictable rather than a function of what was last asked.
  * The first solve on a thread spends about 133 ms allocating and faulting it
@@ -544,7 +544,26 @@ extern "C" {
  * and this flag does not reach it, because there it is the only thing making
  * that field deterministic.
  *
- * Ignored by nil_solve_pv: a caller asking for a line is asking for that one. */
+ * Ignored by nil_solve_pv: a caller asking for a line is asking for that one.
+ *
+ * UNDER THE CHARGED-ONCE OBJECTIVE (Sept 2026) the paragraph above overstates
+ * one thing: nil_tricks is no longer pinned by the value.  A nil pays only for
+ * its first trick, so once it is broken the split of the pair's tricks between
+ * the nil and its partner is a free choice, and the count reported is one
+ * optimal line's witness.
+ *
+ * ON nil_solve_moves THIS FLAG MEANS VALUES-ONLY ROWS (Sept 2026).  No line is
+ * recovered or replayed for any card.  Each row's counts are decoded from its
+ * exact value instead -- the value is those numbers packed, so the decode is
+ * exact wherever the objective pins them.  Unchanged, card for card: the value,
+ * nils_set, nils_set_mask, nil_side_tricks, opponent_tricks and is_best, and
+ * the same for the nil_result.  Lost: nil_tricks, in every row and in the
+ * nil_result, which read NIL_TRICKS_UNKNOWN.  A row whose mask the value cannot
+ * pin (a pair that both bid nil, one of them down) still walks its line, so
+ * every reported field stays exact.  Measured on 155 thirteen-card deals: the
+ * per-card call 17.8% faster in total (145 deals faster, 2 slower by more than
+ * 2%), nodes -16.7%; the old canonical-skip reading of this flag was 15.4%
+ * faster in total but visited MORE nodes on 67 of the deals. */
 #define NIL_FLAG_FAST_LINE 0x1000u
 
 /* What the trick counts read under NIL_FLAG_FAST_MODE.  Deliberately not zero:
@@ -737,7 +756,8 @@ typedef struct nil_move {
     int32_t nils_set;
     /* As nil_result's, but for the line this card leads to, and INCLUDING the
      * trick this card completes if it completes one.  All three are
-     * NIL_TRICKS_UNKNOWN under NIL_FLAG_FAST_MODE. */
+     * NIL_TRICKS_UNKNOWN under NIL_FLAG_FAST_MODE; nil_tricks alone is under
+     * NIL_FLAG_FAST_LINE (values-only rows). */
     int32_t nil_tricks;
     int32_t nil_side_tricks;
     int32_t opponent_tricks;
@@ -799,9 +819,14 @@ NIL_SOLVER_API int32_t NIL_SOLVER_CALL nil_solve_moves(const char* pbn, int32_t 
 /* Set the transposition table size, in mebibytes, for subsequent calls on the
  * calling thread.  The table is per-thread, and so is this setting.  Rounded DOWN to a power-of-two bucket count, so the table actually
  * allocated holds between half and all of what was asked for.  Zero has the
- * same effect as NIL_FLAG_NO_MEMO.  The default is 32.
+ * same effect as NIL_FLAG_NO_MEMO.  A thread that never calls this gets
+ * NIL_TABLE_AUTO, which is 512 MiB.
  *
  * Bigger is faster on deep positions and makes no difference on shallow ones.
+ * Measured on nil_solve_moves over 155 thirteen-card deals (Sept 2026): total
+ * wall time +3% at 256 MiB, +13% at 128, +35% at 64 and +85% at 32 against
+ * 512, and the slowest deal 39.6 s at 512 against 189 s at 32.  1024 bought
+ * nothing further.
  * The table is bounded, so the node count a deep search reports depends on this
  * setting; the ANSWER never does. */
 NIL_SOLVER_API void NIL_SOLVER_CALL nil_set_table_size(uint32_t megabytes);

@@ -98,6 +98,25 @@ import sys
 # opposed13_settled.  Each row below gives the figure with the trick order
 # alone, which `--no-killer-order` reproduces exactly (all nine checked), and
 # the figure checked.
+#
+# RE-BANKED BY THE SECOND SEPT 2026 OPTIMIZATION PASS (ROADMAP.md).  Two causes,
+# kept apart, and each control arm reproduces the previous figure exactly:
+#   * M4, the adversarial proofs in the one-live-bid regions of the two-bid
+#     shapes, moves the four two-bid rows DOWN (`--no-multi-live-proofs`
+#     reproduces them): multinil -9.0%, opposed13 -16.0%, opposed13_real
+#     -3.9%; opposed13_settled does not move (its bids are settled).
+#   * A4, the nil-demoted double-dummy bound from 8 tricks up, moves large.txt
+#     full UP by 1,987 nodes, +0.02%, in its 8-12 card rows (`--demoted-dd 0`
+#     reproduces it); the 13-card rows do not move.
+#   * the engine table's aging (a solve's stale entries are replaced first)
+#     moves three rows by a few nodes in either direction, because nil_bench
+#     solves its positions one after another in one process and the engine's
+#     table carries over between them: large.txt full 7,954,566 -> 7,954,436,
+#     large.txt 13c only 7,849,554 -> 7,849,414, opposed13 102,479,375 ->
+#     102,479,390 (`--no-dd-age` reproduces each).
+# The pass's other changes are node-identical (memory layout, prefetching, the
+# boundary-fact cache) or confined to solve_moves (row order, values-only
+# rows), which none of these run.
 BASELINES = [
     # 39,701 before the adversarial-proofs patch (-44.6%); 22,009 after it;
     # 17,564 after the ordering study (-20.2%).
@@ -118,7 +137,9 @@ BASELINES = [
     # 14,723,260 after the adversarial proofs (-1.2%); 12,056,774 with the
     # trick order (-18.1%); 7,952,579 with the killer too (-46.0% on
     # 14,723,260).
-    ("large.txt full", 7_952_579,
+    # 7,952,579 before the second Sept 2026 pass (+0.02%, A4; 7,954,566 before
+    # the engine's aging, -130; see above).
+    ("large.txt full", 7_954_436,
      ["--corpus", "tests/corpus/large.txt", "--mode", "full"]),
     # NOT one of the four hand-run baselines Phase A set out to verify.  Added
     # at patch 105 as a CONSISTENCY CHECK on the worst-case leg's subtotal in
@@ -128,12 +149,14 @@ BASELINES = [
     # the pass; 14,584,088 after the adversarial proofs (-0.7%); 11,953,123
     # with the trick order (-18.0%); 7,849,554 with the killer too (-46.2% on
     # 14,584,088).
-    ("large.txt 13c only", 7_849_554,
+    # 7,849,554 before the engine's aging in the second Sept 2026 pass (-140).
+    ("large.txt 13c only", 7_849_414,
      ["--corpus", "tests/corpus/large.txt", "--cards-only", "13"]),
     # 4,833,200 at patch 108; 3,958,328 at HEAD c35614b; 2,425,248 after the
     # pass (-39% on HEAD); 2,397,142 with the trick order (-1.2%); 2,331,066
     # with the killer too (-3.9% on 2,425,248).
-    ("multinil.txt", 2_331_066,
+    # 2,331,066 before the second Sept 2026 pass (-9.0%, M4; see above).
+    ("multinil.txt", 2_122_172,
      ["--corpus", "tests/corpus/multinil.txt"]),
     # Roles in the file header, not in the rows -- see the module docstring.
     # 351,156,828 at patch 108; 271,522,655 at HEAD c35614b; 182,407,101 after
@@ -141,7 +164,9 @@ BASELINES = [
     # (-8.7%, all of it in the single-nil presolve probes); 123,215,403 with
     # the trick order (-26.0%); 122,012,523 with the killer too (-26.8% on
     # 166,580,542).
-    ("opposed13", 122_012_523,
+    # 122,012,523 before the second Sept 2026 pass (-16.0%, M4; 102,479,375
+    # before the engine's aging, +15; see above).
+    ("opposed13", 102_479_390,
      ["--deals", "tests/corpus/opposed13.txt", "--seats", "0 0 3 2"]),
     # ROTATED roles, deliberately.  Not a copy of the line above.
     # 55,428,602 at patch 108; 3,437,862 at HEAD c35614b; 3,626,151 after the
@@ -154,7 +179,8 @@ BASELINES = [
     # the pass (-46% on HEAD); 86,579,369 after the adversarial proofs (-7.2%);
     # 58,292,306 with the trick order (-32.7%); 56,768,828 with the killer too
     # (-34.4% on 86,579,369).
-    ("opposed13_real", 56_768_828,
+    # 56,768,828 before the second Sept 2026 pass (-3.9%, M4; see above).
+    ("opposed13_real", 54_576_580,
      ["--corpus", "tests/corpus/opposed13_real.txt"]),
 ]
 

@@ -275,7 +275,7 @@ slots or they raced on the same native memory, and where this build turned out
 to support only slot 0.
 
 The catch is memory rather than correctness. The transposition table is
-`thread_local`: the first solve on a thread allocates 32 MiB by default and holds
+`thread_local`: the first solve on a thread allocates 512 MiB by default and holds
 it until that thread calls `nil_release_table` or exits. On the ASP.NET thread
 pool, continuations land on whatever thread is free, so over time every pool
 thread that has ever run a solve is holding a table. That is why
@@ -283,7 +283,7 @@ thread that has ever run a solve is holding a table. That is why
 
 ```csharp
 // Startup.cs / Program.cs
-services.AddSingleton(new NilSolverPool(workers: 2, tableMegabytes: 32));
+services.AddSingleton(new NilSolverPool(workers: 2));  // 512 MiB tables, the library default
 
 // somewhere in a request
 var r = await _pool.CanBeBrokenAsync(pbn, leader, trick, roles,

@@ -463,6 +463,13 @@ void usage(const char* argv0) {
               << "  --no-killer-order no last-cutting-move-second at scored nodes\n"
               << "  --no-tight-pv     re-derive lines under the caller's window\n"
               << "  --no-tt-two-bounds  one bound per table entry\n"
+              << "  --no-huge-pages   do not ask for 2 MiB pages for the tables\n"
+              << "  --no-dd-prefetch  read the engine's table profiles one miss at a time\n"
+              << "  --no-dd-age       no aging in the engine's table across solves\n"
+              << "  --no-boundary-facts  re-ask the nil proofs at every call site\n"
+              << "  --values-only     --check-moves rows decoded from their values\n"
+              << "  --no-row-order    --check-moves rows scored in canonical order\n"
+              << "  --no-multi-live-proofs  two-bid shapes: no proofs where one bid is live\n"
               << "                    (all of these: same answers, different nodes)\n"
               << "  --quick-tricks-stats  also report how often each later-tricks\n"
               << "                    arm's gate opens and how often it cuts\n"
@@ -760,6 +767,22 @@ int main(int argc, char** argv) {
             opts.tight_pv = false;
         } else if (arg == "--no-tt-two-bounds") {
             opts.tt_two_bounds = false;
+        } else if (arg == "--no-huge-pages") {
+            opts.huge_pages = false;
+        } else if (arg == "--no-dd-prefetch") {
+            opts.dd_prefetch = false;
+        } else if (arg == "--no-dd-age") {
+            opts.dd_age = false;
+        } else if (arg == "--no-boundary-facts") {
+            opts.boundary_facts = false;
+        } else if (arg == "--values-only") {
+            opts.row_lines = false;
+        } else if (arg == "--no-row-order") {
+            opts.row_order = false;
+        } else if (arg == "--no-multi-live-proofs") {
+            opts.multi_live_proofs = false;
+        } else if (arg == "--demoted-dd" && i + 1 < argc) {
+            opts.demoted_dd_min_t = std::atoi(argv[++i]);
         } else if (arg == "--no-dd-engine") {
             opts.dd_engine = false;
         } else if (arg == "--no-settled-tricks") {
@@ -1081,14 +1104,50 @@ int main(int argc, char** argv) {
                 ++failures;
             } else {
                 ++moves_checked;
-                if (msol.nils_set != sol.nils_set || msol.nil_tricks != sol.nil_tricks ||
+                // --values-only rows carry no nil_tricks and the position no
+                // line (SearchOptions::row_lines); everything else must agree.
+                const bool lines = move_opts.row_lines;
+                if (msol.nils_set != sol.nils_set ||
+                    (lines && msol.nil_tricks != sol.nil_tricks) ||
                     msol.nil_side_tricks != sol.nil_side_tricks) {
                     std::cout << "FAIL " << item.name
                               << ": the move list disagrees with the position\n  " << item.repro
                               << "\n";
                     ++failures;
                 }
-                if (opts.mode == nil::MODE_FULL &&
+                if (!lines) {
+                    // THE VALUES-ONLY DIFFERENTIAL (Q3): every field the value
+                    // pins must equal what walking each row's line reports.
+                    nil::SearchOptions line_opts = move_opts;
+                    line_opts.row_lines = true;
+                    nil::Solution lsol;
+                    std::vector<nil::MoveScore> lscored;
+                    if (!nil::solve_moves(item.position, item.roles, line_opts, lsol, lscored, err) ||
+                        lscored.size() != scored.size()) {
+                        std::cout << "FAIL " << item.name << ": values-only differential could not run\n  "
+                                  << item.repro << "\n";
+                        ++failures;
+                    } else {
+                        for (std::size_t r = 0; r < scored.size(); ++r) {
+                            const nil::MoveScore& a = scored[r];
+                            const nil::MoveScore& b = lscored[r];
+                            // Masks compared even where the value does not
+                            // pin them: those rows walk their line in both
+                            // modes, and the canonical line is unique.
+                            if (a.card != b.card || a.value != b.value || a.is_best != b.is_best ||
+                                a.nils_set != b.nils_set || a.nil_side_tricks != b.nil_side_tricks ||
+                                a.opponent_tricks != b.opponent_tricks ||
+                                a.nils_set_mask != b.nils_set_mask) {
+                                std::cout << "FAIL " << item.name << ": values-only row "
+                                          << nil::card_to_string(a.card)
+                                          << " differs from its walked line\n  " << item.repro << "\n";
+                                ++failures;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (opts.mode == nil::MODE_FULL && lines &&
                     nil::format_pv_compact(msol) != nil::format_pv_compact(sol)) {
                     std::cout << "FAIL " << item.name << ": the move list picks a different line\n"
                               << "    plain " << nil::format_pv_compact(sol) << "\n"
