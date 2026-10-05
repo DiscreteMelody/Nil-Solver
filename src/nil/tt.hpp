@@ -148,6 +148,11 @@ enum ValueTag : std::uint8_t {
     // share entries with a plain fast search at the same cards even though both
     // store 0 or 1.
     TAG_CONJUNCTION = 5,
+    // Three bids (Oct 2026): an outcome rank on a six-rung ladder plus the far
+    // side's tricks.  The same KIND of value as TAG_OPPOSING_NILS, on a
+    // different ladder, so it gets its own tag rather than sharing one.  The
+    // tag has three bits, so 7 is the last value left.
+    TAG_THREE_NILS = 6,
 };
 
 // BOTH BOUNDS, NOT ONE (SearchOptions::tt_two_bounds).

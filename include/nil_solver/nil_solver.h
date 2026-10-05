@@ -137,12 +137,44 @@ extern "C" {
  * break it.  Note that `leader` is NOT relative in this way: it is an absolute
  * NIL_SEAT_*, as it always was.
  *
- * WHAT IS ACCEPTED TODAY.  Exactly one seat holds a nil, exactly one covers it,
- * the cover sits across from the nil bidder, and the other two oppose.  Any
- * other arrangement is refused: a value outside 0..3 or a malformed layout as
- * NIL_ERR_ILLEGAL_POSITION, and a well-formed layout with two nils in it as
- * NIL_ERR_UNSUPPORTED, so a caller can tell a typo from a feature that has not
- * landed yet. */
+ * WHAT IS ACCEPTED TODAY.  (This paragraph said "exactly one nil" long after
+ * that stopped being true.)
+ *
+ *   one nil       the bidder, its cover across the table, two opponents:
+ *                 { 0 3 2 3 }.  The bidder may be NIL_ROLE_NIL_SET.
+ *   a pair        both partners bid, the other two oppose: { 0 3 0 3 }.  Either
+ *                 or both may be NIL_ROLE_NIL_SET.
+ *   one each      a bid on each side, both live.  The role on each bidder's
+ *                 PARTNER is that side's lean, not a statement about teams:
+ *                 NIL_ROLE_COVER saves its own bid first, NIL_ROLE_OPPONENT
+ *                 sets theirs first.  Only opposite leans are a two-team game
+ *                 the full solver answers: { 0 3 2 0 }.
+ *   three bids    one pair both bid (the twins), the other pair has one bid
+ *                 and one seat with no bid, whose role is that side's lean as
+ *                 above: { 0 0 3 0 }, { 0 0 2 0 }.  All three must be LIVE.
+ *
+ * THREE BIDS, AND WHAT TO PASS ONCE ONE BREAKS.  The objective is a fixed
+ * ranking of the six outcomes for the lone bid's side -- see nil_result's
+ * nils_set below -- and the twins rank them in exactly the reverse order, so
+ * it is an ordinary two-team game.  When a bid breaks in the real game, pass
+ * the roles this conversion gives rather than NIL_ROLE_NIL_SET, which is
+ * refused on this shape so that every state has one spelling:
+ *
+ *   a twin breaks        it takes the lean OPPOSITE the lone bid's partner:
+ *                        { 0 0 3 0 } with East down becomes { 0 2 3 0 },
+ *                        { 0 0 2 0 } with East down becomes { 0 3 2 0 }
+ *   the lone bid breaks  it and its partner both become NIL_ROLE_OPPONENT:
+ *                        { 0 0 3 0 } with North down becomes { 3 0 3 0 }
+ *
+ * Re-solving from the converted roles gives the same verdicts and trick totals
+ * as the three-bid solve did over the rest of the hand
+ * (tools/three_nil_crosscheck.py --subgame checks exactly that).
+ *
+ * Anything else is refused: a value outside 0..3 or a malformed layout as
+ * NIL_ERR_ILLEGAL_POSITION, and a well-formed layout this build does not take
+ * -- four nils, a three-bid layout with a bid already down -- as
+ * NIL_ERR_UNSUPPORTED, so a caller can tell a typo from a deal this build does
+ * not answer. */
 /* A nil bidder that has not yet taken a trick. */
 #define NIL_ROLE_NIL 0
 /* A nil bidder whose nil is already broken.  This is what the retired
@@ -593,7 +625,8 @@ extern "C" {
 #define NIL_ERR_BUFFER_TOO_SMALL (-4)
 #define NIL_ERR_INTERNAL (-5)
 /* The call asked for something this build cannot produce: a principal variation
- * in fast mode, or a `seats` array with more than one nil in it. */
+ * in fast mode, fast mode with more than one nil, or a `seats` array this build
+ * does not take (see "WHAT IS ACCEPTED TODAY" above). */
 #define NIL_ERR_UNSUPPORTED (-6)
 
 typedef struct nil_result {
@@ -603,7 +636,22 @@ typedef struct nil_result {
      * did; the field is a count because a pair that both bid nil has three
      * possible answers rather than two.  A bid declared broken by the caller
      * with NIL_ROLE_NIL_SET counts toward it, since the question is how many are
-     * down and not how many the search knocked down. */
+     * down and not how many the search knocked down.
+     *
+     * THREE BIDS: 0..3.  What the solver optimises there is the lone bid's
+     * side's ranking of the six outcomes, n being the lone bid making and d the
+     * number of twin bids down -- best first:
+     *
+     *   lone partner NIL_ROLE_OPPONENT     lone partner NIL_ROLE_COVER
+     *   (set theirs first)                 (save ours first)
+     *     n,  d=2                            n,  d=2
+     *     !n, d=2                            n,  d=1
+     *     n,  d=1                            n,  d=0   (all three make)
+     *     !n, d=1                            !n, d=2
+     *     n,  d=0   (all three make)         !n, d=1
+     *     !n, d=0                            !n, d=0
+     *
+     * with the twins' ranking its exact reverse, then each side's own tricks. */
     int32_t nils_set;
     /* Tricks the nil bidder takes from this position onward.  Not meaningful
      * when NIL_ROLE_NIL_SET and NIL_FLAG_MINIMISE_OWN_TRICKS are both in play;
@@ -658,7 +706,13 @@ typedef struct nil_result {
      * conservative on the pair shape: about five positions in six there are
      * determined too, but proving it per position needs a second search, and a
      * field that occasionally overstates is worse than one that uniformly
-     * understates. */
+     * understates.
+     *
+     * THREE BIDS are the exception to "the roles alone": the objective pins
+     * the lone bid's fate and HOW MANY twins are down, so the mask is pinned
+     * unless exactly one twin is in it, and this field says so for the mask it
+     * accompanies.  A move list row's mask follows the same rule: pinned unless
+     * exactly one of the two twins is in it. */
     int32_t nils_set_mask_determined;
 } nil_result;
 

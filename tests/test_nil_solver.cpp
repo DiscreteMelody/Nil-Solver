@@ -2359,7 +2359,7 @@ int main(int argc, char** argv) {
         };
         const Refusal refusals[] = {
             {"0 3 0 2", "a cover with nobody left to cover"},
-            {"0 0 0 3", "three nils"},
+            {"0 1 0 3", "three nils with one already down"},
         };
         for (const Refusal& r : refusals) {
             nil::SeatRoles bad;
@@ -2512,7 +2512,7 @@ int main(int argc, char** argv) {
         nil::Solution unused;
         check("fast mode refuses two bidders",
               nil::solve(funnel, pair_bids, fast_opts, unused, err), false);
-        check("and says why", err.find("two bidders") != std::string::npos, true);
+        check("and says why", err.find("more than one bidder") != std::string::npos, true);
         std::vector<nil::MoveScore> no_moves;
         check("so does solve_moves",
               nil::solve_moves(funnel, pair_bids, fast_opts, unused, no_moves, err), false);
@@ -2598,6 +2598,238 @@ int main(int argc, char** argv) {
         nil::Solution unused;
         check("fast mode refuses two bidders",
               nil::solve(one_trick, opposed, fast_opts, unused, err), false);
+    }
+
+    std::cout << "Three nils\n";
+    {
+        std::string err;
+        nil::SearchOptions plain;
+
+        // ALL EIGHT ARRANGEMENTS: the lone bid in each seat, its partner
+        // leaning either way.  The other two seats are the twins.
+        int recognised = 0;
+        int refused_set = 0;
+        for (int lone = 0; lone < 4; ++lone) {
+            for (int lean : {nil::ROLE_OPPONENT, nil::ROLE_COVER}) {
+                nil::SeatRoles roles;
+                for (int s = 0; s < 4; ++s) roles.role[s] = nil::ROLE_NIL;
+                roles.role[(lone + 2) & 3] = static_cast<nil::SeatRole>(lean);
+                if (nil::seat_shape(roles, err) == nil::SHAPE_THREE_NILS &&
+                    nil::nil_count(roles) == 3 && nil::strictly_opposed(roles)) {
+                    ++recognised;
+                }
+                // ONLY LIVE BIDS: each bid in turn declared down is refused, and
+                // refused as a deal this build does not take rather than as a
+                // malformed one -- the C ABI reads "not supported" for that.
+                for (int s = 0; s < 4; ++s) {
+                    if (s == ((lone + 2) & 3)) continue;
+                    nil::SeatRoles told = roles;
+                    told.role[s] = nil::ROLE_NIL_SET;
+                    std::string why;
+                    if (!nil::validate_seat_roles(told, why) &&
+                        why.find("not supported") != std::string::npos) {
+                        ++refused_set;
+                    }
+                }
+            }
+        }
+        check("all eight three-bid arrays are the three-nil shape", recognised, 8);
+        check("each with a bid already down is refused", refused_set, 24);
+        nil::SeatRoles four;
+        check("four nils parse", nil::parse_seat_roles("0 0 0 0", nil::SEAT_NORTH, four, err),
+              true);
+        check("and are refused", nil::validate_seat_roles(four, err), false);
+
+        // THE LADDER, rung by rung, exactly as T's conversion rule and his
+        // placement of "all three make" give it (seats.hpp).
+        const int set_theirs[2][3] = {{0, 2, 4}, {1, 3, 5}};  // [lone makes][twins down]
+        const int save_ours[2][3] = {{0, 1, 2}, {3, 4, 5}};
+        bool ladder_ok = true;
+        for (int n = 0; n < 2; ++n) {
+            for (int d = 0; d < 3; ++d) {
+                if (nil::three_nil_rank(n != 0, d, nil::ROLE_OPPONENT) != set_theirs[n][d] ||
+                    nil::three_nil_rank(n != 0, d, nil::ROLE_COVER) != save_ours[n][d]) {
+                    ladder_ok = false;
+                }
+            }
+        }
+        check("both ladders, rung by rung", ladder_ok, true);
+
+        nil::SeatRoles lean3;  // N lone, S leans "set theirs first", E/W twins
+        nil::SeatRoles lean2;  // the same with S leaning "save ours first"
+        check("0 0 3 0 parses", nil::parse_seat_roles("0 0 3 0", nil::SEAT_NORTH, lean3, err),
+              true);
+        check("0 0 2 0 parses", nil::parse_seat_roles("0 0 2 0", nil::SEAT_NORTH, lean2, err),
+              true);
+        int lone = 0, lean_seat = 0, twins[2] = {0, 0};
+        check("the seats are found", nil::three_nil_seats(lean3, lone, lean_seat, twins), true);
+        check("lone bid North", lone, nil::SEAT_NORTH);
+        check("lean on South", lean_seat, nil::SEAT_SOUTH);
+        check("twins East and West", twins[0] * 10 + twins[1], 13);
+
+        // ZERO-SUM, mask by mask, which is what lets it share the opposed
+        // machinery: the twins' rank is 5 minus the lone side's everywhere.
+        bool zero_sum = true;
+        for (unsigned m = 0; m < 16; ++m) {
+            if (nil::outcome_rank(lean3, m & 0xBu, 0) + nil::outcome_rank(lean3, m & 0xBu, 1) !=
+                    nil::THREE_NIL_TOP ||
+                nil::outcome_rank(lean2, m & 0xBu, 0) + nil::outcome_rank(lean2, m & 0xBu, 1) !=
+                    nil::THREE_NIL_TOP) {
+                zero_sum = false;
+            }
+        }
+        check("the two sides' ranks sum to 5 on every mask", zero_sum, true);
+        check("lean 3: E down alone is rank 3 for N/S", nil::outcome_rank(lean3, 0x2u, 0), 3);
+        check("lean 2: E down alone is rank 4 for N/S", nil::outcome_rank(lean2, 0x2u, 0), 4);
+
+        // THE RANK TABLE FOR ONE BID PER SIDE IS side_rank, mask by mask.  The
+        // search reads it from a table built by outcome_rank since three bids
+        // landed; this pins that the two-bid entries did not move.
+        nil::SeatRoles opposed;
+        check("0 3 2 0 parses", nil::parse_seat_roles("0 3 2 0", nil::SEAT_NORTH, opposed, err),
+              true);
+        bool two_bid_same = true;
+        for (unsigned m = 0; m < 16; ++m) {
+            const bool n_alive = (m & 0x1u) == 0;
+            const bool w_alive = (m & 0x8u) == 0;
+            if (nil::outcome_rank(opposed, m, 0) != nil::side_rank(n_alive, w_alive, 2) ||
+                nil::outcome_rank(opposed, m, 1) != nil::side_rank(w_alive, n_alive, 3)) {
+                two_bid_same = false;
+            }
+        }
+        check("one bid per side: outcome_rank is side_rank on every mask", two_bid_same, true);
+
+        // THE CONVERSION RULE, as the roles a caller passes after a break.
+        nil::SeatRoles after;
+        check("East breaks under lean 3",
+              nil::three_nil_after_set(lean3, nil::SEAT_EAST, after, err), true);
+        check("East becomes a 2", nil::seat_roles_to_string(after, nil::SEAT_NORTH), "0 2 3 0");
+        check("which is one bid per side, strictly opposed",
+              static_cast<int>(nil::seat_shape(after, err)),
+              static_cast<int>(nil::SHAPE_OPPOSING_NILS));
+        check("East breaks under lean 2",
+              nil::three_nil_after_set(lean2, nil::SEAT_EAST, after, err), true);
+        check("East becomes a 3", nil::seat_roles_to_string(after, nil::SEAT_NORTH), "0 3 2 0");
+        check("North breaks", nil::three_nil_after_set(lean3, nil::SEAT_NORTH, after, err), true);
+        check("North and South become 3s", nil::seat_roles_to_string(after, nil::SEAT_NORTH),
+              "3 0 3 0");
+        check("which is the twins' shape", static_cast<int>(nil::seat_shape(after, err)),
+              static_cast<int>(nil::SHAPE_PARTNER_NILS));
+        check("South holds no bid to break",
+              nil::three_nil_after_set(lean3, nil::SEAT_SOUTH, after, err), false);
+
+        // WHICH MASKS THE VALUE PINS: the lone bid and the number of twins
+        // down, so anything but exactly one twin.
+        check("nothing down is pinned", nil::mask_determined(lean3, 0, 0x0u), true);
+        check("North alone is pinned", nil::mask_determined(lean3, 1, 0x1u), true);
+        check("East alone is not", nil::mask_determined(lean3, 1, 0x2u), false);
+        check("North and East is not", nil::mask_determined(lean3, 2, 0x3u), false);
+        check("both twins is pinned", nil::mask_determined(lean3, 2, 0xAu), true);
+        check("all three is pinned", nil::mask_determined(lean3, 3, 0xBu), true);
+
+        // Weights as for one bid per side: one rung of six is K*K, which the
+        // trick term never reaches.
+        for (int t : {2, 5, 13}) {
+            const nil::ObjectiveWeights w = nil::objective_weights(t, lean3, plain);
+            check("three-bid weights separate at " + std::to_string(t) + " tricks",
+                  w.primary == (t + 1) * (t + 1) && w.secondary == t + 1, true);
+        }
+
+        // Hand-checkable endings.  South, the one seat with no bid, holds the
+        // only high card and leads it: nothing breaks.  East, a twin, leads it:
+        // East breaks alone, and since it is one twin of two the mask is the
+        // line's witness rather than pinned.
+        const Position calm = make_position("N:.2.. .3.. .A.. .4..", "S", true);
+        nil::Solution csol;
+        check("the calm ending solves", nil::solve(calm, lean3, plain, csol, err), true);
+        check("nothing breaks", csol.nils_set * 100 + static_cast<int>(csol.nils_set_mask), 0);
+        check("and the mask is pinned", csol.nils_set_mask_determined, true);
+        const Position forced = make_position("N:.2.. .A.. .3.. .4..", "E", true);
+        nil::Solution fsol;
+        check("the forced ending solves", nil::solve(forced, lean3, plain, fsol, err), true);
+        check("East breaks alone", static_cast<int>(fsol.nils_set_mask), 0x2);
+        check("one twin of two is not pinned", fsol.nils_set_mask_determined, false);
+        check("and E/W took the trick", fsol.opponent_tricks, 1);
+
+        // THE LEAN DECIDES, on the deal nil_oracle.py's selftest finds for it
+        // (seed 2021).  Leaning "set theirs first" North trades its own bid for
+        // East's -- rank 2 beats all three making at rank 1 -- and leaning "save
+        // ours first" it keeps everything alive, rank 3 against the trade's 1.
+        // Values, masks and lines are the oracle's.
+        const Position trade = make_position("N:.A6.T.3 4.4.4.K 6.9.Q6. .7..J64", "E", true);
+        nil::Solution t3;
+        nil::Solution t2;
+        check("lean 3 solves", nil::solve(trade, lean3, plain, t3, err), true);
+        check("lean 3 trades North for East", static_cast<int>(t3.nils_set_mask), 0x3);
+        check("lean 3: N/S take 3", t3.nil_side_tricks, 3);
+        check("lean 3 line is the oracle's", nil::format_pv_compact(t3),
+              "E:S4 S:S6 W:H7 N:H6 S:H9 W:C4 N:HA E:H4 N:DT E:D4 S:D6 W:C6 N:C3 E:CK S:DQ W:CJ");
+        check("lean 2 solves", nil::solve(trade, lean2, plain, t2, err), true);
+        check("lean 2 keeps all three alive", static_cast<int>(t2.nils_set_mask), 0);
+        check("lean 2: South takes all 4", t2.nil_side_tricks, 4);
+        check("lean 2 line is the oracle's", nil::format_pv_compact(t2),
+              "E:S4 S:S6 W:H7 N:H6 S:DQ W:C4 N:DT E:D4 S:D6 W:C6 N:HA E:H4 S:H9 W:CJ N:C3 E:CK");
+
+        // The table must not move the answer: the key carries the mask and the
+        // shape has its own value tag.
+        nil::SearchOptions no_tt;
+        no_tt.use_memo = false;
+        nil::Solution u3;
+        check("table off solves", nil::solve(trade, lean3, no_tt, u3, err), true);
+        check("and agrees on value and line",
+              u3.value == t3.value && nil::format_pv_compact(u3) == nil::format_pv_compact(t3),
+              true);
+        check("the shape has its own tag", nil::TAG_THREE_NILS != nil::TAG_OPPOSING_NILS, true);
+
+        // The move list is a second reading of the same search.
+        nil::Solution m3;
+        std::vector<nil::MoveScore> rows;
+        check("the move list solves", nil::solve_moves(trade, lean3, plain, m3, rows, err), true);
+        check("and agrees with the position",
+              m3.value == t3.value && m3.nils_set == t3.nils_set &&
+                  m3.nil_side_tricks == t3.nil_side_tricks,
+              true);
+
+        // Fast mode asks about one named seat; the conjunction probe about one
+        // bid on each side.  Three bids are neither.
+        nil::SearchOptions fast_opts;
+        fast_opts.mode = nil::MODE_FAST;
+        nil::Solution unused;
+        check("fast mode refuses three bidders",
+              nil::solve(trade, lean3, fast_opts, unused, err), false);
+        nil::SearchOptions conj_opts = fast_opts;
+        conj_opts.conjunction_seat = nil::SEAT_NORTH;
+        check("the conjunction probe refuses three bids",
+              nil::solve(trade, lean3, conj_opts, unused, err), false);
+
+        // THE C ABI: answered, and the two refusals under the right code.
+        const std::int32_t three[4] = {NIL_ROLE_NIL, NIL_ROLE_NIL, NIL_ROLE_OPPONENT,
+                                       NIL_ROLE_NIL};
+        const std::int32_t three_told[4] = {NIL_ROLE_NIL, NIL_ROLE_NIL_SET, NIL_ROLE_OPPONENT,
+                                            NIL_ROLE_NIL};
+        const std::int32_t all_four[4] = {NIL_ROLE_NIL, NIL_ROLE_NIL, NIL_ROLE_NIL,
+                                          NIL_ROLE_NIL};
+        nil_result r;
+        char ebuf[256];
+        const char* deal = "N:.A6.T.3 4.4.4.K 6.9.Q6. .7..J64";
+        check("nil_solve answers three bids",
+              static_cast<int>(nil_solve(deal, NIL_SEAT_EAST, "", three,
+                                         NIL_FLAG_SPADES_BROKEN, &r, ebuf, sizeof ebuf)),
+              NIL_OK);
+        check("with the same mask", r.nils_set_mask, 3);
+        check("a bid already down is unsupported, not malformed",
+              static_cast<int>(nil_solve(deal, NIL_SEAT_EAST, "", three_told,
+                                         NIL_FLAG_SPADES_BROKEN, &r, ebuf, sizeof ebuf)),
+              NIL_ERR_UNSUPPORTED);
+        check("four nils are unsupported",
+              static_cast<int>(nil_solve(deal, NIL_SEAT_EAST, "", all_four,
+                                         NIL_FLAG_SPADES_BROKEN, &r, ebuf, sizeof ebuf)),
+              NIL_ERR_UNSUPPORTED);
+        check("fast mode on three bids is unsupported",
+              static_cast<int>(nil_solve(deal, NIL_SEAT_EAST, "", three,
+                                         NIL_FLAG_SPADES_BROKEN | NIL_FLAG_FAST_MODE, &r, ebuf,
+                                         sizeof ebuf)),
+              NIL_ERR_UNSUPPORTED);
     }
 
     std::cout << "C ABI\n";

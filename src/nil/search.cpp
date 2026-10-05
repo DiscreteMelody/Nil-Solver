@@ -89,7 +89,23 @@ struct Ctx {
     // value is then how well the side opposite `nil_seat` is doing: its outcome
     // rank, which the other side's rank mirrors exactly because the two sum to
     // a constant, plus its own trick count.
+    //
+    // ALSO SET FOR THREE BIDS (Oct 2026), which is the same kind of objective
+    // on a longer ladder: an outcome rank that is a step function of the
+    // broken-bid mask, zero-sum between the sides, plus the far side's tricks.
+    // Everything this flag gates reads the rank through `rank_of`, so it never
+    // has to know how many bids there are; the few places that do are gated on
+    // `three_nils` by name.
     bool opposing = false;
+    // Three bids: the twins on one side, the lone bid and its lean on the
+    // other (SHAPE_THREE_NILS).  Implies `opposing`.
+    bool three_nils = false;
+    // THE OUTCOME RANK OF EVERY MASK, for the side opposite `nil_seat`,
+    // settled once in configure().  `far_side_rank` used to compute it from two
+    // bit tests and side_rank's branches; with three bids the ladder has six
+    // rungs and a third bidder, and a sixteen-entry table answers both shapes
+    // with one load.  Masks outside `nil_mask` are never reached.
+    int rank_of[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
     // ITEM 78's PROBE, which rides on the opposing shape rather than replacing
     // it.  The value is the CONJUNCTION indicator -- 1 exactly when the far
     // side's bid is alive and the near side's is dead -- so the window is
@@ -221,27 +237,30 @@ struct Ctx {
     // else, and there are four masks, so it is four pairs of numbers settled
     // once in configure() rather than a sixteen-way walk at every node.
     //
+    // INDEXED BY THE MASK ITSELF since three bids landed (Oct 2026).  Two bids
+    // reach four masks and three reach eight; a table over all sixteen holds
+    // either, and indexing by the mask is one AND where the two-bit index it
+    // replaced was two shifts and an OR.  The entries for the four two-bid
+    // masks are the numbers the old index held, computed the same way.
+    //
     // THE FIRST SPELLING COST 13.8% OF THROUGHPUT and gave back most of a 1.20x
     // node win.  It enumerated the reachable masks and popcounted each -- about
     // sixty-four iterations per node, to fire on a quarter of them.  That is
     // item 44's failure exactly, and unlike item 44 there was a cheaper
     // spelling sitting right there.
     //
-    // Indexed by (near bid down) << 1 | (far bid down), already multiplied by
-    // primary_weight, so a node adds only the trick span.
-    int reach_lo[4] = {0, 0, 0, 0};
-    int reach_hi[4] = {0, 0, 0, 0};
+    // Already multiplied by primary_weight, so a node adds only the trick span.
+    int reach_lo[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    int reach_hi[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
     // Which states can EVER fire, so the common case leaves after one test.
     // Measured on opposed13.txt: with both bids intact the reachable set spans
     // every rank and the bound answered 0 nodes of 68.5 million; with only the
     // near bid down it straddles the band and answered 0.41%.  Both are skipped
     // outright rather than computed and discarded.
-    bool reach_useful[4] = {false, false, false, false};
+    bool reach_useful[16] = {false, false, false, false, false, false, false, false,
+                             false, false, false, false, false, false, false, false};
 
-    int reach_index(unsigned mask) const {
-        return static_cast<int>((((mask >> nil_seat) & 1u) << 1) |
-                                ((mask >> far_nil_seat) & 1u));
-    }
+    int reach_index(unsigned mask) const { return static_cast<int>(mask & 15u); }
     QuickTrickStats* quick_stats = nullptr;  // roadmap item 43, measurement only
 
     // BOUNDARY FACTS, ASKED ONCE (Q7, Sept 2026; SearchOptions::boundary_facts).
@@ -621,11 +640,10 @@ inline int conjunction_value(unsigned mask, const Ctx& ctx) {
     return (far_alive && near_dead) ? 1 : 0;
 }
 
-inline int far_side_rank(unsigned mask, const Ctx& ctx) {
-    const bool far_survives = (mask & (1u << ctx.far_nil_seat)) == 0;
-    const bool near_survives = (mask & (1u << ctx.nil_seat)) == 0;
-    return side_rank(far_survives, near_survives, ctx.far_partner_role);
-}
+// A table since three bids landed; see Ctx::rank_of.  For one bid per side it
+// holds side_rank(far survives, near survives, far partner's role), which is
+// what this function computed inline before.
+inline int far_side_rank(unsigned mask, const Ctx& ctx) { return ctx.rank_of[mask & 15u]; }
 
 
 // ---- item 79: the reachable-rank bound, MEASURED but not spent -------------
@@ -3062,7 +3080,10 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
     {
         std::string ignored;
         SeatRoles copy = roles;
-        ctx.opposing = seat_shape(copy, ignored) == SHAPE_OPPOSING_NILS;
+        const SeatShape shape = seat_shape(copy, ignored);
+        // Three bids ride on the opposed machinery: see Ctx::opposing.
+        ctx.three_nils = shape == SHAPE_THREE_NILS;
+        ctx.opposing = shape == SHAPE_OPPOSING_NILS || ctx.three_nils;
     }
     ctx.multi_nil = !ctx.opposing && nil_count(roles) > 1;
     ctx.settled_tricks = opts.settled_tricks;
@@ -3085,12 +3106,22 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
         // The value is written from the side that does NOT hold ctx.nil_seat, so
         // that seat's parity keeps driving the existing maximising test: the
         // near side minimises, exactly as the nil side always has.
+        //
+        // With three bids the far side may hold two, and this keeps the last;
+        // what reads `far_nil_seat` there reads only its parity (item 82's
+        // side-wide floors), and `far_partner_role` is read only by the
+        // two-bid presolve, which three bids never reach.
         for (int seat = 0; seat < 4; ++seat) {
             if (roles.is_nil(seat) && ((seat ^ ctx.nil_seat) & 1) != 0) {
                 ctx.far_nil_seat = seat;
                 ctx.far_partner_role = roles.role[(seat + 2) & 3];
             }
         }
+        // The rank of every mask, from the far side.  outcome_rank() is the
+        // same side_rank call far_side_rank used to make per node for one bid
+        // per side, and the three-bid ladder for three.
+        const int far_side = (ctx.nil_seat + 1) & 1;
+        for (unsigned m = 0; m < 16; ++m) ctx.rank_of[m] = outcome_rank(roles, m, far_side);
     }
     // LIVE bids only.  An already-broken one carries no primary weight, and
     // leaving its bit in would charge the pair a second time for a bid it has
@@ -3246,6 +3277,8 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
     // one-nil search at the same cards, and the two are on different scales.
     ctx.tt_tag = ctx.conjunction
                      ? TAG_CONJUNCTION
+                 : ctx.three_nils
+                     ? TAG_THREE_NILS
                  : ctx.opposing
                      ? TAG_OPPOSING_NILS
                      : (ctx.multi_nil ? TAG_MULTI_NIL
@@ -3257,42 +3290,44 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
     ctx.track_ranks = opts.track_rank_masks;
     if (ctx.track_ranks) ctx.rank_stats = &rank_mask_stats_storage();
     if (opts.track_nilset) ctx.nilset_stats = &nil_set_stats_storage();
-    if (opts.track_opposed && ctx.opposing) ctx.opposed_stats = &opposed_stats_storage();
+    // Item 79's measurement sweep counts states by "near bid down" and "far
+    // bid down", which names two bids; three bids are kept out of it rather
+    // than counted under the wrong names.
+    if (opts.track_opposed && ctx.opposing && !ctx.three_nils)
+        ctx.opposed_stats = &opposed_stats_storage();
     ctx.opposed_reach = opts.opposed_reach && ctx.opposing;
     if (ctx.opposing) {
-        // Four states, and for each the range of ranks still reachable from it.
-        // A bid never un-breaks, so reachability is containment on the mask.
-        const int here[4] = {
-            side_rank(true, true, ctx.far_partner_role),    // nothing broken
-            side_rank(false, true, ctx.far_partner_role),   // far bid down
-            side_rank(true, false, ctx.far_partner_role),   // near bid down
-            side_rank(false, false, ctx.far_partner_role),  // both down
-        };
-        // Which states each can still reach, as indices into `here`.
-        static const int reachable[4][4] = {
-            {0, 1, 2, 3},  // nothing broken: anything
-            {1, 3, -1, -1},  // far down: itself, or both
-            {2, 3, -1, -1},  // near down: itself, or both
-            {3, -1, -1, -1},  // both down: itself
-        };
-        for (int i = 0; i < 4; ++i) {
-            int lo_rank = here[i];
-            int hi_rank = here[i];
-            for (int j = 0; j < 4 && reachable[i][j] >= 0; ++j) {
-                const int r = here[reachable[i][j]];
+        // Every mask the search can reach, and for each the range of ranks
+        // still reachable from it.  A bid never un-breaks, so reachability is
+        // containment: the masks reachable from `m` are `m` plus any subset of
+        // the live bids not yet in it.  For one bid per side that is the four
+        // states the table held before -- nothing down reaches anything, one
+        // down reaches itself or both, both down only itself -- and the same
+        // numbers come out.
+        const unsigned live = ctx.nil_mask;
+        for (unsigned m = 0; m < 16; ++m) {
+            ctx.reach_lo[m] = 0;
+            ctx.reach_hi[m] = 0;
+            ctx.reach_useful[m] = false;
+            if (m & ~live) continue;  // never reached
+            const int here = ctx.rank_of[m];
+            int lo_rank = here;
+            int hi_rank = here;
+            const unsigned rest = live & ~m;
+            for (unsigned sub = rest;; sub = (sub - 1) & rest) {
+                const int r = ctx.rank_of[m | sub];
                 if (r < lo_rank) lo_rank = r;
                 if (r > hi_rank) hi_rank = r;
+                if (sub == 0) break;
             }
-            ctx.reach_lo[i] = weights.primary * (lo_rank - here[i]);
-            ctx.reach_hi[i] = weights.primary * (hi_rank - here[i]);
+            ctx.reach_lo[m] = weights.primary * (lo_rank - here);
+            ctx.reach_hi[m] = weights.primary * (hi_rank - here);
             // A state whose rank cannot move contributes nothing beyond the
             // trick span, and one that spans the whole ladder contributes a
-            // range no window excludes.  Neither is worth a per-node test.
-            ctx.reach_useful[i] = ctx.reach_lo[i] != 0 || ctx.reach_hi[i] != 0 || i == 3;
+            // range no window excludes.  Neither is worth a per-node test --
+            // except every bid down, where the trick span alone can answer.
+            ctx.reach_useful[m] = ctx.reach_lo[m] != 0 || ctx.reach_hi[m] != 0 || m == live;
         }
-        // `here` is indexed 0=none 1=far 2=near 3=both, which is exactly
-        // reach_index's (near << 1 | far) once the two middle entries are
-        // swapped -- they are written above in reach_index's order already.
     }
     if (opts.track_quick_tricks) ctx.quick_stats = &quick_trick_stats_storage();
 
@@ -3551,7 +3586,10 @@ ObjectiveWeights objective_weights(int tricks_remaining, const SeatRoles& roles,
     {
         std::string ignored;
         SeatRoles copy = roles;
-        if (seat_shape(copy, ignored) == SHAPE_OPPOSING_NILS) {
+        // Three bids too: the ladder has six rungs rather than four, but one
+        // rung is still K*K and the trick term still tops out at K*t.
+        const SeatShape shape = seat_shape(copy, ignored);
+        if (shape == SHAPE_OPPOSING_NILS || shape == SHAPE_THREE_NILS) {
             const int k = tricks_remaining + 1;
             ObjectiveWeights w;
             w.primary = k * k;
@@ -3888,7 +3926,7 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
     if (opts.mode == MODE_FAST && nil_count(roles) > 1) {
         err = "fast mode answers whether ONE named seat can make nil, and " +
               describe_seat_roles(roles) +
-              " has two bidders; ask in full mode, which reports how many are down";
+              " has more than one bidder; ask in full mode, which reports how many are down";
         return false;
     }
 
@@ -3908,7 +3946,7 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
         if (roles.nil_already_set()) {
             out.nils_set = 1;
             out.nils_set_mask = nil_set_mask(roles);
-            out.nils_set_mask_determined = mask_determined(roles, out.nils_set);
+            out.nils_set_mask_determined = mask_determined(roles, out.nils_set, out.nils_set_mask);
             return true;
         }
 
@@ -3951,7 +3989,7 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
         // is naming the only candidate.  `nil_seat()` is that bidder, and the
         // already-set case returned above.
         out.nils_set_mask = out.nils_set ? (1u << roles.nil_seat()) : 0u;
-        out.nils_set_mask_determined = mask_determined(roles, out.nils_set);
+        out.nils_set_mask_determined = mask_determined(roles, out.nils_set, out.nils_set_mask);
         out.value = fast_value;
         out.nodes = fast_ctx.nodes;
         out.tt_probes = fast_stats.probes;
@@ -4300,7 +4338,7 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
     // so the two cannot disagree, and the PV the caller is handed is the very
     // line this mask describes.
     out.nils_set_mask = tally.nils_set_mask;
-    out.nils_set_mask_determined = mask_determined(roles, out.nils_set);
+    out.nils_set_mask_determined = mask_determined(roles, out.nils_set, out.nils_set_mask);
     out.value = value;
     out.roles = roles;
     out.mode = MODE_FULL;
@@ -4354,7 +4392,7 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
     if (opts.mode == MODE_FAST && nil_count(roles) > 1) {
         err = "fast mode answers whether ONE named seat can make nil, and " +
               describe_seat_roles(roles) +
-              " has two bidders; ask in full mode, which reports how many are down";
+              " has more than one bidder; ask in full mode, which reports how many are down";
         return false;
     }
     if (!validate(pos, err)) return false;
@@ -4394,7 +4432,7 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
         // nothing to check it against.
         out.nils_set = nil_set_count(roles);
         out.nils_set_mask = nil_set_mask(roles);
-        out.nils_set_mask_determined = mask_determined(roles, out.nils_set);
+        out.nils_set_mask_determined = mask_determined(roles, out.nils_set, out.nils_set_mask);
         return true;
     }
 
@@ -4419,7 +4457,7 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
     if (fast && roles.nil_already_set()) {
         out.nils_set = 1;
         out.nils_set_mask = nil_set_mask(roles);
-        out.nils_set_mask_determined = mask_determined(roles, out.nils_set);
+        out.nils_set_mask_determined = mask_determined(roles, out.nils_set, out.nils_set_mask);
         out.nil_tricks = TRICKS_NOT_COMPUTED;
         out.nil_side_tricks = TRICKS_NOT_COMPUTED;
         out.opponent_tricks = TRICKS_NOT_COMPUTED;
@@ -4845,7 +4883,7 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
     // so solve_moves' position answer and its move list cannot disagree.
     out.nils_set_mask = fast ? (out.nils_set ? (1u << roles.nil_seat()) : 0u)
                              : best->nils_set_mask;
-    out.nils_set_mask_determined = mask_determined(roles, out.nils_set);
+    out.nils_set_mask_determined = mask_determined(roles, out.nils_set, out.nils_set_mask);
     out.nil_tricks = best->nil_tricks;
     out.nil_side_tricks = best->nil_side_tricks;
     out.opponent_tricks = best->opponent_tricks;
@@ -5018,7 +5056,16 @@ std::string format_solution(const Position& pos, const Solution& sol,
     if (fast) {
         os << "fast mode: the nil question only, no trick counts and no PV\n";
     } else {
+        int lone = 0, lean_seat = 0, twins[2] = {0, 0};
+        if (three_nil_seats(sol.roles, lone, lean_seat, twins)) {
+            // Say which term the lone side's lean puts first; the twins rank
+            // the same outcomes in exactly the reverse order.
+            os << (sol.roles.role[lean_seat] == ROLE_OPPONENT
+                       ? "twin bids set first, then the lone bid, then "
+                       : "the lone bid first, then twin bids set, then ");
+        }
         os << (sol.roles.nil_already_set() ? "nil already set, so secondary only; "
+               : nil_count(sol.roles) == 3 ? ""
                                            : "nil tricks first, then ")
            << (opts.minimise_own_tricks ? "each pair sheds what it can"
                                         : "each pair takes what it can")
@@ -5075,7 +5122,14 @@ std::string format_solution(const Position& pos, const Solution& sol,
             if (sol.roles.role[seat] == ROLE_NIL_SET) os << "  (told, not computed)";
             os << '\n';
         }
-        if (!sol.nils_set_mask_determined) {
+        if (!sol.nils_set_mask_determined && nil_count(sol.roles) == 3) {
+            os << "               (one twin of two is down, and the objective counts "
+                  "twin bids down\n"
+                  "                rather than naming them: another optimal line may set "
+                  "the other\n"
+                  "                twin instead.  The lone bid's fate and the COUNT, "
+               << sol.nils_set << ", are pinned.)\n";
+        } else if (!sol.nils_set_mask_determined) {
             os << "               (both bidders are partners, so the objective "
                   "counts bids down\n"
                   "                rather than naming them: another optimal line "

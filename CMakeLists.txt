@@ -601,6 +601,52 @@ if(NIL_SOLVER_BUILD_TESTS)
                      --no-memo --quiet --slowest 0)
   endif()
 
+  # THREE NILS (Oct 2026).  A separate corpus for the same reason the twin one
+  # is: a separate question.  One pair both bid and the other has one bid and a
+  # lean, the primary is a six-rung outcome ladder over an eight-state mask,
+  # and the shape rides on the opposed machinery through a rank table -- so
+  # these rows exercise that table, the mask-indexed reach bound, its own value
+  # tag, and every opposed-shape gate with a third bidder behind it, none of
+  # which any other corpus reaches.  Every row is the oracle's, PV included.
+  set(NIL_THREENIL_CORPUS "${CMAKE_CURRENT_SOURCE_DIR}/tests/corpus/threenil.txt")
+  if(NIL_SOLVER_BUILD_BENCH AND EXISTS "${NIL_THREENIL_CORPUS}")
+    add_test(NAME corpus_threenil
+             COMMAND nil_bench --corpus "${NIL_THREENIL_CORPUS}" --check-pv --quiet --slowest 0)
+    set_tests_properties(corpus_threenil PROPERTIES TIMEOUT 600)
+    # The per-card rows, which is the call the bot makes, and the values-only
+    # decode, which on this shape must fall through to a line walk exactly
+    # when one twin of two is down.
+    add_test(NAME corpus_threenil_moves
+             COMMAND nil_bench --corpus "${NIL_THREENIL_CORPUS}" --check-moves --check-pv
+                     --quiet --slowest 0)
+    set_tests_properties(corpus_threenil_moves PROPERTIES TIMEOUT 600)
+    add_test(NAME corpus_threenil_values_only
+             COMMAND nil_bench --corpus "${NIL_THREENIL_CORPUS}" --check-moves --values-only
+                     --quiet --slowest 0)
+    set_tests_properties(corpus_threenil_values_only PROPERTIES TIMEOUT 600)
+
+    # THE CONTROL ARMS for every opposed-shape optimisation three bids now
+    # reach.  Each one reads the outcome rank through the table and had only
+    # ever seen two bidders behind it; with it off the general search answers
+    # instead, and both must match the oracle's values AND lines.
+    # --dd-live-bounds is the ON side of a bound that is off by default.
+    foreach(_arm no-dd-engine no-doom-charge no-opposed-reach no-multi-live-proofs
+                 no-settled-tricks no-live-order no-trick-order no-row-mtd
+                 no-tt-two-bounds dd-live-bounds)
+      string(REPLACE "-" "_" _name "${_arm}")
+      add_test(NAME corpus_threenil_${_name}
+               COMMAND nil_bench --corpus "${NIL_THREENIL_CORPUS}" --check-moves --check-pv
+                       --${_arm} --quiet --slowest 0)
+      set_tests_properties(corpus_threenil_${_name} PROPERTIES TIMEOUT 600)
+    endforeach()
+
+    # The key carries the broken-bid mask and the shape has its own tag; with
+    # the table off nothing can be confused for anything.
+    add_test(NAME corpus_threenil_no_tt
+             COMMAND nil_bench --corpus "${NIL_THREENIL_CORPUS}" --cards-only 4
+                     --no-memo --quiet --slowest 0)
+  endif()
+
   set(NIL_LARGE_CORPUS "${CMAKE_CURRENT_SOURCE_DIR}/tests/corpus/large.txt")
   if(NIL_SOLVER_LARGE_TESTS AND NIL_SOLVER_BUILD_BENCH AND EXISTS "${NIL_LARGE_CORPUS}")
     # 7 cards only: at 8 and above the rows are benchmark fodder, and several
@@ -757,6 +803,25 @@ if(NIL_SOLVER_BUILD_TESTS)
               "${CMAKE_CURRENT_SOURCE_DIR}/tools/cooperative_crosscheck.py"
               --cards 3 --cases 48 --seed 17)
     set_tests_properties(cooperative_crosscheck PROPERTIES TIMEOUT 600)
+
+    # THREE NILS AGAINST THE ORACLE, and against T's conversion rule.  The
+    # first run replays the solver's line and every root card's row under the
+    # oracle's utility pair, across all eight role arrays and both directions.
+    # The second plays each line to its first broken bid, re-solves what is
+    # left from the roles a caller converts to, and requires the same endings
+    # and trick totals -- solver against solver, so it runs past oracle sizes.
+    # Both fail a run that does not reach what they exist to check: too few
+    # distinct outcomes, or only one of the two conversions.
+    add_test(NAME three_nil_crosscheck
+      COMMAND ${Python3_EXECUTABLE}
+              "${CMAKE_CURRENT_SOURCE_DIR}/tools/three_nil_crosscheck.py"
+              --exe $<TARGET_FILE:nil_cli> --cases 48 --cards 4 --seed 17 --moves)
+    set_tests_properties(three_nil_crosscheck PROPERTIES TIMEOUT 600)
+    add_test(NAME three_nil_subgame
+      COMMAND ${Python3_EXECUTABLE}
+              "${CMAKE_CURRENT_SOURCE_DIR}/tools/three_nil_crosscheck.py"
+              --exe $<TARGET_FILE:nil_cli> --subgame --cases 40 --cards 7 --seed 5)
+    set_tests_properties(three_nil_subgame PROPERTIES TIMEOUT 600)
 
     add_test(NAME mask_determinacy
       COMMAND ${Python3_EXECUTABLE}

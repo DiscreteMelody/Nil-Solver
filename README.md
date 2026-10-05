@@ -170,10 +170,27 @@ East, South and puts the nil on West with East covering.
 This replaced `--nil` and `--nil-already-set`, which between them could only ever
 describe one nil. Two on the table is common in real spades and changes the
 optimal line, because a seat defending its own nil while attacking another's has
-an objective neither argument could express. Today the solver still answers only
-the single-nil question and refuses the rest by name — `--seats 0 0 2 2` reports
-that multiple nils are not supported yet rather than quietly answering something
-adjacent.
+an objective neither argument could express. (This paragraph used to say only
+the single-nil question was answered; that stopped being true several shapes
+ago.) What is answered today:
+
+| `--seats` from N | deal | objective |
+| --- | --- | --- |
+| `0 3 2 3` | one nil, covered | the nil, then each pair's tricks |
+| `0 3 0 3` | a pair that both bid | how many of the pair's bids break, then tricks |
+| `0 3 2 0` | a bid on each side | each side's outcome ranking; the 2 or 3 on a bidder's partner is that side's lean: 2 saves its own bid first, 3 sets theirs first. Opposite leans only |
+| `0 0 3 0`, `0 0 2 0` | three bids | the twins (here E/W) against the lone bid (N) and its lean (S) — see below |
+
+**Three bids.** The ladder comes from what happens when a bid breaks: a broken
+twin takes the lean opposite the lone bidder's partner, and a broken lone bid
+turns its side into two opponents — so every state after the first break is one
+of the two-bid shapes above. Writing `n` for the lone bid making and `d` for the
+twin bids down, the lone side ranks the outcomes `2d + n` when its partner is a
+3 (set theirs first: a one-for-one trade beats everyone making) and `3n + d` when
+it is a 2 (save ours first), and the twins rank them in exactly the reverse
+order, so it is an ordinary two-team game. The shape takes live bids only: once
+one breaks, pass the converted roles (`0 0 3 0` with E down is `0 2 3 0`, with N
+down `3 0 3 0`) rather than a `1`.
 
 The same layout under all three settings, showing what the secondary buys you:
 

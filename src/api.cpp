@@ -76,17 +76,19 @@ std::int32_t prepare(const char* pbn, std::int32_t leader, const char* current_t
     if ((flags & NIL_FLAG_FAST_MODE) && nil::nil_count(roles) > 1) {
         copy_err(err_buf, err_len,
                  "fast mode answers whether ONE named seat can make nil, and this "
-                 "deal has two bidders; ask in full mode, which reports how many "
-                 "are down");
+                 "deal has more than one bidder; ask in full mode, which reports "
+                 "how many are down");
         return NIL_ERR_UNSUPPORTED;
     }
 
     if (!nil::validate_seat_roles(roles, err)) {
         copy_err(err_buf, err_len, err);
-        // Two nils is a legal deal this build cannot answer; everything else in
-        // that array is a malformed one.  The two get different codes so a
-        // caller can tell a typo from a feature that has not landed.
-        return roles.nil_seat() >= 0 && err.find("not supported yet") != std::string::npos
+        // Four nils is a legal deal this build cannot answer, and so is a
+        // three-nil deal spelled with a bid already down (the caller converts
+        // those -- see nil::three_nil_after_set); everything else in that array
+        // is a malformed one.  The two get different codes so a caller can tell
+        // a typo from a deal this build does not take.
+        return roles.nil_seat() >= 0 && err.find("not supported") != std::string::npos
                    ? NIL_ERR_UNSUPPORTED
                    : NIL_ERR_ILLEGAL_POSITION;
     }

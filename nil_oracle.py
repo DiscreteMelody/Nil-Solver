@@ -126,6 +126,10 @@ def nil_already_set_of(roles: Sequence[int]) -> bool:
 SHAPE_SINGLE_NIL = "single-nil"      # one nil, its partner covering, two opponents
 SHAPE_PARTNER_NILS = "partner-nils"  # both members of one pair bid, two opponents
 SHAPE_OPPOSING_NILS = "opposing-nils"  # one bid per pair, each with a partner
+# Three bids: one pair both bid (the TWINS), the other pair has one bidder (the
+# LONE bid) and one seat that did not bid, whose role -- 2 or 3 -- is that
+# side's lean.  See three_nil_rank for the objective.
+SHAPE_THREE_NILS = "three-nils"
 
 
 def role_shape(roles: Sequence[int]) -> str:
@@ -205,8 +209,31 @@ def role_shape(roles: Sequence[int]) -> str:
             )
         return SHAPE_PARTNER_NILS
 
+    if len(nils) == 3:
+        # ONE PAIR BOTH BID, THE OTHER PAIR HAS ONE BID.  The fourth seat partners
+        # the lone bidder, and -- exactly as with one bid per side -- its role is
+        # not a statement about teams but about that side's LEAN: 2 saves its own
+        # bid first, 3 sets theirs first.  See three_nil_rank.
+        # The fourth seat holds 2 or 3 by construction -- a 0 or a 1 there would
+        # be a fourth bid -- so there is nothing to check about it.
+        #
+        # ONLY LIVE BIDS (T's decision, Oct 2026).  A three-bid deal in which one
+        # bid is already down is a two-bid (or one-bid) deal under T's conversion
+        # rule, and the CALLER rewrites the roles: a broken twin takes the lean
+        # opposite the lone side's partner, a broken lone bid turns its side into
+        # two opponents.  Refused here rather than quietly converted, so that
+        # there is exactly one spelling of each state.
+        for seat in nils:
+            if roles[seat] == ROLE_NIL_SET:
+                raise ValueError(
+                    f"an already-broken nil in a three-nil deal is not supported "
+                    f"({described}); pass the converted roles instead -- see "
+                    f"three_nil_after_set"
+                )
+        return SHAPE_THREE_NILS
+
     raise ValueError(
-        f"{len(nils)} nils ({described}); more than two is not supported yet"
+        f"{len(nils)} nils ({described}); more than three is not supported yet"
     )
 
 
@@ -1670,6 +1697,273 @@ def solve_opposing_nils(
 
 
 # ---------------------------------------------------------------------------
+# Three nils: one pair both bid, the other pair has one bid
+#
+# THE NAMES.  The pair that both bid are the TWINS.  The other pair holds the
+# LONE bid and one seat that did not bid, and that seat's role -- 2 or 3, read
+# exactly as a bidder's partner is read with one bid per side -- is the lone
+# side's LEAN: 2 saves its own bid first, 3 sets theirs first.
+#
+# WHERE THE OBJECTIVE COMES FROM: T's CONVERSION RULE (Oct 2026).  T specified
+# the shape by what happens the moment a bid breaks, and every state after the
+# first break is a shape this file already answers:
+#
+#   a TWIN breaks   it takes the lean OPPOSITE the lone side's, so with the lone
+#                   side's partner on 3 the broken twin becomes a 2 and vice
+#                   versa.  What is left is one bid per side with the partners
+#                   leaning opposite ways -- SHAPE_OPPOSING_NILS, strictly
+#                   opposed, an ordinary two-team game.
+#   the LONE bid    it and its partner both become 3s.  What is left is the
+#   breaks          twins against two opponents -- SHAPE_PARTNER_NILS, the count
+#                   of twin bids down.
+#
+# Those two subgames pin every comparison between outcomes in which at least one
+# bid broke.  The one outcome no conversion ever reaches is ALL THREE MAKE, and
+# T placed it (Oct 2026) the way the lean already reads with two bids, which
+# makes the whole ladder lexicographic with the lean choosing what comes first.
+# Writing n = the lone bid makes (0/1) and d = twin bids down (0..2), the lone
+# side ranks the six outcomes best first:
+#
+#      lean 3, set theirs first        lean 2, save ours first
+#      rank = 2*d + n                  rank = 3*n + d
+#      5  n=1 d=2                      5  n=1 d=2
+#      4  n=0 d=2                      4  n=1 d=1
+#      3  n=1 d=1                      3  n=1 d=0   <- all three make
+#      2  n=0 d=1                      2  n=0 d=2
+#      1  n=1 d=0   <- all three make  1  n=0 d=1
+#      0  n=0 d=0                      0  n=0 d=0
+#
+# Restricted to d >= 1 with one twin down, each ladder is side_rank's ladder for
+# the converted one-bid-each-side deal; restricted to n = 0 it is the count of
+# twin bids down.  The selftest checks both restrictions outcome by outcome, and
+# tools/three_nil_crosscheck.py checks them on real play against the C++ solver.
+#
+# ZERO-SUM BY CONSTRUCTION.  The twins rank the same six outcomes in exactly the
+# reverse order -- 5 minus the lone side's rank -- which is what the conversion
+# rule says too: a broken twin always leans the opposite way to the lone side,
+# so every subgame is strictly opposed.  So, unlike two same-lean bids, this is
+# an ordinary two-team game and one scalar describes it.  This file still
+# carries a utility PER SIDE and lets each side maximise its own, the same
+# backward induction _search_opposing does, so that the zero-sum claim is
+# something the search can be checked against rather than something it assumes.
+# ---------------------------------------------------------------------------
+
+THREE_NIL_TOP = 5   # the best rank on either ladder; the twins' rank is TOP minus the lone side's
+
+
+def three_nil_seats(roles: Sequence[int]) -> Tuple[int, int, Tuple[int, int]]:
+    """(lone bidder, its partner -- the seat holding the lean, (twin, twin))."""
+    nils = [s for s, r in enumerate(roles) if r in (ROLE_NIL, ROLE_NIL_SET)]
+    lean_seat = next(s for s in range(4) if s not in nils)
+    lone = (lean_seat + 2) % 4
+    twins = tuple(s for s in nils if s != lone)
+    return lone, lean_seat, twins
+
+
+def three_nil_rank(lone_makes: bool, twins_down: int, lean: int) -> int:
+    """How good an outcome is for the LONE side, 5 best to 0 worst.  See above."""
+    n = 1 if lone_makes else 0
+    if lean == ROLE_OPPONENT:
+        return 2 * twins_down + n
+    return 3 * n + twins_down
+
+
+def three_nil_after_set(roles: Sequence[int], seat: int) -> List[int]:
+    """The roles T's conversion rule gives once `seat`'s bid breaks.
+
+    This is what a caller passes from the first trick boundary after the break:
+    the three-bid shape refuses ROLE_NIL_SET, so that each state has exactly one
+    spelling.
+    """
+    if role_shape(roles) != SHAPE_THREE_NILS:
+        raise ValueError("three_nil_after_set needs a three-nil deal")
+    lone, lean_seat, twins = three_nil_seats(roles)
+    out = list(roles)
+    if seat == lone:
+        out[lone] = ROLE_OPPONENT
+        out[lean_seat] = ROLE_OPPONENT
+    elif seat in twins:
+        out[seat] = ROLE_COVER if roles[lean_seat] == ROLE_OPPONENT else ROLE_OPPONENT
+    else:
+        raise ValueError(f"seat {SEAT_CHARS[seat]} holds no bid")
+    return out
+
+
+@dataclass
+class _ThreeCtx:
+    lone: int
+    twins: Tuple[int, int]
+    lean: int
+    rank_weight: int
+    trick_weight: int
+    memo: Optional[Dict] = None
+    nodes: int = 0
+
+
+def _three_ranks(broken_nils: int, ctx: _ThreeCtx) -> Tuple[int, int]:
+    """Both sides' outcome ranks, (N/S, E/W), from the set of bids down."""
+    lone_makes = not (broken_nils & (1 << ctx.lone))
+    down = sum(1 for s in ctx.twins if broken_nils & (1 << s))
+    lone_rank = three_nil_rank(lone_makes, down, ctx.lean)
+    ranks = [0, 0]
+    ranks[ctx.lone % 2] = lone_rank
+    ranks[1 - ctx.lone % 2] = THREE_NIL_TOP - lone_rank
+    return ranks[0], ranks[1]
+
+
+def _search_three_nils(
+    hands: Tuple[Tuple[Card, ...], ...],
+    leader: int,
+    trick: Tuple[Card, ...],
+    spades_broken: bool,
+    broken_nils: int,
+    ctx: _ThreeCtx,
+) -> Tuple[Tuple[int, int], Tuple[Play, ...]]:
+    """Backward induction on a utility pair, as _search_opposing.
+
+    Each side maximises its own component: rank_weight * its outcome rank at the
+    end, plus trick_weight per trick it takes on the way.
+    """
+    ctx.nodes += 1
+    if not any(hands):
+        ranks = _three_ranks(broken_nils, ctx)
+        return (ctx.rank_weight * ranks[0], ctx.rank_weight * ranks[1]), ()
+
+    key = None
+    if ctx.memo is not None:
+        key = (hands, leader, trick, spades_broken, broken_nils)
+        cached = ctx.memo.get(key)
+        if cached is not None:
+            return cached
+
+    seat = (leader + len(trick)) % 4
+    side = seat % 2
+
+    best: Optional[Tuple[int, int]] = None
+    best_pv: Tuple[Play, ...] = ()
+
+    for card in legal_moves(hands[seat], trick, spades_broken):
+        next_hands = tuple(
+            tuple(c for c in hand if c != card) if s == seat else hand
+            for s, hand in enumerate(hands)
+        )
+        next_broken = spades_broken_after(spades_broken, trick, card)
+        played = trick + (card,)
+
+        if len(played) == 4:
+            winner = trick_winner(leader, played)
+            next_nils = broken_nils
+            if winner == ctx.lone or winner in ctx.twins:
+                next_nils |= 1 << winner
+            sub_value, sub_pv = _search_three_nils(
+                next_hands, winner, (), next_broken, next_nils, ctx
+            )
+            gained = [0, 0]
+            gained[winner % 2] = ctx.trick_weight
+            value = (sub_value[0] + gained[0], sub_value[1] + gained[1])
+        else:
+            value, sub_pv = _search_three_nils(
+                next_hands, leader, played, next_broken, broken_nils, ctx
+            )
+
+        # Strict improvement only, so ties keep the canonically lowest card.
+        if best is None or value[side] > best[side]:
+            best = value
+            best_pv = ((seat, card),) + sub_pv
+
+    assert best is not None, "a non-terminal position must have a legal move"
+    result = (best, best_pv)
+    if ctx.memo is not None:
+        ctx.memo[key] = result
+    return result
+
+
+@dataclass
+class ThreeNilSolution:
+    """The answer to a deal with three bids: twins on one side, one on the other."""
+
+    roles: List[int]
+    seat_tricks: List[int]
+    lone: int                     # the lone bidder's seat
+    twins: List[int]              # the two bidders on the other side
+    lean: int                     # the lone side's partner's role, 2 or 3
+    nils_set: int                 # 0..3
+    nils_set_mask: int            # bit s for each bid that broke
+    side_tricks: List[int]        # tricks taken by side 0 (N/S) and side 1 (E/W)
+    utility: List[int]            # each side's own scalar, which it maximised
+    ranks: List[int]              # each side's outcome rank, 5 best to 0 worst
+    pv: List[Play]
+    nodes: int
+    position: Position
+    secondary: str = "max"
+
+
+def solve_three_nils(
+    position: Position,
+    roles: Sequence[int],
+    use_memo: bool = False,
+    secondary: str = "max",
+) -> ThreeNilSolution:
+    """Exhaustive backward induction for three bids.  See the block above."""
+    position.validate()
+    shape = role_shape(roles)
+    if shape != SHAPE_THREE_NILS:
+        raise ValueError(f"solve_three_nils needs three bids, got {shape}")
+
+    lone, lean_seat, twins = three_nil_seats(roles)
+    # The same weights as one bid per side: the rank ladder is longer, but a step
+    # of it is still K*K and the trick term still tops out at K*t.
+    rank_weight, trick_weight = opposing_weights(position.tricks_remaining, secondary)
+    ctx = _ThreeCtx(
+        lone=lone,
+        twins=twins,
+        lean=roles[lean_seat],
+        rank_weight=rank_weight,
+        trick_weight=trick_weight,
+        memo={} if use_memo else None,
+    )
+    utility, pv = _search_three_nils(
+        position.hands,
+        position.leader,
+        position.current_trick,
+        position.spades_broken,
+        0,
+        ctx,
+    )
+
+    # Self-check: replay independently and re-encode both utilities.
+    seat_tricks = replay_pv_by_seat(position, list(pv))
+    mask = sum(1 << s for s in (lone,) + twins if seat_tricks[s] > 0)
+    side_tricks = [seat_tricks[0] + seat_tricks[2], seat_tricks[1] + seat_tricks[3]]
+    ranks = list(_three_ranks(mask, ctx))
+    replayed = tuple(rank_weight * ranks[i] + trick_weight * side_tricks[i] for i in (0, 1))
+    if replayed != tuple(utility):
+        raise AssertionError(
+            f"internal inconsistency: search says {utility}, replaying the PV "
+            f"gives {replayed} (ranks={ranks}, side tricks={side_tricks})"
+        )
+    if ranks[0] + ranks[1] != THREE_NIL_TOP:
+        raise AssertionError(f"ranks {ranks} do not sum to {THREE_NIL_TOP}")
+
+    return ThreeNilSolution(
+        roles=list(roles),
+        seat_tricks=seat_tricks,
+        lone=lone,
+        twins=list(twins),
+        lean=roles[lean_seat],
+        nils_set=bin(mask).count("1"),
+        nils_set_mask=mask,
+        side_tricks=side_tricks,
+        utility=list(utility),
+        ranks=ranks,
+        pv=list(pv),
+        nodes=ctx.nodes,
+        position=position,
+        secondary=secondary,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Two nils on the same side
 #
 # WHY THIS IS A SEPARATE SEARCH
@@ -1937,13 +2231,16 @@ def solve_seats(
 ):
     """Solve whatever arrangement `roles` describes, or raise saying it cannot.
 
-    Returns a Solution for a single nil and a MultiNilSolution for a pair that
-    both bid.  The two are different objectives rather than one generalised
+    Returns a Solution for a single nil, a MultiNilSolution for a pair that
+    both bid, an OpposingNilSolution for one bid per side and a
+    ThreeNilSolution for three bids.  The two are different objectives rather than one generalised
     one -- see multi_objective_weights -- so they are different result types.
     """
     shape = role_shape(roles)
     if shape == SHAPE_OPPOSING_NILS:
         return solve_opposing_nils(position, roles, use_memo=use_memo, secondary=secondary)
+    if shape == SHAPE_THREE_NILS:
+        return solve_three_nils(position, roles, use_memo=use_memo, secondary=secondary)
     if shape == SHAPE_SINGLE_NIL:
         return solve(
             position,
@@ -2293,6 +2590,56 @@ def format_opposing_solution(solution: OpposingNilSolution, compact: bool = Fals
         "",
         "Principal variation",
         " ".join(f"{SEAT_CHARS[a]}:{c}" for a, c in solution.pv),
+    ]
+    return "\n".join(out)
+
+
+def format_three_nil_solution(solution: ThreeNilSolution, compact: bool = False) -> str:
+    pos = solution.position
+    pv_text = " ".join(f"{SEAT_CHARS[a]}:{c}" for a, c in solution.pv)
+    if compact:
+        return (
+            f"shape={SHAPE_THREE_NILS}\n"
+            f"nils_set={solution.nils_set}\n"
+            f"nils_set_mask={solution.nils_set_mask}\n"
+            f"ranks={' '.join(str(r) for r in solution.ranks)}\n"
+            f"side_tricks={' '.join(str(t) for t in solution.side_tricks)}\n"
+            f"seat_tricks={' '.join(str(n) for n in solution.seat_tricks)}\n"
+            f"pv={pv_text}\n"
+        )
+    takes = "takes" if solution.secondary == "max" else "sheds"
+    lone = SEAT_CHARS[solution.lone]
+    twins = "/".join(SEAT_CHARS[s] for s in solution.twins)
+    first = ("how many of " + twins + "'s bids go down, then whether " + lone + "'s does"
+             if solution.lean == ROLE_OPPONENT
+             else "whether " + lone + "'s bid goes down, then how many of " + twins + "'s do")
+    out = [
+        f"PBN            {pos.to_pbn()}",
+        format_hands(pos),
+        f"Leader         {SEAT_CHARS[pos.leader]}",
+        f"Seats          {describe_roles(solution.roles)}",
+        f"Objective      {first},",
+        f"               then each side {takes} tricks; the twins rank the outcomes",
+        f"               in exactly the reverse order (zero-sum)",
+        f"Spades broken  {'yes' if pos.spades_broken else 'no'}",
+    ]
+    if pos.current_trick:
+        out.append(f"On the trick   {cards_str(pos.current_trick)}")
+    out.append(f"Nils set       {solution.nils_set} of 3")
+    for seat in [solution.lone] + solution.twins:
+        verdict = "FAILS" if solution.nils_set_mask & (1 << seat) else "MAKES"
+        out.append(f"  {SEAT_CHARS[seat]}            {verdict}  "
+                   f"({solution.seat_tricks[seat]} trick(s))")
+    out += [
+        "Tricks by seat " + " ".join(
+            f"{SEAT_CHARS[i]}={n}" for i, n in enumerate(solution.seat_tricks)
+        ),
+        f"Ranks          N/S={solution.ranks[0]}  E/W={solution.ranks[1]}  (of {THREE_NIL_TOP})",
+        f"Nodes          {solution.nodes}",
+        f"Utilities      N/S={solution.utility[0]}  E/W={solution.utility[1]}",
+        "",
+        "Principal variation",
+        pv_text,
     ]
     return "\n".join(out)
 
@@ -2755,7 +3102,7 @@ def selftest(verbose: bool = True) -> int:
     for bad, why in (
         ([0, 0, 1, 3], "an already-broken nil opposite a live one"),
         ([0, 3, 0, 2], "a cover with nobody to cover"),
-        ([0, 0, 0, 3], "three nils"),
+        ([0, 1, 0, 3], "three nils with one already down"),
     ):
         try:
             role_shape(bad)
@@ -2879,7 +3226,7 @@ def selftest(verbose: bool = True) -> int:
     check("two protective partners too", role_shape([0, 2, 2, 0]), SHAPE_OPPOSING_NILS)
     check("two aggressive partners too", role_shape([0, 3, 3, 0]), SHAPE_OPPOSING_NILS)
     for bad, why in (
-        ([0, 0, 0, 3], "a third bid"),
+        ([0, 0, 0, 0], "a fourth bid"),
         ([0, 1, 2, 0], "a partner that is itself a bid"),
     ):
         try:
@@ -2961,6 +3308,197 @@ def selftest(verbose: bool = True) -> int:
         if protective.nil_makes != aggressive.nil_makes:
             swung += 1
     check("the role actually changes some outcomes", swung > 0, True)
+
+
+    # ------------------------------------------------------- three bids
+    if verbose:
+        print("Three nils: twins on one side, a lone bid and its lean on the other")
+
+    three_shapes = []
+    for lone in range(4):
+        for lean in (ROLE_COVER, ROLE_OPPONENT):
+            roles = [ROLE_NIL] * 4
+            roles[(lone + 2) % 4] = lean
+            three_shapes.append(roles)
+    check("all eight three-bid arrays are recognised",
+          [role_shape(r) for r in three_shapes], [SHAPE_THREE_NILS] * 8)
+    # Only live bids: an already-broken one has a converted spelling.
+    refused = 0
+    for roles in three_shapes:
+        for seat in range(4):
+            if roles[seat] != ROLE_NIL:
+                continue
+            told = list(roles)
+            told[seat] = ROLE_NIL_SET
+            try:
+                role_shape(told)
+            except ValueError:
+                refused += 1
+    check("every three-bid array with a bid already down is refused", refused, 24)
+
+    # THE LADDERS, against T's own words.  Each side strictly prefers its own
+    # bid alive and every opposing bid dead, all else equal.
+    for lean in (ROLE_COVER, ROLE_OPPONENT):
+        ok = True
+        for d in range(3):
+            if not three_nil_rank(True, d, lean) > three_nil_rank(False, d, lean):
+                ok = False
+            if d < 2 and not three_nil_rank(True, d + 1, lean) > three_nil_rank(True, d, lean):
+                ok = False
+            if d < 2 and not three_nil_rank(False, d + 1, lean) > three_nil_rank(False, d, lean):
+                ok = False
+        check(f"lean {lean}: each bid is worth something to both sides", ok, True)
+        ranks = sorted(three_nil_rank(n, d, lean) for n in (True, False) for d in range(3))
+        check(f"lean {lean}: six outcomes on six rungs", ranks, list(range(6)))
+    # Where "all three make" sits -- the one outcome no conversion reaches.
+    check("lean 3: a one-for-one trade beats all three making",
+          three_nil_rank(False, 1, ROLE_OPPONENT) > three_nil_rank(True, 0, ROLE_OPPONENT), True)
+    check("lean 3: and all three making beats only ours going down",
+          three_nil_rank(True, 0, ROLE_OPPONENT) > three_nil_rank(False, 0, ROLE_OPPONENT), True)
+    check("lean 2: all three making sits right under ours plus one of theirs",
+          [three_nil_rank(True, 1, ROLE_COVER), three_nil_rank(True, 0, ROLE_COVER),
+           three_nil_rank(False, 2, ROLE_COVER)], [4, 3, 2])
+
+    # THE CONVERSION RULE, outcome by outcome.  Once a bid is down, the ladder
+    # restricted to what is left must order the outcomes exactly as the shape
+    # the caller converts to does -- for the side holding the lone bid, which is
+    # enough because both games are zero-sum.
+    def converted_order(roles, broken, outcome):
+        """The lone side's preference in the converted game, as a sortable key."""
+        conv = three_nil_after_set(roles, broken)
+        lone, lean_seat, twins = three_nil_seats(roles)
+        down = lambda s: bool(outcome & (1 << s))
+        shape = role_shape(conv)
+        if broken != lone and shape == SHAPE_OPPOSING_NILS:
+            other = next(t for t in twins if t != broken)
+            return side_rank(not down(lone), not down(other), conv[lean_seat])
+        if broken == lone and shape == SHAPE_PARTNER_NILS:
+            return sum(1 for t in twins if down(t))  # the opponents count bids down
+        return None  # converted to the wrong shape: never equal to a rank
+
+    consistent = True
+    compared = 0
+    for roles in three_shapes:
+        lone, lean_seat, twins = three_nil_seats(roles)
+        bids = (lone,) + twins
+        for broken in bids:
+            outcomes = [m for m in range(16)
+                        if m & (1 << broken) and not m & ~sum(1 << s for s in bids)]
+            for a in outcomes:
+                for b in outcomes:
+                    ra = three_nil_rank(not a & (1 << lone),
+                                        sum(1 for t in twins if a & (1 << t)), roles[lean_seat])
+                    rb = three_nil_rank(not b & (1 << lone),
+                                        sum(1 for t in twins if b & (1 << t)), roles[lean_seat])
+                    ca = converted_order(roles, broken, a)
+                    cb = converted_order(roles, broken, b)
+                    compared += 1
+                    if ca is None or cb is None or (ra > rb) != (ca > cb) or \
+                            (ra == rb) != (ca == cb):
+                        consistent = False
+    check("every converted subgame orders its outcomes as the ladder does", consistent, True)
+    check("and that compared every pair", compared, 8 * 3 * 16)
+
+    # Hand-checkable endings.  One trick, the seat with no bid holding the only
+    # high card: nobody breaks.  One trick, a twin on lead with the only high
+    # card: that twin and only that twin breaks.
+    calm = Position(
+        hands=((Card(1, 2),), (Card(1, 3),), (Card(1, 14),), (Card(1, 4),)),
+        leader=2,
+        spades_broken=True,
+    )
+    forced = Position(
+        hands=((Card(1, 2),), (Card(1, 14),), (Card(1, 3),), (Card(1, 4),)),
+        leader=1,
+        spades_broken=True,
+    )
+    for seats in ([0, 0, 3, 0], [0, 0, 2, 0]):
+        check(f"{seats}: the bid-free seat takes the trick, nothing breaks",
+              solve_three_nils(calm, seats).nils_set_mask, 0)
+        sol = solve_three_nils(forced, seats)
+        check(f"{seats}: East cannot duck, so East breaks alone", sol.nils_set_mask, 1 << 1)
+        check(f"{seats}: and the ranks sum to {THREE_NIL_TOP}", sum(sol.ranks), THREE_NIL_TOP)
+
+    # Memoization is memoization.
+    for seats, seed in (([0, 0, 3, 0], 13), ([0, 2, 0, 0], 41), ([3, 0, 0, 0], 7)):
+        fx = random_fixture(seed=seed, cards_per_hand=4, leader=seed % 4, designated=0)
+        plain = solve_three_nils(fx.position, seats)
+        memoed = solve_three_nils(fx.position, seats, use_memo=True)
+        check(f"{seats} seed {seed}: memo agrees on utility", memoed.utility, plain.utility)
+        check(f"{seats} seed {seed}: memo agrees on PV", memoed.pv, plain.pv)
+    check("solve_seats dispatches three bids",
+          isinstance(solve_seats(calm, [0, 0, 3, 0]), ThreeNilSolution), True)
+
+    # THE LEAN DOES SOMETHING: on some deals the two leans end differently, and
+    # the decisive case for T's placement of "all three make" -- lean 3 trading
+    # its bid for one of theirs where lean 2 keeps everything alive -- turns up.
+    # The lean moves the outcome on about one deal in forty at four cards, so
+    # the range is pinned to one that holds such a deal (2021) rather than
+    # spending four seconds of every selftest finding it.
+    swung = traded = 0
+    for seed in range(16, 24):
+        fx = random_fixture(seed=2000 + seed, cards_per_hand=4, leader=seed % 4, designated=0)
+        aggressive = solve_three_nils(fx.position, [0, 0, 3, 0], use_memo=True)
+        protective = solve_three_nils(fx.position, [0, 0, 2, 0], use_memo=True)
+        if aggressive.nils_set_mask != protective.nils_set_mask:
+            swung += 1
+            if protective.nils_set_mask == 0 and aggressive.nils_set == 2 and \
+                    aggressive.nils_set_mask & 1:
+                traded += 1
+    check("the lean changes some outcomes", swung > 0, True)
+    check("including a trade lean 3 takes and lean 2 declines", traded > 0, True)
+
+    # MID-HAND RE-SOLVE.  Play the line to the trick boundary where the first
+    # bid breaks, convert the roles as a caller would, and solve what is left:
+    # the surviving bids must end the same way and each side must take the
+    # same tricks over the rest of the hand.
+    resolved = 0
+    agreed = True
+    for seed in range(16):
+        seats = three_shapes[seed % 8]
+        secondary = "max" if seed % 3 else "min"
+        fx = random_fixture(seed=3000 + seed, cards_per_hand=4, leader=seed % 4, designated=0)
+        whole = solve_three_nils(fx.position, seats, use_memo=True, secondary=secondary)
+        hands = [list(h) for h in fx.position.hands]
+        leader = fx.position.leader
+        broken_spades = fx.position.spades_broken
+        trick: List[Card] = []
+        split = None
+        tail = [0, 0]
+        for seat, card in whole.pv:
+            hands[seat].remove(card)
+            broken_spades = spades_broken_after(broken_spades, tuple(trick), card)
+            trick.append(card)
+            if len(trick) < 4:
+                continue
+            winner = trick_winner(leader, tuple(trick))
+            leader, trick = winner, []
+            if split is not None:
+                tail[winner % 2] += 1
+            elif seats[winner] == ROLE_NIL and any(hands):
+                split = (winner, tuple(tuple(h) for h in hands), leader, broken_spades)
+        if split is None:
+            continue
+        broke, rest_hands, rest_leader, rest_broken = split
+        rest = Position(hands=rest_hands, leader=rest_leader, spades_broken=rest_broken)
+        again = solve_seats(rest, three_nil_after_set(seats, broke), use_memo=True,
+                            secondary=secondary)
+        again_tricks = again.seat_tricks
+        again_side = [again_tricks[0] + again_tricks[2], again_tricks[1] + again_tricks[3]]
+        lone, _, twins = three_nil_seats(seats)
+        if broke == lone:
+            same = (sum(1 for t in twins if again_tricks[t] > 0) ==
+                    sum(1 for t in twins if whole.nils_set_mask & (1 << t)))
+        else:
+            same = all((again_tricks[s] > 0) == bool(whole.nils_set_mask & (1 << s))
+                       for s in (lone,) + twins if s != broke)
+        resolved += 1
+        if not same or again_side != tail:
+            agreed = False
+            check(f"seed {seed} {seats}: re-solve after {SEAT_CHARS[broke]} breaks",
+                  (again_side, same), (tail, True))
+    check("every mid-hand re-solve agrees with the whole-hand line", agreed, True)
+    check("and some deals reached one", resolved >= 8, True)
 
 
     # ------------------------------------------- the conjunction probe (78)
@@ -3197,8 +3735,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         metavar="R",
         help="what each seat is doing, clockwise from the seat --pbn names: "
         "0 = nil bidder with no trick yet, 1 = nil already broken, 2 = the "
-        "partner covering it, 3 = a seat on a side with no nil.  Exactly one "
-        "nil and its partner covering [0 3 2 3]",
+        "partner covering it, 3 = a seat on a side with no nil.  One nil and "
+        "its partner covering [0 3 2 3]; a bid on each side [0 3 2 0]; a pair "
+        "that both bid [0 3 0 3]; or three bids [0 0 3 0], where the one seat "
+        "that did not bid gives its side's lean",
     )
     p.add_argument("--spades-broken", action="store_true", help="start with spades broken")
     p.add_argument(
@@ -3395,6 +3935,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 0
     if isinstance(solution, MultiNilSolution):
         print(format_multi_solution(solution, compact=args.compact))
+        return 0
+    if isinstance(solution, ThreeNilSolution):
+        print(format_three_nil_solution(solution, compact=args.compact))
         return 0
     print(format_solution(solution, compact=args.compact))
     return 0

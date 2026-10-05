@@ -112,9 +112,36 @@ only need `NilSeatRoles.FromPbnOrder(pbn, ...)` if you already have the four
 values clockwise from the seat the PBN names — which is the order the native ABI
 and the corpus both use.
 
-Two nils on the table is a legal spades deal and the shape this type exists to
-grow into, but the solver does not answer it yet: a roles value holding two comes
-back as `NilStatus.Unsupported` rather than as a wrong answer. Everything else
+More than one nil is answered too (this paragraph used to say it was not). The
+shapes, with the role on a non-bidding seat saying which way its side LEANS when
+it cannot have everything — `Cover` saves its own bid first, `Opponent` sets
+theirs first:
+
+| roles (N E S W) | deal |
+| --- | --- |
+| `Nil Opponent Cover Opponent` | one nil, covered |
+| `Nil Opponent Nil Opponent` | a pair that both bid |
+| `Nil Opponent Cover Nil` | one bid each side, the two sides leaning opposite ways |
+| `Nil Nil Opponent Nil` | three bids: E/W both bid, N bid, S leans "set theirs first" |
+| `Nil Nil Cover Nil` | three bids, S leaning "save ours first" |
+
+**Three bids, once one breaks.** The three-bid shape takes live bids only, and
+refuses `NilSet` (`NilStatus.Unsupported`) so that every state has one spelling.
+When a bid breaks in the real game, pass the converted roles instead:
+
+* a twin breaks: it takes the lean *opposite* the lone bidder's partner —
+  `Nil Nil Opponent Nil` with East down becomes `Nil Cover Opponent Nil`, and
+  `Nil Nil Cover Nil` with East down becomes `Nil Opponent Cover Nil`;
+* the lone bid breaks: it and its partner both become `Opponent` —
+  `Nil Nil Opponent Nil` with North down becomes `Opponent Nil Opponent Nil`.
+
+Re-solving from the converted roles reaches the same verdicts and trick totals
+the three-bid solve did over the rest of the hand. On a three-bid result,
+`NilsSetMask` is pinned unless exactly one of the two twins is in it; with one
+twin down another optimal line may name the other twin, so read the count there.
+
+Four nils is a legal deal this build does not answer, and comes back as
+`NilStatus.Unsupported` rather than as a wrong answer. Everything else
 malformed — no nil, two covers, a cover beside the nil rather than across from it
 — is `NilStatus.IllegalPosition`.
 

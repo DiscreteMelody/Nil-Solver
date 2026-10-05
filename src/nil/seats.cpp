@@ -62,6 +62,11 @@ int side_rank(bool mine_survives, bool theirs_survives, int partner_role) {
 }
 
 bool strictly_opposed(const SeatRoles& roles) {
+    // Three bids: the twins' rank is THREE_NIL_TOP minus the lone side's on
+    // every outcome, by construction.  Answered before the loop below, which
+    // reads "the partner of a side's bidder" and would read a twin's partner --
+    // another bid -- as a lean.
+    if (nil_count(roles) == 3) return true;
     int partner_of[2] = {ROLE_OPPONENT, ROLE_OPPONENT};
     for (int side = 0; side < 2; ++side) {
         for (int seat = side; seat < 4; seat += 2) {
@@ -81,6 +86,82 @@ bool strictly_opposed(const SeatRoles& roles) {
         }
     }
     return true;
+}
+
+int three_nil_rank(bool lone_makes, int twins_down, int lean) {
+    const int n = lone_makes ? 1 : 0;
+    if (lean == ROLE_OPPONENT) return 2 * twins_down + n;  // set theirs first
+    return 3 * n + twins_down;                              // save ours first
+}
+
+bool three_nil_seats(const SeatRoles& roles, int& lone, int& lean_seat, int twins[2]) {
+    std::string ignored;
+    if (seat_shape(roles, ignored) != SHAPE_THREE_NILS) return false;
+    lean_seat = -1;
+    for (int s = 0; s < 4; ++s) {
+        if (!roles.is_nil(s)) lean_seat = s;
+    }
+    lone = (lean_seat + 2) & 3;
+    twins[0] = (lone + 1) & 3;
+    twins[1] = (lone + 3) & 3;
+    return true;
+}
+
+bool three_nil_after_set(const SeatRoles& roles, int seat, SeatRoles& out, std::string& err) {
+    int lone = 0, lean_seat = 0, twins[2] = {0, 0};
+    if (!three_nil_seats(roles, lone, lean_seat, twins)) {
+        err = "the conversion rule is for a three-nil deal, and " + describe_seat_roles(roles) +
+              " is not one";
+        return false;
+    }
+    out = roles;
+    seat &= 3;
+    if (seat == lone) {
+        // The lone bid breaks: it and its partner become two opponents of the
+        // twins, which is SHAPE_PARTNER_NILS.
+        out.role[lone] = ROLE_OPPONENT;
+        out.role[lean_seat] = ROLE_OPPONENT;
+    } else if (seat == twins[0] || seat == twins[1]) {
+        // A twin breaks: it leans the opposite way to the lone side, which is
+        // SHAPE_OPPOSING_NILS and strictly opposed.
+        out.role[seat] = roles.role[lean_seat] == ROLE_OPPONENT ? ROLE_COVER : ROLE_OPPONENT;
+    } else {
+        err = std::string("seat ") + SEAT_CHARS[seat] + " holds no bid (" +
+              describe_seat_roles(roles) + ")";
+        return false;
+    }
+    return true;
+}
+
+int outcome_rank(const SeatRoles& roles, unsigned broken_mask, int side) {
+    side &= 1;
+    std::string ignored;
+    switch (seat_shape(roles, ignored)) {
+        case SHAPE_OPPOSING_NILS: {
+            int mine = -1, theirs = -1;
+            for (int s = 0; s < 4; ++s) {
+                if (!roles.is_nil(s)) continue;
+                if ((s & 1) == side) {
+                    mine = s;
+                } else {
+                    theirs = s;
+                }
+            }
+            return side_rank((broken_mask & (1u << mine)) == 0,
+                             (broken_mask & (1u << theirs)) == 0,
+                             roles.role[(mine + 2) & 3]);
+        }
+        case SHAPE_THREE_NILS: {
+            int lone = 0, lean_seat = 0, twins[2] = {0, 0};
+            three_nil_seats(roles, lone, lean_seat, twins);
+            const int down = ((broken_mask >> twins[0]) & 1u) + ((broken_mask >> twins[1]) & 1u);
+            const int lone_rank = three_nil_rank((broken_mask & (1u << lone)) == 0, down,
+                                                 roles.role[lean_seat]);
+            return (lone & 1) == side ? lone_rank : THREE_NIL_TOP - lone_rank;
+        }
+        default:
+            return 0;
+    }
 }
 
 int nil_set_count(const SeatRoles& roles) {
@@ -124,6 +205,10 @@ bool mask_determined_by_objective(const SeatRoles& roles) {
         case SHAPE_PARTNER_NILS:
             // The primary counts bids down and cannot say which one went.
             return false;
+        case SHAPE_THREE_NILS:
+            // The rank counts twin bids down; with one of them down it cannot
+            // say which.  See the three-argument mask_determined.
+            return false;
         case SHAPE_UNSUPPORTED:
         default:
             return false;
@@ -143,6 +228,17 @@ bool mask_determined(const SeatRoles& roles, int nils_set) {
     // C(live, live_down) == 1 exactly at the ends, and the ends are the only
     // place a count names a unique subset.
     return live_down <= 0 || live_down >= live;
+}
+
+bool mask_determined(const SeatRoles& roles, int nils_set, unsigned nils_set_mask) {
+    int lone = 0, lean_seat = 0, twins[2] = {0, 0};
+    if (three_nil_seats(roles, lone, lean_seat, twins)) {
+        // The value pins the lone bid and the NUMBER of twins down.  None or
+        // both is one subset; exactly one is either of two.
+        const unsigned t = ((nils_set_mask >> twins[0]) & 1u) + ((nils_set_mask >> twins[1]) & 1u);
+        return t != 1;
+    }
+    return mask_determined(roles, nils_set);
 }
 
 bool validate_seat_roles(const SeatRoles& roles, std::string& err) {
@@ -263,8 +359,32 @@ SeatShape seat_shape(const SeatRoles& roles, std::string& err) {
         return SHAPE_PARTNER_NILS;
     }
 
+    if (nils == 3) {
+        // ONE PAIR BOTH BID, THE OTHER HAS ONE BID.  The fourth seat partners
+        // the lone bidder and holds 2 or 3 by construction -- a 0 or a 1 there
+        // would be a fourth bid -- and that role is the lone side's lean.
+        //
+        // ONLY LIVE BIDS (T's decision, Oct 2026).  With one bid already down
+        // the deal is a two-bid deal under the conversion rule, and the caller
+        // passes it in that spelling (three_nil_after_set), so each state has
+        // exactly one.  Refused rather than converted here, because a solver
+        // that silently rewrote the roles would report a mask over seats the
+        // caller no longer thinks of as bids.
+        for (int s = 0; s < 4; ++s) {
+            if (roles.role[s] == ROLE_NIL_SET) {
+                err = "an already-broken nil in a three-nil deal is not supported (" +
+                      describe_seat_roles(roles) +
+                      "); pass the converted roles instead: a broken twin takes the lean "
+                      "opposite the lone bidder's partner, a broken lone bid makes it and "
+                      "its partner both 3";
+                return SHAPE_UNSUPPORTED;
+            }
+        }
+        return SHAPE_THREE_NILS;
+    }
+
     err = std::to_string(nils) + " nils (" + describe_seat_roles(roles) +
-          "); more than two is not supported yet";
+          "); more than three is not supported yet";
     return SHAPE_UNSUPPORTED;
 }
 

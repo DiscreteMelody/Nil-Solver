@@ -73,12 +73,14 @@ namespace NilSolver
     /// Use <see cref="FromPbnOrder"/> only when you already have the values in
     /// the deal string's order.
     ///
-    /// WHAT IS ACCEPTED TODAY: exactly one nil, exactly one cover, the cover
-    /// across from the nil bidder, and the other two opposing. Anything else
-    /// comes back from the solver as <see cref="NilStatus.IllegalPosition"/>,
-    /// except a well-formed layout holding two nils, which is
-    /// <see cref="NilStatus.Unsupported"/> -- a legal deal this build cannot
-    /// answer yet, not a mistake in the call.
+    /// WHAT IS ACCEPTED TODAY: one nil and its cover; a pair that both bid; a
+    /// bid on each side; and three bids -- see "WHAT IS ACCEPTED TODAY" in
+    /// nil_solver.h and the roles section of README.md, which also give the
+    /// roles to pass once a bid in a three-bid deal breaks (the three-bid shape
+    /// takes live bids only). A malformed layout comes back from the solver as
+    /// <see cref="NilStatus.IllegalPosition"/>; a well-formed one this build
+    /// does not take, such as four nils, as <see cref="NilStatus.Unsupported"/>
+    /// -- a legal deal, not a mistake in the call.
     /// </remarks>
     public readonly struct NilSeatRoles : IEquatable<NilSeatRoles>
     {

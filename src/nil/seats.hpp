@@ -113,6 +113,17 @@ enum SeatShape : int {
     // alone; see the item 60 ROADMAP entry for the decision procedure and its
     // proof.
     SHAPE_OPPOSING_NILS_SAME_LEAN = 4,
+    // Three bids (Oct 2026): one pair both bid -- the TWINS -- and the other
+    // pair has one bid -- the LONE bid -- and one seat that did not bid, whose
+    // role, 2 or 3, is that side's lean exactly as a bidder's partner's is under
+    // SHAPE_OPPOSING_NILS.  The objective is T's conversion rule, written down
+    // as a ladder; see three_nil_rank().  Zero-sum by construction, so it rides
+    // on the same search machinery as the strictly opposed two-bid shape.
+    //
+    // Every bid must be LIVE.  A three-bid deal with one bid already down is a
+    // two-bid deal under the conversion rule, and the caller passes it in that
+    // spelling -- see three_nil_after_set() -- so each state has exactly one.
+    SHAPE_THREE_NILS = 5,
 };
 
 // HOW GOOD AN OUTCOME IS FOR ONE SIDE, 3 best to 0 worst.
@@ -132,8 +143,58 @@ enum SeatShape : int {
 int side_rank(bool mine_survives, bool theirs_survives, int partner_role);
 
 // Do the two sides' rankings sum to a constant?  A property of the roles alone,
-// and the condition under which minimax applies.
+// and the condition under which minimax applies.  Always true of three bids,
+// whose twins rank the outcomes in exactly the reverse of the lone side's order
+// by construction (three_nil_rank).
 bool strictly_opposed(const SeatRoles& roles);
+
+// ---- three bids ------------------------------------------------------------
+//
+// WHERE THE LADDER COMES FROM.  T specified the shape by what happens when a
+// bid breaks, and every state after the first break is a shape the solver
+// already answers:
+//
+//   a TWIN breaks    it takes the lean OPPOSITE the lone side's partner -- a 2
+//                    if that partner is a 3, a 3 if it is a 2 -- which leaves
+//                    one bid per side leaning opposite ways: SHAPE_OPPOSING_NILS.
+//   the LONE bid     it and its partner both become 3s, which leaves the twins
+//   breaks           against two opponents: SHAPE_PARTNER_NILS.
+//
+// Those subgames pin every comparison between two outcomes in which some bid
+// broke.  The one outcome no conversion reaches is ALL THREE MAKE, and T placed
+// it (Oct 2026) the way the lean already reads with two bids -- which makes the
+// whole ladder lexicographic, the lean choosing which term comes first.  With
+// n = the lone bid makes (0/1) and d = twin bids down (0..2), the lone side's
+// rank, 5 best to 0 worst, is
+//
+//     lean 3 (set theirs first)   2*d + n     5 n1d2  4 n0d2  3 n1d1  2 n0d1
+//                                             1 n1d0 (all make)   0 n0d0
+//     lean 2 (save ours first)    3*n + d     5 n1d2  4 n1d1  3 n1d0 (all make)
+//                                             2 n0d2  1 n0d1  0 n0d0
+//
+// and the twins' rank is THREE_NIL_TOP minus it.  Restricted to one twin down
+// each ladder IS side_rank's ladder for the converted deal, and restricted to
+// the lone bid down it is the count of twin bids down: nil_oracle.py's selftest
+// checks both restrictions pair by pair, and tools/three_nil_crosscheck.py
+// checks them on real play by re-solving mid-hand from the converted roles.
+constexpr int THREE_NIL_TOP = 5;
+
+int three_nil_rank(bool lone_makes, int twins_down, int lean);
+
+// The lone bidder, its partner (the seat holding the lean) and the two twins.
+// False unless the roles are SHAPE_THREE_NILS.
+bool three_nil_seats(const SeatRoles& roles, int& lone, int& lean_seat, int twins[2]);
+
+// The roles T's conversion rule gives once `seat`'s bid breaks; see above.
+// False, with `err` saying why, unless the roles are SHAPE_THREE_NILS and
+// `seat` holds one of the three bids.
+bool three_nil_after_set(const SeatRoles& roles, int seat, SeatRoles& out, std::string& err);
+
+// THE OUTCOME RANK, for the side with parity `side` (0 = N/S, 1 = E/W), as a
+// function of which bids are down.  Defined on the two zero-sum shapes that
+// charge their primary as a rank: SHAPE_OPPOSING_NILS (side_rank, 0..3) and
+// SHAPE_THREE_NILS (three_nil_rank, 0..5).  Zero on any other shape.
+int outcome_rank(const SeatRoles& roles, unsigned broken_mask, int side);
 
 // Name the arrangement, or SHAPE_UNSUPPORTED with `err` saying why.  An
 // arrangement nobody has implemented is refused rather than answered as some
@@ -144,7 +205,7 @@ SeatShape seat_shape(const SeatRoles& roles, std::string& err);
 // True for any shape the solver can answer.  See seat_shape.
 bool validate_seat_roles(const SeatRoles& roles, std::string& err);
 
-// How many seats hold a bid, live or already down: 1 or 2 on any accepted
+// How many seats hold a bid, live or already down: 1 to 3 on any accepted
 // shape.
 int nil_count(const SeatRoles& roles);
 
@@ -186,6 +247,10 @@ unsigned nil_set_mask(const SeatRoles& roles);
 //                        it genuinely does not: tools/mask_determinacy.py finds
 //                        11.67-20.00% of positions where two optimal lines
 //                        break different bids for the same value.  NOT pinned.
+//   SHAPE_THREE_NILS     the rank names the lone bid's fate and how MANY twins
+//                        are down, and with exactly one twin down that is the
+//                        twin shape's ambiguity again.  NOT pinned by the shape;
+//                        see the three-argument mask_determined below.
 //
 // A property of the ROLES alone, so it costs nothing to answer and is the same
 // for every row of a move list.  It is deliberately conservative on the twin
@@ -207,6 +272,12 @@ bool mask_determined_by_objective(const SeatRoles& roles);
 // Prefer this to the shape predicate wherever a count is in hand.  It reads no
 // cards and runs no search, so the tightening costs nothing.
 bool mask_determined(const SeatRoles& roles, int nils_set);
+
+// Tighter again, given the mask itself.  On three bids the value pins the lone
+// bid's fate and the number of twins down, so the mask is pinned unless
+// exactly ONE twin is in it: none or both is a single subset.  Every other
+// shape answers as the two-argument form does.
+bool mask_determined(const SeatRoles& roles, int nils_set, unsigned nils_set_mask);
 
 // Text form, ANCHORED: four values running clockwise from `anchor`, matching
 // the hand order of a PBN string named for the same seat.  Accepts them
