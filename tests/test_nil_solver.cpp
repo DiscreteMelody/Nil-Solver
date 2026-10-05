@@ -2526,6 +2526,88 @@ int main(int argc, char** argv) {
         check("agreeing with solve on the count", msol.nils_set, fsol.nils_set);
     }
 
+    std::cout << "Pair proofs and the twin one-live bound (Oct 2026)\n";
+    {
+        // THE ARMS, each off against both on: per-card rows (every field the
+        // row reports) and the position's line, on the four twin seatings in
+        // both directions and both row modes.  The one-live bound is pushed
+        // down to 2 tricks so that it fires at this size, as the corpus arm
+        // does.  Each must leave every row and line alone and must change the
+        // tree, or its switch is not plumbed through.  Node counts include the
+        // engine's, whose table outlives a solve, so it is cleared before each
+        // one -- shrunk to 1 MiB for the sweep, because clearing the default
+        // 64 MiB a few hundred times would be most of this block's cost.
+        auto row_text = [](const std::vector<nil::MoveScore>& ms) {
+            std::string t;
+            for (const nil::MoveScore& m : ms) {
+                t += nil::card_to_string(m.card) + ":" + std::to_string(m.value) + ":" +
+                     std::to_string(m.nils_set) + ":" + std::to_string(m.nils_set_mask) + ":" +
+                     std::to_string(m.nil_tricks) + ":" + std::to_string(m.nil_side_tricks) + ":" +
+                     std::to_string(m.opponent_tricks) + ":" + (m.is_best ? "1" : "0");
+                for (int s = 0; s < 4; ++s) t += ":" + std::to_string(m.seat_tricks[s]);
+                t += " ";
+            }
+            return t;
+        };
+        Rng rng;
+        const char* seatings[] = {"0 3 0 3", "3 0 3 0", "1 3 0 3", "3 1 3 0"};
+        const char* arm_names[] = {"pair proofs", "the one-live bound at 2 tricks"};
+        int positions = 0;
+        int rows_differ[2] = {0, 0};
+        int lines_differ[2] = {0, 0};
+        long long nodes_on[2] = {0, 0};
+        long long nodes_off[2] = {0, 0};
+        const std::size_t engine_mb = nil::dd::engine().megabytes();
+        nil::dd::engine().resize(1);
+        for (int deal = 0; deal < 8; ++deal) {
+            const Position pos = random_deal(rng, 6);
+            for (const char* seating : seatings) {
+                nil::SeatRoles roles;
+                std::string err;
+                nil::parse_seat_roles(seating, nil::SEAT_NORTH, roles, err);
+                for (int dir = 0; dir < 2; ++dir) {
+                    for (int values_only = 0; values_only < 2; ++values_only) {
+                        SearchOptions base;
+                        base.minimise_own_tricks = dir != 0;
+                        base.row_lines = values_only == 0;
+                        base.twin_dd_live_min_t = 2;
+                        ++positions;
+                        for (int arm = 0; arm < 2; ++arm) {
+                            SearchOptions off = base;
+                            if (arm == 0) off.pair_proofs = false;
+                            if (arm == 1) off.twin_dd_live_min_t = 0;
+                            Solution a;
+                            Solution b;
+                            std::vector<nil::MoveScore> ma;
+                            std::vector<nil::MoveScore> mb;
+                            nil::dd::engine().clear();
+                            const bool ok_a = nil::solve_moves(pos, roles, base, a, ma, err);
+                            nil::dd::engine().clear();
+                            const bool ok_b = nil::solve_moves(pos, roles, off, b, mb, err);
+                            if (!ok_a || !ok_b) {
+                                std::cerr << "test bug: solve_moves failed: " << err << "\n";
+                                std::exit(70);
+                            }
+                            if (row_text(ma) != row_text(mb)) ++rows_differ[arm];
+                            if (nil::format_pv_compact(a) != nil::format_pv_compact(b))
+                                ++lines_differ[arm];
+                            nodes_on[arm] += static_cast<long long>(a.nodes);
+                            nodes_off[arm] += static_cast<long long>(b.nodes);
+                        }
+                    }
+                }
+            }
+        }
+        nil::dd::engine().resize(engine_mb);
+        check("twin arms: sweep ran", positions, 128);
+        for (int arm = 0; arm < 2; ++arm) {
+            check(std::string(arm_names[arm]) + " never moves a per-card row", rows_differ[arm], 0);
+            check(std::string(arm_names[arm]) + " never moves the line", lines_differ[arm], 0);
+            check(std::string("and the arm for ") + arm_names[arm] + " changes the tree",
+                  nodes_on[arm] != nodes_off[arm], true);
+        }
+    }
+
     std::cout << "One nil on each side\n";
     {
         std::string err;

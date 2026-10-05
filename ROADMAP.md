@@ -4990,6 +4990,112 @@ inside a three-bid deal, and three guarantees bound the rank on the six-rung
 ladder the way two bound it on four; (3) the patch-66 trapezoid bound in the
 lone-bid-down region, which is the twin objective written from the far side.
 
+### 98. Twin nils on the bot's call: pair proofs and the one-live bound — ⭐⭐⭐ — **done, Oct 2026 (98a, 98b); the tail is not**
+
+**The task.** Wall time of `nil_solve_moves` in full mode on 13-card hands for a
+pair that both bid -- `3 0 3 0` / `0 3 0 3`, and what the bot passes once one
+twin is down, `3 1 3 0` / `1 3 0 3` -- with single nil, one bid per side and
+three nils as regression gates. Answer-neutral throughout.
+
+**The benchmark.** 24 seed-1 `bench_random13` deals (the first twelve are the
+earlier baseline's), each in all four twin seatings, plus the 13-card rows of
+`multinil.txt`; the gates on the same deals. In-process, as `NilSolverPool`
+runs it: tables kept across solves, one call per row of the set, values-only
+rows and default rows as separate runs. HEAD and the patch ran side by side on
+a 2-vCPU sandbox, so totals carry about +/-3% of noise and single deals up to
++/-15% (two runs with identical node counts differed by that much).
+
+**Where the time goes (HEAD, sampling profile and counters).**
+
+* **The one-down region.** On every slow twin deal 65-90% of the general
+  search's time is spent after one twin has broken -- a single-nil game whose
+  "cover" is the other twin's nil hand.
+* **The costliest probe of a row is the "at most" proof** -- the pair showing
+  it can keep at least one twin clean (a row's value in the one-down band) --
+  and every row pays its own. On seed-1 #4 that is ~100M nodes for the first
+  row alone. Rows are 2 probes each after the first; the first row climbs
+  from 0 in K-sized steps (15-25 probes), but those probes are cheap: about a
+  tenth of the first row.
+* **Values-only rows that cannot be decoded still walk their canonical line**
+  (one twin down, the value cannot say which). Over the 96 solves that was
+  26 s of 178 s, 23.4 s of it on #4 -- about 45% of that deal. A walk step has
+  to prove the canonically lowest optimal card, which is rarely the card the
+  search proved: #4's first step (East's ♦2 under the ♦T) is 116M nodes.
+* **The double-dummy engine** is 25-60% of the time on the typical slow twin
+  deal (callgrind: 70% of instructions on #3, a quarter of them the profile
+  scan in `Engine::probe`), and almost none on #4.
+* Larger tables help #4 only: at 1-2 GiB it takes 9% fewer nodes, and nothing
+  else in the set moves.
+
+**98a. Pair proofs: one of two** (`SearchOptions::pair_proofs`,
+`--no-pair-proofs`). M4's proofs asked of either twin while BOTH are live: one
+twin unforceable on every line, or kept clean by duck-or-cover, means at most
+one bid falls (the value is at most the top of the one-down band); a forcing
+lead or forced ruff against either means at least one does (at least the
+bottom of it). The partner's tricks under S11's strategy can only cost the
+partner's own bid, which the bound allows to fall. The argument and the
+conjunction-probe gate are at the block in `search_core`. Measured (two
+interleaved reps against the arm off): -5.7% of nodes and -2.8% of wall time on
+the twin set, -7.7% and -3.3% on `3 0 3 0`; #4 55.7 s -> 53.7 s.
+
+**98b. The one-live double-dummy bound, on for the twin shape from 11 tricks
+up** (`SearchOptions::twin_dd_live_min_t`, `--twin-dd-live 0`). Off everywhere
+since the perf pass because its probes cost more than they cut at depth; with
+a floor on the tricks left it keeps the probes whose subtree is large, which in
+this shape is a whole `3 1 3 0` / `1 3 0 3` row, or a `3 0 3 0` row with a
+twin doomed at the root. The sweep (at `dd_one_live_bound`): -8.8% wall, -9.4%
+nodes over the set from 11 tricks; `3 1 3 0` -38%, `1 3 0 3` -24%; from 9 it
+costs `0 3 0 3` +7%.
+
+**RESULTS** (values-only rows -- `NilFlags.FastLine` -- then default rows;
+HEAD | patch):
+
+| seats | total | mean | median | < 1 s | slowest | nodes |
+|---|---|---|---|---|---|---|
+| `3 0 3 0` | 113.7 \| 96.1 s | 4.74 \| 4.00 | 0.50 \| 0.43 | 14 \| 15 /24 | 59.1 \| 52.6 | 861 \| 760M |
+| `0 3 0 3` | 33.0 \| 28.8 s | 1.37 \| 1.20 | 0.45 \| 0.40 | 15 \| 16 | 5.1 \| 4.9 | 279 \| 256M |
+| `3 1 3 0` | 14.1 \| 7.5 s | 0.59 \| 0.31 | 0.29 \| 0.14 | 20 \| 22 | 4.6 \| 2.4 | 107 \| 62M |
+| `1 3 0 3` | 17.3 \| 12.2 s | 0.72 \| 0.51 | 0.18 \| 0.12 | 20 \| 21 | 4.5 \| 4.1 | 140 \| 113M |
+| all twins | 178.1 \| 144.6 s (-18.8%) | 1.85 \| 1.51 | 0.38 \| 0.27 | 69 \| 74 /96 | | 1387 \| 1191M |
+| all twins, default rows | 199.6 \| 174.1 s (-12.8%) | 2.08 \| 1.81 | 0.46 \| 0.39 | 63 \| 69 /96 | 62.0 \| 54.6 | 1536 \| 1360M |
+
+Slower by more than 0.25 s: `3 1 3 0` #20, 2.13 -> 2.44 s (+2.5% nodes).
+Without #4, the twin mean is 1.28 -> 1.00 s (values-only). The gates do not
+move: single nil, one bid per side and three nils take identical node counts
+in both row modes (single 101.5M, double 519.7M, three 1,948.1M values-only),
+and times within noise; their rows are byte-identical, as are every twin
+row's.
+
+**Built, measured, rejected** (do not retry without new evidence):
+
+| idea | measured | why not |
+|---|---|---|
+| Twin handoff: hand every one-down boundary to a single-nil search, with all the machinery `disable_single_nil_machinery` turns off | -3.5% nodes, 0% wall | the broken twin is a nil hand and a poor cover, so the cover-based proofs rarely fire, and a single-nil node costs a little more. (A first 1.0-4.5x estimate from solving `3 1 3 0` as `3 2 3 0` came from runs that shared a warm engine table.) 98b gets the same nodes in the twin search itself |
+| One-sided equality in `canonical_move_for` (null window on the side in doubt) | -0.4% nodes, 0% wall | the costly walk steps are proofs of the canonical card itself, which either window must make |
+| Recover each row's line as soon as it is scored | 0% | the walk's cost is not table pressure |
+| Band questions in the one-down region by a MODE_FAST search | #4 -9%; other deals +20-70% | the weak bounds it returns replace exact ones that later trick questions needed |
+| Per-twin MODE_FAST "can the pair keep THIS twin clean" as a both-live bound | #4 1.4-3x slower | on #4 neither twin can be kept clean on its own; the pair's defence is adaptive |
+| Table at 1-2 GiB | -9% nodes on #4 only | memory per worker for one deal |
+
+**What is left, in the order worth trying:**
+
+1. **#4 itself** (`3 0 3 0` and three nils both): about half MTD "at most"
+   proofs and half the canonical line walk of undecodable rows. With the
+   walk taking the search's own line instead of the canonical one on those
+   rows only, the twin set goes 150.6 -> 128.3 s (values-only) and #4
+   54.1 -> 33.8 s -- but 3 rows of 108 walked change their reported mask (all
+   on #4) and 74 their per-seat trick split, so it is T's decision, and it
+   needs an ABI bit the flag word does not have.
+2. **The engine** (`Engine::probe`'s profile scan) on the typical slow deal.
+3. **Three nils**: hand the lone-bid-down region to the partner-nil search,
+   so that 98a/98b reach it -- an affine map of the value per band, since the
+   lean-3 ladder steps by 2.
+4. **Parallel rows (A1)**: #4's six rows are independent exact searches.
+
+**Not measured:** MSVC/Windows; the minimise direction at 13 cards (correct on
+the corpus, the arms and the crosschecks, not timed); seeds other than 1; one
+process per call (`bench_random13.py`'s protocol); PGO.
+
 ## Suggested sequence
 
 ```

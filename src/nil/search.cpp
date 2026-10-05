@@ -280,6 +280,13 @@ struct Ctx {
     bool m4_safe = true;
     bool m4_doom = true;
     int demoted_dd_min_t = 0;  // SearchOptions::demoted_dd_min_t (A4); 0 is off
+    // SearchOptions::pair_proofs: the one-of-two proofs where both of a pair's
+    // bids are live.  See the block after M4 in search_core.
+    bool pair_proofs = false;
+    // dd_one_live_bound runs only from this many tricks up; 0 is no floor.  Set
+    // for a pair that both bid (SearchOptions::twin_dd_live_min_t); everywhere
+    // else --dd-live-bounds keeps its old, unfloored behaviour.
+    int dd_live_min_t = 0;
 };
 
 // Roadmap item 32's population count.  Split out so the expression at the call
@@ -1106,6 +1113,27 @@ bool demoted_dd_bound(Ctx& ctx, const State& st, int beta, int& value) {
     return true;
 }
 
+// dd_one_live_bound (described above A4): ON BY DEFAULT FOR A PAIR THAT BOTH
+// BID, FROM 11 TRICKS UP (Oct 2026; SearchOptions::twin_dd_live_min_t).
+// Everywhere else it stays off: the perf pass measured it at 156 s -> 239 s on
+// the slowest deals, because a probe at every one-live boundary costs more
+// than the small subtrees it removes.  A floor on the tricks left keeps only
+// the probes whose subtree is large, and
+// for the twin shape that is where they pay: `3 1 3 0` and `1 3 0 3` are one
+// live bid from the root, and a twin doomed at the root (charged on arrival)
+// leaves the same.  Swept on the Oct 2026 twin benchmark -- 24 seed-1 deals in
+// each of the four twin seatings, values-only rows, tables kept, two
+// interleaved reps -- against the bound off (155.0 s, 1,314.8M nodes):
+//
+//     floor    wall    nodes    `3 1 3 0`  `1 3 0 3`  `3 0 3 0`  `0 3 0 3`
+//     t >= 9   -6.6%   -10.4%     -34%       -20%       -5.1%      +6.8%
+//     t >= 10  -9.0%   -10.2%     -39%       -23%       -5.8%      -0.3%
+//     t >= 11  -8.8%    -9.4%     -38%       -24%       -4.6%      -2.9%   <- default
+//
+// From 9 the probes at 9 and 10 tricks start to cost `0 3 0 3` more than they
+// save.  The deals it helps it helps a lot: `3 1 3 0` #23 3.1 s -> 0.3 s,
+// `1 3 0 3` #18 3.0 s -> 0.2 s, `3 0 3 0` #18 7.9 s -> 4.9 s (a twin doomed at
+// the root).  `--twin-dd-live 0` is the control.
 bool dd_one_live_bound(Ctx& ctx, const State& st, int alpha, int beta, int& value) {
     const unsigned live = ctx.nil_mask & ~st.nils_broken;
     if (!live || (live & (live - 1))) return false;  // exactly one live bid
@@ -2123,6 +2151,81 @@ int search_core(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
         }
     }
 
+    // ---- PAIR PROOFS: ONE OF TWO (Oct 2026; SearchOptions::pair_proofs) ----
+    //
+    // M4 above needs exactly one bid live.  With a pair that both bid and BOTH
+    // still live, the same proofs say something about the pair, asked of
+    // either bidder with the other one as its cover:
+    //
+    //   * if one twin cannot be forced on any line (nil_cannot_be_forced), or
+    //     the pair can keep it clean against any defence (S11, duck or cover),
+    //     then at most one bid goes down from here;
+    //   * if the opponents on lead can make one twin take THIS trick (D1/D1b,
+    //     the forcing lead or the forced ruff), then at least one does.
+    //
+    // The proofs read no roles -- the partner is whoever sits opposite -- and
+    // S11's strategy lets that partner take whatever tricks it likes, which
+    // costs the pair at most the partner's OWN bid: the one the bound allows to
+    // fall.  So with the value P * d + S * u (d bids down from here, u tricks
+    // to the pair, every bid that falls costing the pair a trick, d <= u <= t):
+    //
+    //   d <= 1:  value <= P + max(S, S*t)    the top of the one-down band,
+    //                                        above every value with d = 0
+    //   d >= 1:  value >= P + min(S, S*t)    the bottom of the one-down band,
+    //                                        below every value with d = 2
+    //
+    // in either direction (S = -K or +K, P = K*K > K*t).  Like M4's these are
+    // band bounds from ADVERSARIAL proofs -- the every-line one is spent the
+    // same way, for the same bound -- so: window test first, fail-soft, stored
+    // nowhere, never fed to the doom charge or the double-dummy pin.
+    //
+    // WHERE IT BITES.  The "at most one down" half is exactly the question the
+    // costliest probe of a twin row asks -- "can the pair keep one of the two
+    // clean?" -- whenever a row's value is in the one-down band, and the probe
+    // asks it again at every both-live boundary of its proof.  Measured on the
+    // Oct 2026 twin benchmark (24 seed-1 deals in each of the four twin
+    // seatings, values-only rows, tables kept, two interleaved reps, against
+    // the arm off): -5.7% of nodes and -2.8% of wall time, -7.7% and -3.3% on
+    // `3 0 3 0`; the slowest deal 55.7 s -> 53.7 s.
+    //
+    // NOT UNDER THE CONJUNCTION PROBE, which reaches here through the same-lean
+    // decision procedure with `multi_nil` set (that shape is not `opposing`)
+    // and an indicator for a value: these bands are not its bands.  The first
+    // build without the gate failed same_lean_partial_crosscheck on 4 of 200
+    // four-card deals.
+    if (ctx.pair_proofs && st.trick_len == 0 && ctx.multi_nil && !ctx.opposing &&
+        !ctx.conjunction && !ctx.value_is_nil_tricks && ctx.primary_weight > 0) {
+        const unsigned live = ctx.nil_mask & ~st.nils_broken;
+        if (live && (live & (live - 1))) {
+            const int t = count_cards(st.hands[st.leader]);
+            const int S = ctx.secondary_weight;
+            const int P = ctx.primary_weight;
+            const int hi = P + (S < 0 ? S : S * t);
+            if (hi <= alpha) {
+                for (unsigned rest = live; rest; rest &= rest - 1) {
+                    const int L = lowest_card(static_cast<Hand>(rest));
+                    if (((st.hands[L] & suit_mask(SUIT_SPADES)) == 0 &&
+                         nil_cannot_be_forced(st.hands, L, st.leader == L)) ||
+                        (ctx.m4_safe && st.leader != L && nil_duck_or_cover(st.hands, L, false))) {
+                        best_move = first_legal_move(st);
+                        return hi;
+                    }
+                }
+            }
+            const int lo = P + (S < 0 ? S * t : S);
+            if (ctx.m4_doom && lo >= beta && ((st.leader ^ ctx.nil_seat) & 1)) {
+                for (unsigned rest = live; rest; rest &= rest - 1) {
+                    const int L = lowest_card(static_cast<Hand>(rest));
+                    if (forcing_lead_suit(st.hands, L, st.leader, st.broken) >= 0 ||
+                        forced_ruff_lead(st.hands, L, st.leader)) {
+                        best_move = first_legal_move(st);
+                        return lo;
+                    }
+                }
+            }
+        }
+    }
+
     // STATIC BOUNDS.  Two proofs that settle the position outright; see
     // bounds.hpp for both, and for why only one of them survives mid-trick.
     // They sit ahead of the transposition probe because they are cheaper than
@@ -2712,7 +2815,8 @@ int search_core(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
         }
     }
 
-    if (ctx.dd_live_bounds && st.trick_len == 0) {
+    if (ctx.dd_live_bounds && st.trick_len == 0 &&
+        count_cards(st.hands[st.leader]) >= ctx.dd_live_min_t) {
         int bound = 0;
         if (dd_one_live_bound(ctx, st, alpha, beta, bound)) {
             best_move = first_legal_move(st);
@@ -3208,6 +3312,7 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
     ctx.tight_pv = opts.tight_pv;
     ctx.boundary_facts = opts.boundary_facts;
     ctx.multi_live_proofs = opts.multi_live_proofs;
+    ctx.pair_proofs = opts.pair_proofs;
     ctx.demoted_dd_min_t = opts.demoted_dd_min_t;
     ctx.m4_safe = opts.adversarial_safe;
     ctx.m4_doom = opts.adversarial_doom;
@@ -3271,6 +3376,13 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
         ctx.dd_weight = w_far;
         ctx.dd_const_per_trick = ctx.opposing ? 0 : weights.secondary;
         ctx.dd_live_bounds = ctx.dd_engine && opts.dd_live_bounds;
+        // A pair that both bid: the bound from twin_dd_live_min_t tricks up,
+        // where it pays.  See dd_one_live_bound.
+        if (ctx.dd_engine && !ctx.dd_live_bounds && ctx.multi_nil && !ctx.opposing &&
+            !ctx.conjunction && opts.twin_dd_live_min_t > 0) {
+            ctx.dd_live_bounds = true;
+            ctx.dd_live_min_t = opts.twin_dd_live_min_t;
+        }
     }
     // Which QUESTION this solve's values answer.  The key says which position an
     // entry is about; without this a two-nil value would be readable by a

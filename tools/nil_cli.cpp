@@ -126,6 +126,11 @@ void usage(const char* argv0) {
         << "                          than best-first (same rows and line; control arm)\n"
         << "  --no-multi-live-proofs  two-bid shapes: no adversarial proofs where one bid\n"
         << "                          is still live (same answer, more nodes)\n"
+        << "  --no-pair-proofs        a pair that both bid: no one-of-two proofs while\n"
+        << "                          both bids are live (same answer, more nodes)\n"
+        << "  --twin-dd-live N        a pair that both bid, one of them down: bound by the\n"
+        << "                          live side's double-dummy count from N tricks up;\n"
+        << "                          0 is off (default 11; same answer)\n"
         << "  --no-dd-engine          once no bid is live, keep searching with the\n"
         << "                          general search instead of the double-dummy\n"
         << "                          engine (same answer and PV, much slower)\n"
@@ -418,6 +423,10 @@ int main(int argc, char** argv) {
             opts.row_order = false;
         } else if (arg == "--no-multi-live-proofs") {
             opts.multi_live_proofs = false;
+        } else if (arg == "--no-pair-proofs") {
+            opts.pair_proofs = false;
+        } else if (arg == "--twin-dd-live" && i + 1 < argc) {
+            opts.twin_dd_live_min_t = std::atoi(argv[++i]);
         } else if (arg == "--demoted-dd" && i + 1 < argc) {
             opts.demoted_dd_min_t = std::atoi(argv[++i]);
         } else if (arg == "--no-dd-engine") {

@@ -596,6 +596,25 @@ if(NIL_SOLVER_BUILD_TESTS)
                      --quiet --slowest 0)
     set_tests_properties(corpus_multinil_values_only PROPERTIES TIMEOUT 900)
 
+    # The Oct 2026 twin pass.  corpus_multinil_no_pair_proofs is the control
+    # arm for the one-of-two proofs while both bids are live.  The one-live
+    # double-dummy bound this shape now takes runs from 9 tricks up, which no
+    # oracle row here reaches -- so the default runs above are its OFF arm,
+    # and the two *_twin_dd_live_low runs push it down to 2 tricks, where it
+    # fires, against the oracle's values and lines and the values-only decode.
+    add_test(NAME corpus_multinil_no_pair_proofs
+             COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-moves --check-pv
+                     --no-pair-proofs --quiet --slowest 0)
+    set_tests_properties(corpus_multinil_no_pair_proofs PROPERTIES TIMEOUT 900)
+    add_test(NAME corpus_multinil_twin_dd_live_low
+             COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-moves --check-pv
+                     --twin-dd-live 2 --quiet --slowest 0)
+    set_tests_properties(corpus_multinil_twin_dd_live_low PROPERTIES TIMEOUT 900)
+    add_test(NAME corpus_multinil_twin_dd_live_low_values_only
+             COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-moves --values-only
+                     --twin-dd-live 2 --quiet --slowest 0)
+    set_tests_properties(corpus_multinil_twin_dd_live_low_values_only PROPERTIES TIMEOUT 900)
+
     add_test(NAME corpus_multinil_no_tt
              COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --cards-only 4
                      --no-memo --quiet --slowest 0)

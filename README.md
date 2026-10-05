@@ -698,6 +698,18 @@ per-card ones on the two-nil corpus too):
   read off a walked line; `nil_tricks` is withheld. `corpus_values_only` checks
   every pinned field against the walked rows, position by position.
 
+The Oct 2026 twin-nil pass (ROADMAP item 98) added two more, for a pair that
+both bid, with arms on the two-nil corpus:
+
+- `--no-pair-proofs`: no one-of-two proofs while both bids are live -- either
+  bidder kept clean bounds the pair at one bid down, either one forced now at
+  one bid down at least (same answers; more nodes). `corpus_multinil_no_pair_proofs`.
+- `--twin-dd-live T`: with one of the pair down, the one-live double-dummy bound
+  from T tricks up (11 by default); `--twin-dd-live 0` switches it off.
+  `corpus_multinil_twin_dd_live_low` (and its values-only twin) run the corpus
+  with it at 2 tricks, where it fires. `--dd-live-bounds` still turns the bound
+  on everywhere, at every depth.
+
 `--no-narrow` is the control arm for window narrowing (roadmap item 22), and it
 is the one with the most riding on it. Full mode narrows its window as a node's
 moves come back, which is what makes the alpha-beta cutoff reachable there at

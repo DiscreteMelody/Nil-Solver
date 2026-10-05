@@ -687,6 +687,25 @@ struct SearchOptions {
     // -4.4% wall on the per-card benchmark, all of it on two-bid deals.
     bool multi_live_proofs = true;
 
+    // PAIR PROOFS (Oct 2026): with both of a pair's bids live, spend the
+    // single-bid proofs on EITHER bidder as a bound on the pair.  If one of the
+    // two can be kept clean (no trick on any line, or duck or cover), at most
+    // one bid goes down; if the opponents on lead can force one of them now (a
+    // forcing lead or a forced ruff), at least one does.  Honours
+    // adversarial_safe/adversarial_doom as M4 does.  Same answers;
+    // `--no-pair-proofs` is the control arm.  See search_core.
+    bool pair_proofs = true;
+
+    // A pair that both bid, exactly one of them still live: the one-live
+    // double-dummy bound (dd_live_bounds below, off by default) from this many
+    // tricks up; 0 is off.  Its engine probes pay where the subtree under them
+    // is large -- a whole row of `3 1 3 0` or `1 3 0 3`, a twin doomed at the
+    // root -- and lose where it is small, so the floor is a depth.  Same
+    // answers; `--twin-dd-live 0` is the control arm.  The sweep that chose 11
+    // is at dd_one_live_bound in search.cpp.  `--dd-live-bounds`, which turns
+    // the bound on for every shape at every depth, takes precedence.
+    int twin_dd_live_min_t = 11;
+
     // A4 (Sept 2026): with a single live nil and a safe-band window, bound the
     // node by the pair's double-dummy count on the deal with the nil's cards
     // moved to the bottom of every suit (one engine probe).  Runs only at

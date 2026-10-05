@@ -472,6 +472,8 @@ void usage(const char* argv0) {
               << "  --values-only     --check-moves rows decoded from their values\n"
               << "  --no-row-order    --check-moves rows scored in canonical order\n"
               << "  --no-multi-live-proofs  two-bid shapes: no proofs where one bid is live\n"
+              << "  --no-pair-proofs  a pair that both bid: no one-of-two proofs, both live\n"
+              << "  --twin-dd-live N  that pair, one down: one-live DD bound from N tricks; 0 off\n"
               << "                    (all of these: same answers, different nodes)\n"
               << "  --quick-tricks-stats  also report how often each later-tricks\n"
               << "                    arm's gate opens and how often it cuts\n"
@@ -787,6 +789,10 @@ int main(int argc, char** argv) {
             opts.row_order = false;
         } else if (arg == "--no-multi-live-proofs") {
             opts.multi_live_proofs = false;
+        } else if (arg == "--no-pair-proofs") {
+            opts.pair_proofs = false;
+        } else if (arg == "--twin-dd-live" && i + 1 < argc) {
+            opts.twin_dd_live_min_t = std::atoi(argv[++i]);
         } else if (arg == "--demoted-dd" && i + 1 < argc) {
             opts.demoted_dd_min_t = std::atoi(argv[++i]);
         } else if (arg == "--no-dd-engine") {
