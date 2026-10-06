@@ -38,6 +38,7 @@ expensive node. Read items 11 and 31 in that light.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ✅ | ~~Three nils on the bot's call: the live-set proofs and double-dummy bound where two or more bids are live; the canonical first trick of every row; the handoff's doom question asked once (item 101)~~ | Oct 2026 | **THREE NILS ARE THE TWIN QUESTION, AND THE TWIN QUESTION IS MILLIONS OF SINGLE NILS.** 62-66% of the three-nil call was item 100's handed-off single-nil searches for the last twin standing, born where both twins are live -- a region with no bound at all past item 79, the twin shape's three having been switched off under the opposed objective. 101a re-derives item 98's pair proofs over the rank table (a bid no line can force, one its side keeps clean, one the side on lead forces now, each narrowing the outcome masks the rank bounds); 101b narrows item 79's trick span by each side's plain double-dummy count, one engine probe per end. And 30-38% of the call was the per-row line walk re-proving, through the canonically lowest reply, what the row's probe had proved through the search's favourite (142M of seed-1 #4's 182M walk nodes at the first ply): 101c orders the first trick below every row's card canonically in the probes, and the walk reads it back. 144 three-nil deals, in-process, default rows: `0 0 3 0` 160.7 -> 133.2 s (-17%), `0 0 2 0` 164.6 -> 133.0 s (-19%), `0 3 0 0` 94.8 -> 83.9 s (-12%); nodes -21/-26/-15%; `3 0 3 0` -14% nodes; other gates within +0.5% nodes. Values-only -8/-13/-6%. The slowest deal, the twin question, 57 -> 48 s. Every row byte-identical. Three switches, CLI and ctest only. See item 101 | 130/130 |
 | ✅ | ~~Double nil on the bot's call: one live bid handed to the single-nil search; its broken-band ceiling from 8 tricks; the null-window line question (item 100)~~ | Oct 2026 | **81% OF THE DOUBLE-NIL SEARCH WAS A SINGLE NIL IN DISGUISE.** With one bid down (or doomed) and one live, the opposed objective is the single-nil objective for the live bid up to sign and a constant, on every line -- and the single-nil search, with the bounds the opposed shape switches off, was 4x faster on the same question (seed-1 #4: 59.3M nodes as `0 2 3 0`, 14.5M as `3 2 3 0`). So such a boundary is now searched by a single-nil context on its own table tag (`TAG_ONE_LIVE`), the window and result mapped through the affine map; the double-dummy engine is required, because past the break the handed-off searches' masks coincide and those positions must never reach the table. Its broken-band ceiling runs from 8 tricks. And a line's move is re-derived by one null-window question per candidate. On 96 random double-nil deals, in-process, default rows: 117.9 -> 63.0 s (-47%), mean 1.22 -> 0.66 s, 51 -> 76 under 1 s, slowest 4.9 -> 3.1 s; values-only -49%; the opposed corpora -11%; three nils -11/-14% (their slowest deal +1.5% nodes, +5% wall); single nil -6%; twins -2%. Every row byte-identical. Three switches, CLI and ctest only; a new oracle corpus `tests/corpus/opposed.txt`. See item 100 | 119/119 |
 | ✅ | ~~Single nil on the bot's call: DDS's move ordering, lowest-win, by-rank winners and 26 profiles in the double-dummy engine; the broken-band ceiling (item 99)~~ | Oct 2026 | **THE ENGINE WAS HALF OF THE SINGLE-NIL CALL AND ALL OF `1 3 2 3`, AND ITS GAP TO DDS WAS THE MOVE ORDER.** Against DDS built here with a node counter, 68.1M nodes to its 4.7M on 30 root counts; DDS without its ordering takes x54. So the engine now orders by DDS's own weights (heuristic_sorting.cpp, case for case), skips lowest-win siblings, counts a trick's winner as relevant only when it won by rank, and keeps 26 profiles per header: 7.9M on the same counts. In the general search, with one nil live and a broken-band window from 10 tricks up, the pair's plain double-dummy count is a ceiling (one probe). On 88 random deals, in-process, values-only rows: `0 3 2 3` 77.5 -> 45.1 s (-42%), mean 0.88 -> 0.51 s, 75 -> 82 under 1 s; default rows -36%; `1 3 2 3` -71%; the 400-deal `nil13_verdict` -60%; twins -10%, one bid per side -15/-16%, three nils -4%. Every row byte-identical. Five switches, CLI and ctest only (the ABI flag word is full). s4-05 (20.8 s) is what is left. See item 99 |
 | ✅ | ~~Three nils: twins on one side, a lone bid and its lean on the other (item 97)~~ | Oct 2026 | **A NEW SHAPE, NOT AN OPTIMIZATION -- and it rides on the opposed machinery rather than beside it.** `--seats 0 0 3 0`: E/W both bid, N bid, S's 3 or 2 is the lone side's lean. The objective is T's conversion rule as a ladder: a broken twin takes the lean opposite the lone side's partner (-> one bid per side, strictly opposed), a broken lone bid makes its side two opponents (-> the twin shape); T placed "all three make" so the ladder is lexicographic, `2d + n` under lean 3 and `3n + d` under lean 2, the twins' rank 5 minus it -- zero-sum by construction. Live bids only; the caller converts after a break. Searched through `Ctx::opposing` with the outcome rank as a 16-entry table and item 79's reach tables indexed by mask; two-bid node counts identical to HEAD. 112 oracle rows with eleven control arms, an oracle crosscheck of every root card, and a re-solve-from-the-converted-roles check of the conversion rule itself. Per-card at 13 cards it costs what its hardest converted subgame costs: 91.6 s on the 12 seed-1 deals against 90.3 s for the twin shape alone, the slowest deal being the twin shape's own 70 s deal. See item 97 |
@@ -5499,6 +5500,271 @@ four deals above (it keeps the general search, so only 100c reaches it, and
 that is checked by the corpus arms and the differential); seeds other than 1
 and 3; one process per call beyond the brief's twelve deals; several solver
 threads sharing the machine; 4 KiB pages; PGO.
+
+### 101. Three nils on the bot's call: the live-set bound, and the canonical first trick of every row — ⭐⭐⭐⭐ — **done, Oct 2026 (101a-101d); the twin question's tail is not**
+
+**The task.** Wall time of `nil_solve_moves` in full mode on 13-card hands for
+three nils -- `0 0 3 0` and `0 0 2 0` (twins E/W, lone N, S the lean) and the
+rotation `0 3 0 0` with the twins on N/S -- with the converted shapes the bot
+passes after a break (`0 2 3 0`, `0 3 2 0`, `3 0 3 0`) timed too, and single nil
+(`0 3 2 3`, `1 3 2 3`) as a further gate. Answer-neutral throughout. Target: as
+close to a 1 s average per call as possible.
+
+**The benchmark.** 48 random deals per three-nil array (`bench_random13` seeds
+1 and 3, 24 each; seed-1 #4 is the 63.9 s deal of the brief, seed-1 #10 its
+11.5 s one), the gates on the 24 seed-1 deals. In-process, as `NilSolverPool`
+runs it: tables kept across solves, four warm-up single-nil deals first,
+default rows (the bot's call). Two runs: HEAD then the patch alone on the
+machine (2-vCPU sandbox, Xeon 2.1 GHz, GCC 13, Release), and HEAD and the
+patch side by side, one per core. The same binary on the same deal moves by up
+to +/-10% between runs; three-nil totals agree to 2% between the two runs,
+gate totals (6-20 s) only to about 10%, so read the gates by their nodes.
+
+**How much the twin- and double-nil patches had closed.** The brief's baseline
+is `da633d4`. On this harness, 24 seed-1 deals, `da633d4` -> HEAD `cc9da5f`:
+`0 0 3 0` 120.8 -> 100.9 s (-16%), `0 0 2 0` 124.2 -> 99.6 s (-20%), `0 3 0 0`
+61.3 -> 40.3 s (-34%). Seed-1 #4 did not move (51.6 -> 54.1 s): it is the twin
+question, and items 98-100 left that alone. The brief's twelve deals, `0 0 3 0`:
+91.6 s then, 70.7 s at HEAD.
+
+**Where the time goes (HEAD cc9da5f; a lab build with node counters by
+region and cycle stamps around the handoff and the engine; the 24 seed-1
+deals of each array).**
+
+* **The handed-off single-nil searches are 62-66% of the cycles**, the
+  three-bid search itself 14-27%, the double-dummy engine 10-20%. By region,
+  `0 0 3 0`: one twin live with the lone bid down -- the last twin's own nil,
+  which item 100 hands to a single-nil search -- 481M of 824M nodes over 25.7M
+  handoffs; both twins live with the lone bid down, 210M in the three-bid
+  search; everything with the lone bid live, under 110M. So three nils ARE the
+  twin question, and the twin question is millions of single-nil questions
+  about the last twin standing, born in the region where both twins are live.
+* **What those handoffs are asked**, mapped onto the single-nil scale: "does
+  the last twin survive?" (a window between the bands) 219M nodes, nearly all
+  on seed-1 #4; "is it broken and held to x?" (the broken band) 130M; the safe
+  band 56M. `0 3 0 0` is mostly safe band (130M of 201M).
+* **The region they are born in had no bound** past item 79's reach range. A
+  pair that both bid has three there (item 98's pair proofs, patch 66's
+  trapezoid, item 98b's one-live count); the opposed objective had switched
+  all of them off, each having been written for one objective's value.
+* **Ordering there is not the problem**: with both twins live, 94.7% of the
+  twins' cut nodes cut on the first move (seed-1 #4). The tree is the lone
+  side's all-nodes.
+* **The per-row line walk was 30-38% of the call**, 182M of its 244M nodes on
+  seed-1 #4 and 142M of THOSE at one ply: the reply to the row's card. The
+  row's probe proved "the twins keep one clean" through the reply the search
+  prefers; the walk then proved it again, from scratch, through the
+  canonically lowest one. Beyond the first trick, 15-28M per ply in all.
+* **MTD probes that do not end a row**: 9-17% of nodes. Three-nil values move
+  one trick per probe, and the first row descends through rank bands one
+  trick at a time (33 probes on seed-1 #20). Several probes at band edges cost
+  more than the row's final two. Not attacked (rejected list).
+
+**101a. The live-set proofs** (`SearchOptions::live_set_proofs`,
+`--no-live-set-proofs`). At a boundary of the opposed or three-bid objective
+with two or more bids live, the single-bid proofs, each asked of one live bid,
+narrow the outcome masks the play can still reach, and the rank table bounds
+the node over what is left -- each fallen bid costing its own side a trick,
+which is patch 66's `u >= d` edge, per side. A bid no line can force (no spade,
+`nil_cannot_be_forced`) is out of every outcome; one its side can keep clean
+(S11) is out of every outcome that side's strategy allows; one the side on lead
+can force now (D1/D1b) is in every outcome theirs allows. Item 98's pair proofs
+for one objective, written over the rank. Window first, fail-soft, stored
+nowhere; the argument is at `live_set_bound`.
+
+**101b. The live-set double-dummy bound** (`live_set_dd_min_t`, `--live-set-dd
+N`, 6). Same region, default direction. A side that plays plain double dummy
+takes at least its count whatever falls, so the far side's trick span narrows
+from [0, t] to [D_far, t - D_near]: one engine probe per end, asked only when
+the count the window needs is in [1, t]. It bites where the window sits in a
+side's worst reachable band ("both twins set: do they still take five?"),
+which is where deals that end with everyone set spend their handoffs. Floor
+swept at 4, 6 and 8 tricks: nodes within 0.2% of each other, wall within
+noise.
+
+**101c. The canonical first trick of every row** (`row_canonical_depth`,
+`--row-canonical-depth N`, 3). Each step of the line walk asks a node on the
+row's line, of its candidates in canonical order, the null-window question one
+of the row's probes asked the same node, and stops at the first yes; the probe
+stopped at the search's own first yes. So the probes now order the first N
+plies below each row's card canonically, and each walk step hands its
+candidates' children what remains of N: inside the depth every walk question
+is one a probe asked under the same window, and the table answers it.
+Ordering only. Only where rows walk lines and a bid is live at the root.
+Swept on the 144 three-nil deals (nodes, `0 0 3 0` / `0 0 2 0` / `0 3 0 0`):
+
+| depth | `0 0 3 0` | `0 0 2 0` | `0 3 0 0` |
+|---|---|---|---|
+| 0 (off) | 1058.5M | 1051.2M | 641.1M |
+| 1 | 1020.1M | 1009.8M | 629.4M |
+| 2 | 1004.3M | 992.5M | 630.3M |
+| **3** | **958.6M** | **942.7M** | **623.6M** |
+| 4 | 952.8M | 939.6M | 672.5M |
+| 5 | 1002.7M | 993.4M | 709.0M |
+| 8 | 1036.6M | 1009.4M | 742.2M |
+
+Deeper than one trick, canonical order costs the probes' off-line cut nodes
+more than the walk saves.
+
+**101d. The handoff's doom question, asked once** (throughput only, no
+switch). The three-bid search's `search_impl` has already charged every doomed
+bid at the boundary, so the single-nil search it hands to skips its own
+identical `nil_must_take_a_trick`. Same nodes.
+
+**Each switch off, everything else on** (the 264 deals, default rows; all on
+130.7 / 126.6 / 81.5 s and 958.6 / 942.7 / 623.6M on the three arrays):
+
+| arm | `0 0 3 0` | `0 0 2 0` | `0 3 0 0` | `3 0 3 0` | other gates |
+|---|---|---|---|---|---|
+| `--row-canonical-depth 0` | +9.5% wall, +10.4% nodes | +9.1%, +11.5% | -1.7%, +2.8% | +13.5%, +16.3% | nodes -1.2..+0.0% |
+| `--live-set-dd 0` | +5.9%, +7.9% | +11.5%, +11.1% | +8.5%, +9.4% | (not reached) | nodes +-0.1% |
+| `--no-live-set-proofs` | +0.6%, +6.8% | +0.6%, +7.3% | -2.0%, +3.8% | (not reached) | nodes +0.8% on `0 2 3 0` |
+
+The proofs buy nodes and give them back in per-node cost: about even on the
+wall. Kept: they cost nothing on wall, and every later cut in per-node cost
+turns their nodes into time.
+
+**RESULTS** (HEAD cc9da5f -> patch; run 1 alone on the machine, run 2 side by
+side; every row of every run byte-identical: a hash of each row's value,
+counts, mask, per-seat tricks and status, and the line):
+
+| seats | n | total (run 1 / run 2) | mean | median | < 1 s | slowest | nodes |
+|---|---|---|---|---|---|---|---|
+| `0 0 3 0` | 48 | 160.7 -> 133.2 s (-17.1%) / 160.4 -> 130.7 s (-18.5%) | 3.35 -> 2.78 | 1.13 -> 1.12 | 21 -> 23 | 57.3 -> 47.7 | 1213 -> 959M (-21.0%) |
+| `0 0 2 0` | 48 | 164.6 -> 133.0 s (-19.2%) / 165.4 -> 126.6 s (-23.5%) | 3.43 -> 2.77 | 1.28 -> 0.97 | 22 -> 24 | 59.4 -> 49.2 | 1267 -> 943M (-25.6%) |
+| `0 3 0 0` | 48 | 94.8 -> 83.9 s (-11.5%) / 92.4 -> 81.5 s (-11.8%) | 1.98 -> 1.75 | 1.07 -> 1.02 | 22 -> 24 | 12.6 -> 10.2 | 734 -> 624M (-15.0%) |
+| `3 0 3 0` | 24 | 94.3 -> 89.3 s (-5.3%) / 92.9 -> 88.6 s (-4.6%) | 3.93 -> 3.72 | 0.47 -> 0.35 | 16 -> 16 | 53.5 -> 49.7 | 738 -> 635M (-14.0%) |
+| `0 2 3 0` | 24 | 19.1 -> 19.7 s / 21.1 -> 20.5 s | 0.79 -> 0.82 | 0.52 -> 0.47 | 17 -> 18 | 3.8 -> 3.8 | 141.9 -> 142.6M (+0.5%) |
+| `0 3 2 0` | 24 | 15.5 -> 15.8 s / 15.2 -> 17.1 s | 0.64 -> 0.66 | 0.50 -> 0.46 | 18 -> 19 | 2.8 -> 2.9 | 122.2 -> 122.3M (+0.1%) |
+| `0 3 2 3` | 24 | 6.8 -> 8.2 s / 7.0 -> 6.6 s | 0.28 -> 0.34 | 0.05 -> 0.08 | 22 -> 22 | 2.6 -> 3.6 | 55.1 -> 55.3M (+0.4%) |
+| `1 3 2 3` | 24 | 1.17 -> 1.22 s | 0.05 -> 0.05 | 0.03 -> 0.03 | 24 -> 24 | 0.27 -> 0.26 | 5.2 -> 5.5M (history) |
+
+Values-only rows (`--values-only`, `NilFlags.FastLine`; 101c is off there),
+HEAD -> patch, side by side: `0 0 3 0` 156.1 -> 143.2 s (-8.2%), 1110 -> 970M
+nodes; `0 0 2 0` 160.3 -> 140.1 s (-12.6%), 1167 -> 966M; `0 3 0 0` 90.2 ->
+85.2 s (-5.5%), 664 -> 575M; the gates' nodes within +-0.8%.
+
+The brief's twelve seed-1 deals, in-process, default rows: `0 0 3 0` 70.7 ->
+59.9 s (91.6 s at `da633d4`), 7 -> 8 under 1 s; `0 0 2 0` 72.9 -> 60.0 s;
+`0 3 0 0` 20.2 -> 20.5 s (its gain is on the seed-3 deals). Seed-1 #4: 57.3 ->
+47.7 s (`0 0 3 0`), 59.4 -> 49.2 s (`0 0 2 0`); seed-1 #10 6.0 -> 5.4 s (`0 0 3 0`) and 9.3 -> 9.8 s in-process but 9.6-9.9 -> 8.9-9.4 s run alone (`0 3 0 0`, -10% nodes).
+One process per call, as `bench_random13.py` runs it (the twelve deals, the
+two binaries alternating deal by deal): `0 0 3 0` 77.7 -> 66.3 s (7 -> 7 under
+1 s; 91.6 s and 5 at `da633d4`), `0 0 2 0` 78.6 -> 63.9 s (7 -> 8; 95.0 s, 5),
+`0 3 0 0` 22.7 -> 22.4 s (6 -> 7; 41.9 s, 4); seed-1 #4 61.6 -> 51.5 s.
+Without seed-1 #4 the three-nil mean is 2.20 -> 1.82 s (`0 0 3 0`), 2.24 ->
+1.78 s (`0 0 2 0`).
+
+**Regressions.** None in nodes on any array: the gates are within +0.5%, and
+`1 3 2 3` moves +5% only through the engine table the deals before it leave
+behind (101c is off there, every bid being down; its rows are identical). On
+the wall, single deals of the gates move both ways by up to a third between
+runs at equal node counts -- `0 3 2 3` s1-18 took 2.6 s at HEAD and 3.6 s with
+the patch in run 1 for 23.9M and 23.8M nodes, and run alone back to back 3.09 /
+3.15 s at HEAD and 2.77 / 3.44 s with the patch -- so the gate rows above are
+noise around unchanged node counts, except `3 0 3 0` (-14% nodes, from 101c).
+
+**The leads, checked.**
+
+* **Item 77's presolve for three bids: not built, measured why.** A
+  single-nil fast probe per bid is a guarantee, but the per-card call never
+  reads a root window (MTD rows), so a band could only seed the first row's
+  guess -- and the probes that guess would save (every MTD probe but a row's
+  last two) are 9-17% of the nodes. What those guarantees would cost is the
+  real obstacle: on seed-1 #4 the six rows' per-twin "can this twin be kept
+  clean" fast probes cost 0.0003-45M nodes each (C2: 45M, 4.7 s, more than the
+  row), and on three of the six rows NEITHER twin can be kept clean alone
+  although the twins keep one -- they choose which to give up as the play
+  goes. A guarantee per bid cannot see that. Asked inside the search instead
+  (each twin's own single-nil search, at two-live boundaries, sharing the
+  handoff's table, with 101a and 101b on): #4 395M -> 381M nodes, 51.6 -> 52.3 s,
+  and 440M / 62.8 s confined to the last seven tricks -- the twin pass's
+  MODE_FAST version lost 1.4-3x the same way.
+* **The trapezoid in the lone-down region**: built, inside 101a -- the per-side
+  `u >= d` coupling is in every range there. Measured alone (101a's proof loop
+  switched off, 101b on): no node moves on the 144 three-nil deals (1023.4M
+  and 1011.9M either way). Item 79 and the double-dummy half leave it nothing,
+  so the plain coupled range is asked only when a never-falls fact has shrunk
+  the outcome set.
+* **Values-only rows with one twin down** (they cannot be decoded from the
+  value and walk their line): measured at HEAD on the 24 seed-1 deals,
+  `--values-only`, 33 of 190 rows walk on `0 0 3 0` (35 on `0 0 2 0`, 75 on
+  `0 3 0 0`), and their walks are 25% of the values-only time on the first two
+  arrays and 8% on the third -- but 27 s of the 27.5 s is seed-1 #4 alone, 43%
+  of that deal. 101c is off in values-only mode, since rows that decode would
+  pay for the order with nothing to read it back. Forced on there, the 144
+  three-nil deals go -6.4% / -5.8% / +0.2% in total, all of it #4 (54.8 ->
+  49.2 s), while `0 0 3 0`'s median goes 0.96 -> 1.11 s and 24 -> 22 deals
+  stay under a second. Not taken.
+* **Windows/MSVC**: not available in this sandbox; not profiled. The patch adds
+  no intrinsic and no new kind of code (bit tests, popcounts through
+  `count_cards`, the existing engine probes), and the changed files build
+  warning-free under GCC and clang with -Wall -Wextra -Wpedantic.
+
+**Built, measured, rejected:**
+
+| idea | measured | why not |
+|---|---|---|
+| Gap windows of the handoff (does the last twin survive?) answered by a MODE_FAST single-nil search on its own tag | seed-1 #4 445M -> 470M nodes, same time; s1-10/s1-13/s3-00 +2..+5% nodes | the full-mode single-nil search answers the verdict as cheaply, and its entries serve the bands too |
+| Per-twin "keep this twin clean" asked of the handoff's own single-nil search at two-live boundaries (shared table) | #4 395M -> 381M nodes but 51.6 -> 52.3 s at every depth; 440M, 62.8 s at t <= 7 | most probes fail -- the twins keep one by choosing late |
+| MTD rows that double their step after two moves the same way (and bisect once bracketed) | s1-20 -11% nodes, s3-00 +1%, s1-13 +5%, s1-10 0 | the costly probes sit at band edges both drivers cross; the step is not what costs |
+| Canonical order deeper than one trick | depth 4 -0.6% / -0.3% / +7.8% nodes against 3; 5 and 8 worse | off-line cut nodes pay for the order |
+| The live-set proofs placed before the table, as M4 and the pair proofs are | +3.2% / +5.3% / +3.2% wall on the three arrays, nodes identical | the table answers most of those boundaries first; the window test and the never-falls scan are then paid for nothing |
+
+**Verification.**
+
+* ctest 130/130 on the patched tree (119 at HEAD; 11 new: the arms
+  `corpus_threenil_{no_live_set_proofs, row_canonical_depth_0,
+  row_canonical_depth_deep, live_set_dd_low, live_set_dd_low_values_only,
+  live_set_dd_low_no_proofs}`, `corpus_opposed_{no_live_set_proofs,
+  row_canonical_depth_0, live_set_dd_low}`, `corpus_row_canonical_depth_0`,
+  `corpus_multinil_row_canonical_depth_0`). nil_tests' new block: 180 per-card
+  positions at 6 cards in 9 seatings, half of them mid-trick, both directions
+  and both row modes, each with every switch on and off -- rows and lines
+  identical, trees different -- and 12 plain solves at 8 cards.
+* Oracle: `three_nil_crosscheck.py --moves` 200 deals at 4 cards (479 rows) and
+  96 at 5 (267 rows); `--subgame` 80 deals at 10 cards, default seed and seed
+  103; `opposing_crosscheck.py` 200; `crosscheck.py` 400 single-nil positions at
+  3-5 cards and 150 in the minimise direction: all agree.
+* **A tool bug, fixed here**: `three_nil_crosscheck.py` drew `--spades-broken`
+  at random, and since the C++ validator refuses broken spades with all
+  thirteen still in hand (the oracle does not), the solver's refusal was
+  reported as a MISMATCH -- 1 of 80 at 10 cards at HEAD on the default seed, 3
+  of 80 on seed 103, identically at HEAD and with the patch. Such deals now
+  start unbroken; the random stream is unchanged.
+* Differential against HEAD (full `--moves` output with lines, every shape
+  including set bids, mid-trick roots, both directions): 600 positions at 4-8
+  cards, 80 at 9-11; values-only 400; with `--live-set-dd 2` 400 (and 60 at
+  10-11 cards with the canonical depth at 6); with the canonical depth at 24
+  400; with all three switches off 300; and under `--no-dd-engine`,
+  `--tt-all-plies`, `--no-one-live-handoff`, `--no-pv-null`, `--no-tight-pv`,
+  `--no-ordering`, `--no-adversarial-proofs` (each on both binaries, the bound
+  at 2 on the patch) 200-300 each: 0 differences.
+* Every 13-card benchmark row byte-identical HEAD vs patch, in both runs and
+  in every arm and sweep run (a hash of each row's value, counts, mask,
+  per-seat tricks and status, and the line).
+
+**What is left, in the order worth trying:**
+
+1. **The twin question itself** (seed-1 #4: 47.7 s, and it is `3 0 3 0`'s
+   worst deal too, 49.7 s). Its cost is the lone side's all-nodes with both
+   twins live, each leaf a single-nil question about the last twin; ordering
+   there is already 95% first-move. A proof that the twins keep ONE clean
+   without naming which, or a decomposition that does not re-prove the same
+   last-twin endings under every order of the lone side's attacks, is what
+   would move it.
+2. **The single-nil handoffs' broken band** (130M nodes over the seed-1 deals):
+   "the last twin broken and held to x" has the double-dummy ceiling (99e) and
+   no floor.
+3. **The double-dummy engine's per-call cost** (10-20% of three-nil cycles,
+   about 2 us a call, nearly all table hits).
+4. **Line walk past the first trick** (12-13% of the call after 101c).
+5. **Parallel rows (A1).**
+
+**Not measured:** MSVC/Windows (not available; never profiled); the minimise
+direction at 13 cards (correct on the corpora, crosschecks and differential,
+not timed); seeds other than 1 and 3; several solver threads sharing the
+machine; PGO; other CPUs.
 
 ## Suggested sequence
 

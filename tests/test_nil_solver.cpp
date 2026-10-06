@@ -2745,6 +2745,132 @@ int main(int argc, char** argv) {
         check("the handoff never moves a plain solve's answer or line", solves_differ, 0);
     }
 
+    std::cout << "Two or more bids live: the live-set bound; the canonical first trick "
+                 "(item 101)\n";
+    {
+        // THE ARMS, each off against the default, as item 100's block above:
+        // every per-card row field and the position's line, three bids in
+        // every lean and seating plus one bid per side, both directions and
+        // both row modes, mid-trick positions included.  The double-dummy
+        // half's floor is pushed down to 2 tricks so it fires at this size,
+        // as the corpus arm does; the canonical first trick rides on every
+        // shape's rows, so a single nil and a pair are in the sweep for it.  Each arm
+        // must leave every row and line alone and must change the tree in
+        // aggregate, or its switch is not plumbed through.
+        auto row_text = [](const std::vector<nil::MoveScore>& ms) {
+            std::string t;
+            for (const nil::MoveScore& m : ms) {
+                t += nil::card_to_string(m.card) + ":" + std::to_string(m.value) + ":" +
+                     std::to_string(m.nils_set) + ":" + std::to_string(m.nils_set_mask) + ":" +
+                     std::to_string(m.nil_tricks) + ":" + std::to_string(m.nil_side_tricks) + ":" +
+                     std::to_string(m.opponent_tricks) + ":" + (m.is_best ? "1" : "0");
+                for (int s = 0; s < 4; ++s) t += ":" + std::to_string(m.seat_tricks[s]);
+                t += " ";
+            }
+            return t;
+        };
+        Rng rng;
+        const char* seatings[] = {"0 0 3 0", "0 0 2 0", "0 3 0 0", "0 2 0 0", "2 0 0 0",
+                                  "0 2 3 0", "0 3 2 0", "3 0 3 0", "0 3 2 3"};
+        const char* arm_names[] = {"the live-set proofs", "the live-set double-dummy bound",
+                                   "the canonical first trick"};
+        int positions = 0;
+        int rows_differ[3] = {0, 0, 0};
+        int lines_differ[3] = {0, 0, 0};
+        long long nodes_on[3] = {0, 0, 0};
+        long long nodes_off[3] = {0, 0, 0};
+        const std::size_t engine_mb = nil::dd::engine().megabytes();
+        nil::dd::engine().resize(1);
+        for (int deal = 0; deal < 5; ++deal) {
+            Position pos = random_deal(rng, 6);
+            // Every other deal starts mid-trick: the plies below a row's card
+            // then run into the next trick, and the two-or-more-live boundary
+            // is one card further down.
+            if (deal & 1) {
+                const nil::Hand legal =
+                    nil::legal_moves(pos.hands[pos.leader], 0, -1, pos.spades_broken);
+                const nil::CardId lead = nil::lowest_card(legal);
+                pos.hands[pos.leader] &= ~nil::card_bit(lead);
+                pos.trick[0] = lead;
+                pos.trick_len = 1;
+                if (nil::card_suit(lead) == nil::SUIT_SPADES) pos.spades_broken = true;
+            }
+            for (const char* seating : seatings) {
+                nil::SeatRoles roles;
+                std::string err;
+                nil::parse_seat_roles(seating, nil::SEAT_NORTH, roles, err);
+                for (int dir = 0; dir < 2; ++dir) {
+                    for (int values_only = 0; values_only < 2; ++values_only) {
+                        SearchOptions base;
+                        base.minimise_own_tricks = dir != 0;
+                        base.row_lines = values_only == 0;
+                        base.live_set_dd_min_t = 2;
+                        ++positions;
+                        for (int arm = 0; arm < 3; ++arm) {
+                            SearchOptions off = base;
+                            if (arm == 0) off.live_set_proofs = false;
+                            if (arm == 1) off.live_set_dd_min_t = 0;
+                            if (arm == 2) off.row_canonical_depth = 0;
+                            Solution a;
+                            Solution b;
+                            std::vector<nil::MoveScore> ma;
+                            std::vector<nil::MoveScore> mb;
+                            nil::dd::engine().clear();
+                            const bool ok_a = nil::solve_moves(pos, roles, base, a, ma, err);
+                            nil::dd::engine().clear();
+                            const bool ok_b = nil::solve_moves(pos, roles, off, b, mb, err);
+                            if (!ok_a || !ok_b) {
+                                std::cerr << "test bug: solve_moves failed: " << err << "\n";
+                                std::exit(70);
+                            }
+                            if (row_text(ma) != row_text(mb)) ++rows_differ[arm];
+                            if (nil::format_pv_compact(a) != nil::format_pv_compact(b))
+                                ++lines_differ[arm];
+                            nodes_on[arm] += static_cast<long long>(a.nodes);
+                            nodes_off[arm] += static_cast<long long>(b.nodes);
+                        }
+                    }
+                }
+            }
+        }
+        nil::dd::engine().resize(engine_mb);
+        check("item 101 arms: sweep ran", positions, 180);
+        for (int arm = 0; arm < 3; ++arm) {
+            check(std::string(arm_names[arm]) + " never moves a per-card row", rows_differ[arm], 0);
+            check(std::string(arm_names[arm]) + " never moves the line", lines_differ[arm], 0);
+            check(std::string("and the arm for ") + arm_names[arm] + " changes the tree",
+                  nodes_on[arm] != nodes_off[arm], true);
+        }
+
+        // The plain solve() reaches the live-set bound too, through the same
+        // search_core, on three bids and on one bid per side.
+        int solves_differ = 0;
+        const char* plain_seatings[] = {"0 0 3 0", "0 3 0 0", "0 2 3 0"};
+        for (int deal = 0; deal < 12; ++deal) {
+            const Position pos = random_deal(rng, 8);
+            nil::SeatRoles roles;
+            std::string err;
+            nil::parse_seat_roles(plain_seatings[deal % 3], nil::SEAT_NORTH, roles, err);
+            SearchOptions on;
+            on.live_set_dd_min_t = 2;
+            SearchOptions off = on;
+            off.live_set_proofs = false;
+            off.live_set_dd_min_t = 0;
+            Solution a;
+            Solution b;
+            if (!nil::solve(pos, roles, on, a, err) || !nil::solve(pos, roles, off, b, err)) {
+                std::cerr << "test bug: solve failed: " << err << "\n";
+                std::exit(70);
+            }
+            if (a.value != b.value || a.nils_set_mask != b.nils_set_mask ||
+                a.nil_tricks != b.nil_tricks || a.nil_side_tricks != b.nil_side_tricks ||
+                nil::format_pv_compact(a) != nil::format_pv_compact(b)) {
+                ++solves_differ;
+            }
+        }
+        check("the live-set bound never moves a plain solve's answer or line", solves_differ, 0);
+    }
+
     std::cout << "One nil on each side\n";
     {
         std::string err;

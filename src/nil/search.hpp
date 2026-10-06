@@ -764,6 +764,55 @@ struct SearchOptions {
     // the control arm.  Read only under tight_pv, which supplies the exact v.
     bool pv_null_window = true;
 
+    // LIVE-SET PROOFS (Oct 2026, ROADMAP item 101).  With a bid on each side or
+    // three bids, at a trick boundary where TWO OR MORE bids are still live:
+    // the single-bid proofs, each asked of one live bid, restrict which bids can
+    // still fall, and the outcome ranks of the masks that remain bound the node.
+    // A bid that no line can force (no spades, nil_cannot_be_forced) is out of
+    // every outcome; one its own side can keep clean (duck or cover) is out of
+    // every outcome that side's strategy allows; one the other side can force
+    // now (a forcing lead or a forced ruff) is in every outcome theirs allows.
+    // Item 98's pair proofs are this for a pair that both bid, written for
+    // one objective; this is the same set of proofs over the rank table, so it
+    // reaches three bids, where every bound the twin shape has is switched
+    // off.  Honours adversarial_safe/adversarial_doom as M4 does.  Same values
+    // and lines; `--no-live-set-proofs` is the control arm.  The argument and
+    // the measurement are at live_set_bound in search.cpp.
+    bool live_set_proofs = true;
+
+    // THE LIVE-SET DOUBLE-DUMMY BOUND (Oct 2026, ROADMAP item 101).  Same
+    // region: two or more bids live, a bid on each side or three bids, full
+    // mode in the default direction (the double-dummy engine).  Whatever falls,
+    // a side that plays plain double dummy takes at least its double-dummy
+    // count D, so the value is at least the worst reachable rank for the far
+    // side plus its D tricks, and at most the best one plus what the near
+    // side's count leaves -- item 79's reach bound with the trick span
+    // narrowed from [0, t] by one engine probe.  Runs at boundaries with at
+    // least this many tricks left; 0 is off.  Same values and lines;
+    // `--live-set-dd 0` is the control arm.  The sweep that chose the floor
+    // is at live_set_bound in search.cpp.
+    int live_set_dd_min_t = 6;
+
+    // THE CANONICAL FIRST TRICK OF EVERY ROW (Oct 2026, ROADMAP item 101).
+    // solve_moves() scores each row by MTD(f) null windows and then walks the
+    // row's line, and each step of the walk asks a node on that line exactly
+    // the question one of the row's probes asked it -- "at least v" at a
+    // maximiser (the probe that succeeded), "at most v" at a minimiser (the
+    // one that failed) -- but of the candidates in CANONICAL order, stopping
+    // at the first yes.  The probe asked the same node in the search's own
+    // order and stopped at ITS first yes, usually a different card, so the
+    // walk proved a second card all over again: 142M of seed-1 #4's 182M walk
+    // nodes were the first step alone.  On, the first this-many plies below
+    // each row's card try their moves in canonical order in the row's probes,
+    // and each walk step hands its candidates' children the plies that remain,
+    // so the walk reads back what the probes stored.  Deeper than a trick the
+    // order costs the probes' off-line cut nodes more than the walk saves; the
+    // sweep that chose 3 is at solve_moves in search.cpp.  Rows that walk no
+    // line (values-only) and positions with no bid live keep the search's own
+    // order.  Ordering only: same values and lines; `--row-canonical-depth 0`
+    // is the control arm.
+    int row_canonical_depth = 3;
+
     // A4 (Sept 2026): with a single live nil and a safe-band window, bound the
     // node by the pair's double-dummy count on the deal with the nil's cards
     // moved to the bottom of every suit (one engine probe).  Runs only at

@@ -310,6 +310,22 @@ struct Ctx {
     // This context IS one of those handed-off searches; see the table block in
     // search_core for what that changes.
     bool one_live_child = false;
+    // ITEM 101: the live-set proofs and the live-set double-dummy bound, both
+    // for a boundary with two or more bids live (see live_set_bound).  The
+    // second is a floor on the tricks left; 0 is off.
+    bool live_set_proofs = false;
+    int live_set_dd_min_t = 0;
+    // ITEM 101: how many plies from the next node searched down order their
+    // moves canonically (see SearchOptions::row_canonical_depth); 0 is none.
+    // Set by solve_moves() around a row probe and by canonical_move_for()
+    // around a walk step's candidate, and read -- and cleared -- by the first
+    // search_core() to run, which hands one less to each of its children; a
+    // single-nil handoff passes it on to the handed-off search's first node.
+    int canon_next = 0;
+    // SearchOptions::row_canonical_depth, for the line walk: a walk step at
+    // ply p hands its candidates' children the plies the probes ordered
+    // canonically below them, so the walk reads back what the probes stored.
+    int canon_depth = 0;
 };
 
 // Roadmap item 32's population count.  Split out so the expression at the call
@@ -959,7 +975,8 @@ bool dd_pinned_offset(const Ctx& ctx, const State& st, int& offset,
     return true;
 }
 
-CardId canonical_move_for(Ctx& ctx, const State& st, int value, int alpha, int beta);
+CardId canonical_move_for(Ctx& ctx, const State& st, int value, int alpha, int beta,
+                          int ply = 0);
 
 // THE DOUBLE-DUMMY HANDOFF.  Called at a trick boundary once no bid in the
 // objective is still live.  The value from here is C + W * F, F being the far
@@ -1288,6 +1305,243 @@ bool dd_one_live_bound(Ctx& ctx, const State& st, int alpha, int beta, int& valu
     }
     ctx.nodes += eng.stats().nodes - nodes_before;
     return cut;
+}
+
+// ---- ITEM 101: TWO OR MORE BIDS LIVE -- THE LIVE-SET BOUND -------------------
+// (Oct 2026; SearchOptions::live_set_proofs and live_set_dd_min_t.)
+//
+// WHERE IT IS FOR.  Three nils, measured on the per-card call at HEAD cc9da5f:
+// the region where two bids are still live -- the twins with the lone bid
+// down, or the lone bid with one twin -- is where every one-live subtree the
+// single-nil handoff (item 100) then answers is born, and it had no bound at
+// all past item 79's reach range.  A pair that both bid has three there (item
+// 98's pair proofs, patch 66's trapezoid, item 98b's one-live count); the
+// opposed objective switched all of them off, because each was written for
+// one objective's value.  This is the same reasoning written over the rank
+// table, so it holds for any zero-sum rank of the broken-bid mask: three bids,
+// and one bid per side with both still live.
+//
+// THE SHAPE OF EVERY BOUND HERE.  From a boundary with mask m and t tricks
+// left the value is
+//
+//     V = P * (rank(m | X) - rank(m)) + S * F
+//
+// for X the set of live bids that fall from here and F the far side's tricks
+// from here.  Each bid in X falls by winning a trick, so its own side takes at
+// least one trick per fallen bid: F >= #(X on the far side) and
+// F <= t - #(X on the near side) -- the u >= d edge of patch 66's trapezoid,
+// per side.  So given a set A of masks X the play is known to stay inside,
+//
+//     lo(A) = min over X in A of  P * delta(X) + min(S * fx, S * (t - nx))
+//     hi(A) = max over X in A of  P * delta(X) + max(S * fx, S * (t - nx))
+//
+// bound V, and a node whose [lo, hi] misses the window is answered fail-soft
+// without searching.  With A every subset of the live bids that is item 79,
+// coupling aside; what this adds is the facts that shrink A.
+//
+// THE FACTS, and whose they are.
+//
+//   * NEVER FALLS, on any line: a live bid holding no spade for which
+//     nil_cannot_be_forced holds.  Every line stays in A minus anything with
+//     that bid, so both ends move.
+//   * KEPT CLEAN by its own side: S11, nil_duck_or_cover, with the bid's
+//     partner as the cover.  A STRATEGY, so it speaks only for that side:
+//     playing it, the side holds V to outcomes without the bid, which bounds
+//     V from that side's end and no other.  The partner may be a live bid
+//     itself (a twin covering a twin) and may fall doing it; the sets below
+//     allow that, exactly as item 98's pair proofs do.
+//   * FORCED NOW by the side on lead against it: the forcing lead or forced
+//     ruff (D1/D1b).  Again one side's strategy, bounding from its end.
+//
+// An every-line fact may be intersected with anything; two strategies may
+// not, since a side plays one at a time.  So the never-falls set is applied to
+// every check, and each strategy is checked alone.  Same standing as M4's and
+// the pair proofs': adversarial facts spent as band bounds, window tested
+// first so a proof runs only when its bound would cut, fail-soft, stored
+// nowhere, never fed to the doom charge or dd_pinned_offset.
+//
+// THE DOUBLE-DUMMY HALF (live_set_dd_min_t).  A side that plays plain double
+// dummy takes at least its count D whatever else happens, so F >= D_far on
+// every line the far side's double-dummy strategy allows -- which is every
+// outcome mask in A -- and F <= t - D_near likewise:
+//
+//     lo = min over X of  P * delta(X) + S * max(fx, D_far)
+//     hi = max over X of  P * delta(X) + S * (t - max(nx, D_near))
+//
+// (default direction, S > 0, which is the only one the engine runs in).  The
+// window says how many tricks each end needs, so each end is one zero-window
+// probe of the engine, asked only when the count it needs is in [1, t].  It
+// is dd_one_live_bound's argument with the survive/break coupling dropped,
+// which is what lets it stand with any number of bids live: it bites where
+// the window sits in the worst band a side can reach -- "the twins are both
+// set, do they still take five?" -- which is where three-nil deals that end
+// with everyone set spend their one-live handoffs.
+//
+// MEASURED on the per-card call (Oct 2026: 48 random deals per three-nil
+// array, bench_random13 seeds 1 and 3, default rows, tables kept across
+// solves; each half switched off with everything else on):
+//
+//     wall / nodes            `0 0 3 0`      `0 0 2 0`      `0 3 0 0`
+//     --live-set-dd 0         +5.9 / +7.9%   +11.5 / +11.1% +8.5 / +9.4%
+//     --no-live-set-proofs    +0.6 / +6.8%   +0.6 / +7.3%   -2.0 / +3.8%
+//
+// The proofs buy nodes and pay most of them back in per-node cost -- about
+// even on the wall; they stay because they cost nothing there and every later
+// cut in per-node cost turns their nodes into time.  Asked BEFORE the table,
+// as M4 and the pair proofs are, they cost 3-5% of wall time for the same
+// nodes: the table answers most of these boundaries first.  The double-dummy
+// floor swept at 4, 6 and 8 tricks moved nodes by under 0.2%; 6 is kept.  One
+// bid per side reaches this too, where both bids live is 1.3% of the search:
+// nodes within +-1% there.
+//
+// Returns true and sets `value` when it cuts.
+bool live_set_bound(Ctx& ctx, const State& st, int alpha, int beta, int& value) {
+    const unsigned live = ctx.nil_mask & ~st.nils_broken;
+    if (!(live & (live - 1))) return false;  // two or more live
+    const int t = count_cards(st.hands[st.leader]);
+    const unsigned m = st.nils_broken;
+    const unsigned far_seats = (ctx.nil_seat & 1) ? 0x5u : 0xAu;
+    const long long P = ctx.primary_weight;
+    const long long S = ctx.secondary_weight;
+    const long long base = ctx.rank_of[m & 15u];
+
+    // lo/hi over the outcome masks with every bid of `in` falling and none of
+    // `out`, coupled as above.  At most eight subsets for three bids.
+    auto range = [&](unsigned in, unsigned out, long long& lo, long long& hi) {
+        lo = WINDOW_MAX;
+        hi = WINDOW_MIN;
+        for (unsigned x = live;; x = (x - 1) & live) {
+            if ((x & in) == in && !(x & out)) {
+                const long long d = P * (ctx.rank_of[(m | x) & 15u] - base);
+                const long long a = S * count_cards(static_cast<Hand>(x & far_seats));
+                const long long b = S * (t - count_cards(static_cast<Hand>(x & ~far_seats)));
+                const long long l = d + (a < b ? a : b);
+                const long long h = d + (a > b ? a : b);
+                if (l < lo) lo = l;
+                if (h > hi) hi = h;
+            }
+            if (x == 0) break;
+        }
+    };
+
+    unsigned never = 0;
+    if (ctx.live_set_proofs) {
+        const Hand spades = suit_mask(SUIT_SPADES);
+        for (unsigned rest = live; rest; rest &= rest - 1) {
+            const int L = lowest_card(static_cast<Hand>(rest));
+            if (!(st.hands[L] & spades) && nil_cannot_be_forced(st.hands, L, st.leader == L))
+                never |= 1u << L;
+        }
+        // The never-falls set applies to every line, so it bounds both ends.
+        // With it empty this would be item 79's range with the per-side trick
+        // coupling added -- patch 66's trapezoid, written over the rank -- and
+        // measured that way (the proof loop below switched off) it moved no
+        // node on the 144 three-nil deals: item 79 above, and the double-dummy
+        // half below, which carries the same coupling, leave it nothing.  So
+        // it is asked only when a fact has shrunk the set.
+        if (never) {
+            long long lo = 0, hi = 0;
+            range(0, never, lo, hi);
+            if (hi <= alpha) { value = static_cast<int>(hi); return true; }
+            if (lo >= beta) { value = static_cast<int>(lo); return true; }
+        }
+        for (unsigned rest = live & ~never; rest; rest &= rest - 1) {
+            const int L = lowest_card(static_cast<Hand>(rest));
+            const unsigned bit = 1u << L;
+            const bool owner_far = ((L ^ ctx.nil_seat) & 1) != 0;
+            long long lo = 0, hi = 0;
+            if (ctx.m4_safe && st.leader != L) {
+                range(0, never | bit, lo, hi);
+                if ((owner_far ? lo >= beta : hi <= alpha) &&
+                    nil_duck_or_cover(st.hands, L, false)) {
+                    value = static_cast<int>(owner_far ? lo : hi);
+                    return true;
+                }
+            }
+            if (ctx.m4_doom && ((st.leader ^ L) & 1)) {
+                range(bit, never, lo, hi);
+                if ((owner_far ? hi <= alpha : lo >= beta) &&
+                    (forcing_lead_suit(st.hands, L, st.leader, st.broken) >= 0 ||
+                     forced_ruff_lead(st.hands, L, st.leader))) {
+                    value = static_cast<int>(owner_far ? hi : lo);
+                    return true;
+                }
+            }
+        }
+    }
+
+    if (ctx.live_set_dd_min_t > 0 && t >= ctx.live_set_dd_min_t && S > 0) {
+        // How many far tricks the fail-high needs, and how many near tricks
+        // the fail-low needs, over the masks the never-falls set allows.
+        auto floor_div = [](long long a, long long b) {
+            return a >= 0 ? a / b : -((-a + b - 1) / b);
+        };
+        long long need_far = 0;   // D_far >= this fails high
+        long long need_near = 0;  // D_near >= this fails low
+        bool hi_possible = true, lo_possible = true;
+        for (unsigned x = live;; x = (x - 1) & live) {
+            if (!(x & never)) {
+                const long long d = P * (ctx.rank_of[(m | x) & 15u] - base);
+                const int fx = count_cards(static_cast<Hand>(x & far_seats));
+                const int nx = count_cards(static_cast<Hand>(x & ~far_seats));
+                // P*d + S*max(fx, D) >= beta  <=>  max(fx, D) >= ceil((beta - d) / S)
+                const long long nf = -floor_div(-(beta - d), S);
+                if (nf > fx && nf > need_far) need_far = nf;
+                // d + S*(t - max(nx, D)) <= alpha  <=>  max(nx, D) >= t - floor((alpha - d) / S)
+                const long long nn = t - floor_div(alpha - d, S);
+                if (nn > nx && nn > need_near) need_near = nn;
+            }
+            if (x == 0) break;
+        }
+        if (need_far > t) hi_possible = false;
+        if (need_near > t) lo_possible = false;
+        const bool far_is_ns = (ctx.nil_seat & 1) != 0;
+        dd::Engine& eng = dd::engine();
+        // Can the far side take at least f tricks in plain double dummy?
+        auto reach_far = [&](int f) -> bool {
+            if (f <= 0) return true;
+            if (f > t) return false;
+            const std::uint64_t before = eng.stats().nodes;
+            const bool r = far_is_ns ? eng.ns_reach(st.hands, st.leader, st.broken, f, nullptr)
+                                     : !eng.ns_reach(st.hands, st.leader, st.broken, t - f + 1,
+                                                     nullptr);
+            ctx.nodes += eng.stats().nodes - before;
+            return r;
+        };
+        // A count of 0 needs no probe (reach_far answers it by arithmetic):
+        // the coupled range alone already cuts, which the block above has
+        // returned on when the proofs are on.  Only a count in [1, t] costs
+        // an engine call.
+        if (hi_possible && reach_far(static_cast<int>(need_far))) {
+            long long lo = WINDOW_MAX;
+            for (unsigned x = live;; x = (x - 1) & live) {
+                if (!(x & never)) {
+                    const long long d = P * (ctx.rank_of[(m | x) & 15u] - base);
+                    const long long fx = count_cards(static_cast<Hand>(x & far_seats));
+                    const long long v = d + S * (fx > need_far ? fx : need_far);
+                    if (v < lo) lo = v;
+                }
+                if (x == 0) break;
+            }
+            value = static_cast<int>(lo);
+            return true;
+        }
+        if (lo_possible && !reach_far(t - static_cast<int>(need_near) + 1)) {
+            long long hi = WINDOW_MIN;
+            for (unsigned x = live;; x = (x - 1) & live) {
+                if (!(x & never)) {
+                    const long long d = P * (ctx.rank_of[(m | x) & 15u] - base);
+                    const long long nx = count_cards(static_cast<Hand>(x & ~far_seats));
+                    const long long v = d + S * (t - (nx > need_near ? nx : need_near));
+                    if (v > hi) hi = v;
+                }
+                if (x == 0) break;
+            }
+            value = static_cast<int>(hi);
+            return true;
+        }
+    }
+    return false;
 }
 
 // WIN THE TRICK CHEAPLY, WHEN IT IS THE OPPONENTS' TO LOSE.
@@ -1898,6 +2152,10 @@ inline int charge_for_mask(const Ctx& ctx, unsigned before, unsigned after) {
 // handoff on: 10 -> 8 is -11% of wall time (67.2 s -> 59.9 s) and -14% of nodes,
 // and off altogether it is +57%; 7 and 6 measured flat against 8 on values-only
 // rows.
+template <bool TRACK>
+int search_core(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta,
+                [[maybe_unused]] Hand* essential);
+
 int one_live_handoff(Ctx& ctx, const State& st, int L, CardId& best_move, int alpha, int beta,
                      bool want_move) {
     Ctx& sub = *ctx.one_live[L];
@@ -1911,7 +2169,21 @@ int one_live_handoff(Ctx& ctx, const State& st, int L, CardId& best_move, int al
     const std::uint64_t before = sub.nodes;
     sub.want_move = want_move;
     CardId move = NO_CARD;
-    const int r = search_impl<false>(sub, st, move, a, b, nullptr);
+    // THE DOOM QUESTION IS ALREADY ANSWERED (item 101, throughput only).  This
+    // context's search_impl asked nil_must_take_a_trick of every live bid at
+    // this boundary and charged the doomed ones, and L is live here, so L is
+    // not doomed -- which is all the handed-off search_impl would ask, of the
+    // same cards, before calling search_core.  Its answer is handed over the
+    // way search_impl hands it (Q7) and the call goes straight in.  Same
+    // nodes; one proof fewer per handoff, which is millions of calls on the
+    // slow three-nil deals.
+    int r;
+    if (ctx.doom_charge && sub.doom_charge) {
+        if (sub.boundary_facts) sub.bf_must_take = 0;
+        r = search_core<false>(sub, st, move, a, b, nullptr);
+    } else {
+        r = search_impl<false>(sub, st, move, a, b, nullptr);
+    }
     ctx.nodes += sub.nodes - before;
     best_move = move;
     return flip ? -r : r + shift;
@@ -1966,6 +2238,13 @@ int search_core(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
     // where nearly all of them are.
     const bool want_move = ctx.want_move;
     ctx.want_move = false;
+    // Item 101: this node is one of the first row_canonical_depth plies below
+    // a row's card (or below a line-walk candidate standing in for one), and
+    // tries its moves in canonical order, handing one ply less to its
+    // children.  Read and cleared before anything below can recurse, as
+    // want_move is.
+    const int canon = ctx.canon_next;
+    ctx.canon_next = 0;
     // Q7: what search_impl already asked about this very state, taken before
     // anything below can recurse and clear or overwrite it.
     const signed char known_must_take = ctx.bf_must_take;
@@ -1983,6 +2262,7 @@ int search_core(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
             if (live && !(live & (live - 1))) {
                 const int L = lowest_card(static_cast<Hand>(live));
                 if (ctx.one_live[L]) {
+                    ctx.one_live[L]->canon_next = canon;
                     return one_live_handoff(ctx, st, L, best_move, alpha, beta, want_move);
                 }
             }
@@ -3039,6 +3319,19 @@ int search_core(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
         }
     }
 
+    // Item 101: two or more bids live -- the live-set proofs and the live-set
+    // double-dummy bound.  After the table, so a node the table answers costs
+    // neither a proof nor a probe; see live_set_bound.
+    if ((ctx.live_set_proofs || ctx.live_set_dd_min_t > 0) && st.trick_len == 0) {
+        int bound = 0;
+        if (live_set_bound(ctx, st, alpha, beta, bound)) {
+            best_move = first_legal_move(st);
+            if constexpr (TRACK)
+                *essential = st.hands[0] | st.hands[1] | st.hands[2] | st.hands[3];
+            return bound;
+        }
+    }
+
     if (ctx.dd_live_bounds && st.trick_len == 0 &&
         count_cards(st.hands[st.leader]) >= ctx.dd_live_min_t) {
         int bound = 0;
@@ -3108,6 +3401,10 @@ int search_core(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
     if ((moves & (moves - 1)) == 0) {
         // One move left after the equivalence collapse: nothing to order, and
         // nothing to spend deciding so.  Common deep in the tree.
+    } else if (canon > 0) {
+        // Item 101: canonical order, the order canonical_move_for() will ask
+        // these same moves in -- ascending card id, the `moves` mask taken
+        // lowest first by the loop below, no killer and no suit mixing.
     } else if (ctx.trick_order && !(((ctx.nil_mask & ~st.nils_broken) >> seat) & 1u)) {
         n_scored = trick_order_moves(ctx, st, seat, moves, scored);
         if (st.trick_len == 0 && ctx.attack_first) {
@@ -3212,7 +3509,7 @@ int search_core(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
     // shows up as a failure rather than as a slow benchmark.
     int suit_cursor = 3;
     int mixed = 0;  // moves still to take in rotation
-    if (ctx.order_moves && ctx.suit_mix && moves &&
+    if (canon == 0 && ctx.order_moves && ctx.suit_mix && moves &&
         card_suit(lowest_card(moves)) != card_suit(highest_card(moves))) {
         for (int su = 0; su < 4; ++su)
             if (moves & suit_mask(su)) ++mixed;
@@ -3234,8 +3531,11 @@ int search_core(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
         }
 
         Hand move_essential = 0;
+        // Item 101: the plies still to order canonically, one fewer below.
+        if (canon > 1) ctx.canon_next = canon - 1;
         const int value =
             value_after_impl<TRACK>(ctx, st, card, alpha, beta, nullptr, &move_essential);
+        ctx.canon_next = 0;
         if constexpr (TRACK) {
             all_moves_essential |= move_essential;
             cut_move_essential = move_essential;
@@ -3711,6 +4011,16 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
         ctx.target_bounds = false;
         ctx.opposed_reach = false;
     }
+    // Item 101: the live-set bound.  The proofs read the rank table, which the
+    // opposed and three-bid objectives fill; the double-dummy half needs the
+    // engine, which is full mode in the default direction.  Not under the
+    // conjunction probe, whose value is an indicator rather than a rank.
+    ctx.live_set_proofs = opts.live_set_proofs && ctx.opposing && !ctx.conjunction &&
+                          ctx.primary_weight > 0;
+    ctx.live_set_dd_min_t = (ctx.opposing && !ctx.conjunction && ctx.dd_engine &&
+                             ctx.primary_weight > 0)
+                                ? opts.live_set_dd_min_t
+                                : 0;
     // Item 100: the single-nil search each one-live boundary is handed to.
     // See one_live_handoff for the argument.  Gated on:
     //   * the opposed or three-bid objective -- a pair that both bid was
@@ -3790,7 +4100,8 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
 // Cost is the index of the answer, not the width of the node: the loop stops at
 // the first match, so a node whose canonical move is also its promoted one pays
 // for a single lookup, and the table is warm from the search that just ran.
-CardId canonical_move_for(Ctx& ctx, const State& st, int value, int alpha, int beta) {
+CardId canonical_move_for(Ctx& ctx, const State& st, int value, int alpha, int beta,
+                          int ply) {
     const int seat = st.to_play();
     Hand moves = legal_moves(st.hands[seat], st.trick_len, st.led_suit(), st.broken);
     if (ctx.collapse && (moves & (moves - 1)) != 0) {
@@ -3839,9 +4150,16 @@ CardId canonical_move_for(Ctx& ctx, const State& st, int value, int alpha, int b
         const bool max_here = ((st.to_play() ^ ctx.nil_seat) & 1) != 0;
         const int a = max_here ? value - 1 : value;
         const int b = max_here ? value : value + 1;
+        // Item 101: a walk step `ply` plies below a row's card asks its
+        // candidates' children in the order the row's probes searched them --
+        // canonically for the first row_canonical_depth plies -- so a child the
+        // probes already proved is read back rather than proved again.
+        const int child_canon = ply > 0 && ctx.canon_depth > ply ? ctx.canon_depth - ply : 0;
         for (Hand h = moves; h;) {
             const CardId card = take_lowest(h);
+            ctx.canon_next = child_canon;
             const int r = value_after(ctx, st, card, a, b, nullptr);
+            ctx.canon_next = 0;
             if (max_here ? r >= value : r <= value) return card;
         }
         return NO_CARD;  // caller keeps whatever the search recorded
@@ -3936,7 +4254,8 @@ bool walk_pv(Ctx& ctx, State st, CardId first, std::vector<Play>& pv_out, std::s
             // about to be thrown away -- is skipped.  canonical_move_for() asks
             // each candidate the equality question directly; finding none is
             // the same inconsistency the value check below reports.
-            move = canonical_move_for(ctx, st, expected, step_alpha, step_beta);
+            move = canonical_move_for(ctx, st, expected, step_alpha, step_beta,
+                                      static_cast<int>(pv_out.size()));
             if (move == NO_CARD) {
                 std::ostringstream os;
                 os << "internal inconsistency: no move keeps a principal-variation step at "
@@ -5032,6 +5351,48 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
 
     int best_value = 0;
     bool have_best = false;
+    // ITEM 101: THE CANONICAL FIRST TRICK (SearchOptions::row_canonical_depth).
+    //
+    // Each step of the line walk below asks one node on the row's line, of its
+    // candidates in canonical order, the null-window question one of this
+    // row's probes asked the same node -- the probe that succeeded at a
+    // maximiser, the one that failed at a minimiser -- and stops at the first
+    // yes.  The probe stopped at the search's own first yes.  Where the two
+    // cards differ the walk re-proves the position through a second card, and
+    // on the twin question that is a whole "the twins keep one clean" proof:
+    // seed-1 #4 (`0 0 3 0`) spent 142M of its 182M walk nodes on the first
+    // step, against 40-68M per row for the probes themselves.  So the probes
+    // order the first plies below the card canonically, and the walk hands
+    // what is left of that depth to its candidates' children: every question
+    // the walk asks inside the depth is then one a probe asked, under the same
+    // window, and the table answers it.
+    //
+    // The depth is a trade, not a proof of gain: a probe's cut nodes OFF the
+    // line pay for canonical order too, and canonical order is a poor guess
+    // there.  Swept on the 144 three-nil deals of the Oct 2026 benchmark
+    // (nodes, `0 0 3 0` / `0 0 2 0` / `0 3 0 0`, the rest of item 101 on):
+    //
+    //     depth 0    1058.5M   1051.2M   641.1M
+    //     depth 1    1020.1M   1009.8M   629.4M
+    //     depth 2    1004.3M    992.5M   630.3M
+    //     depth 3     958.6M    942.7M   623.6M   <- the default; one trick
+    //     depth 4     952.8M    939.6M   672.5M
+    //     depth 5    1002.7M    993.4M   709.0M
+    //     depth 8    1036.6M   1009.4M   742.2M
+    //
+    // Only when the rows walk their lines by the null-window canonical
+    // question -- which is what it is for (tight_pv, canonicalise,
+    // pv_null_window); values-only rows decode from the value and would pay
+    // for the order with nothing to read it back.  And only with a bid still
+    // live at the root: with every bid down the walk is the double-dummy
+    // engine's, which the order does not reach, and measured on `1 3 2 3`
+    // it cost 13% more nodes for nothing.
+    const bool walks_canonically = opts.row_lines && !fast && ctx.tight_pv &&
+                                   ctx.canonicalise && ctx.pv_null_window &&
+                                   live_nil_mask(roles) != 0;
+    const int canonical_depth =
+        walks_canonically && opts.row_canonical_depth > 0 ? opts.row_canonical_depth : 0;
+    ctx.canon_depth = canonical_depth;
     for (int row = 0; row < n_rows; ++row) {
         const CardId card = row_cards[row];
         MoveScore ms;
@@ -5072,7 +5433,14 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
             int hi = WINDOW_MAX;
             while (lo < hi) {
                 const int bound = g == lo ? g + 1 : g;
+                // Item 101: the first plies below this card try their moves in
+                // the order the line walk below will ask them
+                // (row_canonical_depth).  Cleared after, in case the probe never
+                // reached a node -- a trick that settles the window by itself
+                // returns without one.
+                ctx.canon_next = canonical_depth;
                 const int r = value_after(ctx, root, card, bound - 1, bound, nullptr);
+                ctx.canon_next = 0;
                 if (r < bound) {
                     hi = r;  // at most r
                 } else {
@@ -5224,7 +5592,7 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
         if (!child.empty() && ctx.tight_pv && ctx.canonicalise) {
             // As in walk_pv(): the child's value is known and its move is about
             // to be re-derived canonically, so no search precedes that.
-            next_move = canonical_move_for(ctx, child, child_value, child_alpha, child_beta);
+            next_move = canonical_move_for(ctx, child, child_value, child_alpha, child_beta, 1);
             if (next_move == NO_CARD) {
                 std::ostringstream os;
                 os << "internal inconsistency: no reply to " << card_to_string(ms.card)

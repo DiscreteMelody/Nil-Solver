@@ -751,6 +751,32 @@ on the single-nil and two-nil corpora too:
   `corpus_no_pv_null`, `corpus_multinil_no_pv_null`, `corpus_opposed_no_pv_null`,
   `corpus_threenil_no_pv_null`.
 
+The Oct 2026 three-nil pass (ROADMAP item 101) added three, with no
+`NIL_FLAG_*` bit either, each with arms on the three-nil and opposed corpora
+(`--check-moves --check-pv`):
+
+- `--no-live-set-proofs`: with a bid on each side or three bids, no single-bid
+  proofs where two or more bids are live. With them, a bid no line can force,
+  one its own side can keep clean (duck or cover) or one the side on lead can
+  force now (forcing lead, forced ruff) narrows the outcome masks the play can
+  still reach, and the rank table bounds the node -- item 98's pair proofs,
+  written over the rank instead of one objective (same answers; more nodes).
+  `corpus_threenil_no_live_set_proofs`, `corpus_opposed_no_live_set_proofs`.
+- `--live-set-dd T`: the same region's double-dummy bound from T tricks up
+  (6 by default; `--live-set-dd 0` switches it off): whatever falls, a side
+  playing plain double dummy takes its count, which narrows item 79's trick
+  span. `corpus_threenil_live_set_dd_low` (with values-only and no-proofs
+  twins) and `corpus_opposed_live_set_dd_low` run it at 2 tricks, where it
+  fires.
+- `--row-canonical-depth N`: in `--moves`, the first N plies below each row's
+  card try their moves in the canonical order the row's line walk asks them in
+  (3 by default; `--row-canonical-depth 0` keeps the search's own order), so
+  the walk reads back what the row's probes proved instead of proving a second
+  card (same rows and lines). Every shape's rows with a bid live:
+  `corpus_row_canonical_depth_0`, `corpus_multinil_row_canonical_depth_0`,
+  `corpus_threenil_row_canonical_depth_0` (and `_deep`, 24 plies),
+  `corpus_opposed_row_canonical_depth_0`.
+
 `--no-narrow` is the control arm for window narrowing (roadmap item 22), and it
 is the one with the most riding on it. Full mode narrows its window as a node's
 moves come back, which is what makes the alpha-beta cutoff reachable there at

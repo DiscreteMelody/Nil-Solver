@@ -137,6 +137,14 @@ void usage(const char* argv0) {
         << "                          same answer)\n"
         << "  --no-pv-null            re-derive each line move by a width-two window per\n"
         << "                          candidate, not a null one (same line; control arm)\n"
+        << "  --no-live-set-proofs    a bid each side, or three bids: no single-bid\n"
+        << "                          proofs where two or more bids are live (same\n"
+        << "                          answer)\n"
+        << "  --live-set-dd N         the same region's double-dummy bound from N\n"
+        << "                          tricks up (default 6; 0 off; same answer)\n"
+        << "  --row-canonical-depth N --moves: the first N plies below each row's card\n"
+        << "                          try their moves in the line walk's canonical\n"
+        << "                          order (default 3; 0 off; same rows and line)\n"
         << "  --no-boundary-facts     re-ask the nil proofs at every call site of a\n"
         << "                          boundary (same answer, same nodes; a control arm)\n"
         << "  --values-only           --moves: decode each card's counts from its value\n"
@@ -464,6 +472,12 @@ int main(int argc, char** argv) {
             opts.one_live_broken_dd_min_t = std::atoi(argv[++i]);
         } else if (arg == "--no-pv-null") {
             opts.pv_null_window = false;
+        } else if (arg == "--no-live-set-proofs") {
+            opts.live_set_proofs = false;
+        } else if (arg == "--live-set-dd" && i + 1 < argc) {
+            opts.live_set_dd_min_t = std::atoi(argv[++i]);
+        } else if (arg == "--row-canonical-depth" && i + 1 < argc) {
+            opts.row_canonical_depth = std::atoi(argv[++i]);
         } else if (arg == "--no-dd-engine") {
             opts.dd_engine = false;
         } else if (arg == "--no-canonical-pv") {

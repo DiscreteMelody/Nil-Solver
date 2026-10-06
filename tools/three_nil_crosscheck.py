@@ -58,6 +58,15 @@ def to_pbn(hands):
         for h in hands)
 
 
+def all_spades_in_hand(hands):
+    """True when no spade has been played yet: the C++ validator then refuses
+    --spades-broken (nothing could have broken them), which the oracle's does
+    not, so a deal drawn that way must start unbroken.  At 4-7 cards a random
+    draw almost never holds all thirteen; at 10 it does about one deal in
+    forty, and the solver's refusal was being reported as a mismatch."""
+    return sum(1 for h in hands for c in h if c.suit == 0) == 13
+
+
 def run_cli(cli, pbn, leader, roles, broken, secondary, extra=()):
     # A small table: every call is a fresh process, and the default 512 MiB is
     # paid in page faults per call for positions that need a fraction of it.
@@ -121,7 +130,7 @@ def check_value(args, cli):
         pick = rng.sample(deck, 4 * args.cards)
         hands = [sorted(pick[j * args.cards:(j + 1) * args.cards]) for j in range(4)]
         leader = rng.randrange(4)
-        broken = rng.random() < 0.5
+        broken = rng.random() < 0.5 and not all_spades_in_hand(hands)
         # Mid-trick roots as well as clean leads: one in three starts with a
         # card or two already on the table.
         on_table = rng.choice((0, 0, 1, 2))
@@ -222,7 +231,7 @@ def check_subgame(args, cli):
         pick = rng.sample(deck, 4 * args.cards)
         hands = [sorted(pick[j * args.cards:(j + 1) * args.cards]) for j in range(4)]
         leader = rng.randrange(4)
-        broken = rng.random() < 0.5
+        broken = rng.random() < 0.5 and not all_spades_in_hand(hands)
         pos = oracle.Position(hands=tuple(tuple(h) for h in hands), leader=leader,
                               spades_broken=broken)
         try:

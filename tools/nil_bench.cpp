@@ -479,6 +479,12 @@ void usage(const char* argv0) {
               << "  --one-live-broken-dd N  that single-nil search's broken-band ceiling\n"
               << "                    from N tricks up (default 8; 0 off)\n"
               << "  --no-pv-null      line moves re-derived under width-two windows\n"
+              << "  --no-live-set-proofs  a bid each side or three bids: no proofs where\n"
+              << "                    two or more bids are live\n"
+              << "  --live-set-dd N   the same region's double-dummy bound from N tricks\n"
+              << "                    up (default 6; 0 off)\n"
+              << "  --row-canonical-depth N  --check-moves: the first N plies below each\n"
+              << "                    row's card in canonical order (default 3; 0 off)\n"
               << "  --no-boundary-facts  re-ask the nil proofs at every call site\n"
               << "  --values-only     --check-moves rows decoded from their values\n"
               << "  --no-row-order    --check-moves rows scored in canonical order\n"
@@ -563,6 +569,13 @@ std::string memo_label(const nil::SearchOptions& opts) {
     if (!opts.tt_two_bounds) suffix += "+nottbounds";
     if (!opts.one_live_handoff && opts.mode == nil::MODE_FULL) suffix += "+noonelive";
     if (!opts.pv_null_window && opts.mode == nil::MODE_FULL) suffix += "+nopvnull";
+    if (!opts.live_set_proofs && opts.mode == nil::MODE_FULL) suffix += "+nolivesetproofs";
+    if (opts.live_set_dd_min_t != nil::SearchOptions().live_set_dd_min_t &&
+        opts.mode == nil::MODE_FULL)
+        suffix += "+livesetdd" + std::to_string(opts.live_set_dd_min_t);
+    if (opts.row_canonical_depth != nil::SearchOptions().row_canonical_depth &&
+        opts.mode == nil::MODE_FULL)
+        suffix += "+canondepth" + std::to_string(opts.row_canonical_depth);
     if (!opts.use_memo || opts.tt_megabytes == 0) return "off" + suffix;
     // TT_AUTO is a sentinel, not a size.  Printing it raw put
     // "18446744073709551615mb" in the history file's memo column, which is the
@@ -824,6 +837,12 @@ int main(int argc, char** argv) {
             opts.one_live_broken_dd_min_t = std::atoi(argv[++i]);
         } else if (arg == "--no-pv-null") {
             opts.pv_null_window = false;
+        } else if (arg == "--no-live-set-proofs") {
+            opts.live_set_proofs = false;
+        } else if (arg == "--live-set-dd" && i + 1 < argc) {
+            opts.live_set_dd_min_t = std::atoi(argv[++i]);
+        } else if (arg == "--row-canonical-depth" && i + 1 < argc) {
+            opts.row_canonical_depth = std::atoi(argv[++i]);
         } else if (arg == "--no-dd-engine") {
             opts.dd_engine = false;
         } else if (arg == "--no-settled-tricks") {

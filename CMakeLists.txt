@@ -550,6 +550,13 @@ if(NIL_SOLVER_BUILD_TESTS)
              COMMAND nil_bench --corpus "${NIL_CORPUS}" --check-moves --check-pv
                      --no-pv-null --quiet --slowest 0)
     set_tests_properties(corpus_no_pv_null PROPERTIES TIMEOUT 900)
+    # Item 101's canonical first trick reaches every shape's row probes (any
+    # shape with a bid live at the root); the default runs take it, this arm
+    # does not.
+    add_test(NAME corpus_row_canonical_depth_0
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --check-moves --check-pv
+                     --row-canonical-depth 0 --quiet --slowest 0)
+    set_tests_properties(corpus_row_canonical_depth_0 PROPERTIES TIMEOUT 900)
     add_test(NAME corpus_broken_dd_low_values_only
              COMMAND nil_bench --corpus "${NIL_CORPUS}" --check-moves --values-only
                      --broken-dd 2 --quiet --slowest 0)
@@ -634,6 +641,11 @@ if(NIL_SOLVER_BUILD_TESTS)
              COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-moves --check-pv
                      --no-pv-null --quiet --slowest 0)
     set_tests_properties(corpus_multinil_no_pv_null PROPERTIES TIMEOUT 900)
+    # Item 101's canonical first trick, on the twin rows.
+    add_test(NAME corpus_multinil_row_canonical_depth_0
+             COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-moves --check-pv
+                     --row-canonical-depth 0 --quiet --slowest 0)
+    set_tests_properties(corpus_multinil_row_canonical_depth_0 PROPERTIES TIMEOUT 900)
 
     add_test(NAME corpus_multinil_no_tt_two_bounds
              COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-moves --check-pv
@@ -737,6 +749,44 @@ if(NIL_SOLVER_BUILD_TESTS)
                      --one-live-broken-dd 2 --quiet --slowest 0)
     set_tests_properties(corpus_threenil_one_live_broken_dd_low PROPERTIES TIMEOUT 600)
 
+    # Item 101: where two or more of the three bids are live, the live-set
+    # proofs and the live-set double-dummy bound; and the canonical first trick
+    # of every row's probes.  The bound's floor is 6 tricks, which only a row's
+    # first boundary at 6 cards reaches, so the default runs above are nearly
+    # its OFF arm and the *_live_set_dd_low runs push it down to 2 tricks,
+    # where it fires everywhere; the proofs run at every depth and the
+    # canonical trick on every row, so the default runs are their ON arms and
+    # these are the OFF ones (and *_deep the order over 24 plies, where the
+    # probes and the walk ask nearly every node in canonical order).  Values
+    # and lines, both row modes.
+    foreach(_arm no-live-set-proofs)
+      string(REPLACE "-" "_" _name "${_arm}")
+      add_test(NAME corpus_threenil_${_name}
+               COMMAND nil_bench --corpus "${NIL_THREENIL_CORPUS}" --check-moves --check-pv
+                       --${_arm} --quiet --slowest 0)
+      set_tests_properties(corpus_threenil_${_name} PROPERTIES TIMEOUT 600)
+    endforeach()
+    add_test(NAME corpus_threenil_row_canonical_depth_0
+             COMMAND nil_bench --corpus "${NIL_THREENIL_CORPUS}" --check-moves --check-pv
+                     --row-canonical-depth 0 --quiet --slowest 0)
+    set_tests_properties(corpus_threenil_row_canonical_depth_0 PROPERTIES TIMEOUT 600)
+    add_test(NAME corpus_threenil_row_canonical_depth_deep
+             COMMAND nil_bench --corpus "${NIL_THREENIL_CORPUS}" --check-moves --check-pv
+                     --row-canonical-depth 24 --quiet --slowest 0)
+    set_tests_properties(corpus_threenil_row_canonical_depth_deep PROPERTIES TIMEOUT 600)
+    add_test(NAME corpus_threenil_live_set_dd_low
+             COMMAND nil_bench --corpus "${NIL_THREENIL_CORPUS}" --check-moves --check-pv
+                     --live-set-dd 2 --quiet --slowest 0)
+    set_tests_properties(corpus_threenil_live_set_dd_low PROPERTIES TIMEOUT 600)
+    add_test(NAME corpus_threenil_live_set_dd_low_values_only
+             COMMAND nil_bench --corpus "${NIL_THREENIL_CORPUS}" --check-moves --values-only
+                     --live-set-dd 2 --quiet --slowest 0)
+    set_tests_properties(corpus_threenil_live_set_dd_low_values_only PROPERTIES TIMEOUT 600)
+    add_test(NAME corpus_threenil_live_set_dd_low_no_proofs
+             COMMAND nil_bench --corpus "${NIL_THREENIL_CORPUS}" --check-moves --check-pv
+                     --live-set-dd 2 --no-live-set-proofs --quiet --slowest 0)
+    set_tests_properties(corpus_threenil_live_set_dd_low_no_proofs PROPERTIES TIMEOUT 600)
+
     # The key carries the broken-bid mask and the shape has its own tag; with
     # the table off nothing can be confused for anything.
     add_test(NAME corpus_threenil_no_tt
@@ -786,6 +836,23 @@ if(NIL_SOLVER_BUILD_TESTS)
              COMMAND nil_bench --corpus "${NIL_OPPOSED_CORPUS}" --check-moves --values-only
                      --one-live-broken-dd 2 --quiet --slowest 0)
     set_tests_properties(corpus_opposed_one_live_broken_dd_low_values_only PROPERTIES TIMEOUT 600)
+    # Item 101 on one bid per side, where "two or more live" is both bids
+    # live: the same arms as the three-bid corpus's.
+    foreach(_arm no-live-set-proofs)
+      string(REPLACE "-" "_" _name "${_arm}")
+      add_test(NAME corpus_opposed_${_name}
+               COMMAND nil_bench --corpus "${NIL_OPPOSED_CORPUS}" --check-moves --check-pv
+                       --${_arm} --quiet --slowest 0)
+      set_tests_properties(corpus_opposed_${_name} PROPERTIES TIMEOUT 600)
+    endforeach()
+    add_test(NAME corpus_opposed_row_canonical_depth_0
+             COMMAND nil_bench --corpus "${NIL_OPPOSED_CORPUS}" --check-moves --check-pv
+                     --row-canonical-depth 0 --quiet --slowest 0)
+    set_tests_properties(corpus_opposed_row_canonical_depth_0 PROPERTIES TIMEOUT 600)
+    add_test(NAME corpus_opposed_live_set_dd_low
+             COMMAND nil_bench --corpus "${NIL_OPPOSED_CORPUS}" --check-moves --check-pv
+                     --live-set-dd 2 --quiet --slowest 0)
+    set_tests_properties(corpus_opposed_live_set_dd_low PROPERTIES TIMEOUT 600)
     add_test(NAME corpus_opposed_no_tt
              COMMAND nil_bench --corpus "${NIL_OPPOSED_CORPUS}" --cards-only 4
                      --no-memo --quiet --slowest 0)
