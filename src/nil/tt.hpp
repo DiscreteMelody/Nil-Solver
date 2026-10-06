@@ -150,9 +150,17 @@ enum ValueTag : std::uint8_t {
     TAG_CONJUNCTION = 5,
     // Three bids (Oct 2026): an outcome rank on a six-rung ladder plus the far
     // side's tricks.  The same KIND of value as TAG_OPPOSING_NILS, on a
-    // different ladder, so it gets its own tag rather than sharing one.  The
-    // tag has three bits, so 7 is the last value left.
+    // different ladder, so it gets its own tag rather than sharing one.
     TAG_THREE_NILS = 6,
+    // A boundary of a bid-each-side or three-bid search where one bid alone is
+    // still live, handed to a single-nil search (ROADMAP item 100;
+    // SearchOptions::one_live_handoff): the single-nil scale, with its primary
+    // weighted by that bid's step of outcome rank.  Not TAG_FULL, whose primary
+    // is always K*K, and which a plain single-nil solve stores under.  The
+    // entries cannot be confused with each other either: which bid is live is
+    // in the key, since the key carries the broken-bid mask.  The tag has three
+    // bits, and this is the last value.
+    TAG_ONE_LIVE = 7,
 };
 
 // BOTH BOUNDS, NOT ONE (SearchOptions::tt_two_bounds).

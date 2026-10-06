@@ -729,6 +729,28 @@ arm, the engine ones on the two-nil corpus too and in `dd_property`
   `--broken-dd 0` switches it off. `corpus_broken_dd_low` (and its values-only
   twin) run the corpus with it at 2 tricks, where it fires.
 
+The Oct 2026 double-nil pass (ROADMAP item 100) added three, again with no
+`NIL_FLAG_*` bit. One bid per side had no oracle corpus, so it got one --
+`tests/corpus/opposed.txt`, every row and line from `nil_oracle.py`
+(`tools/make_opposed_corpus.py` regenerates it) -- and the arms run there with
+`--check-moves --check-pv`, on the three-nil corpus, and for the line question
+on the single-nil and two-nil corpora too:
+
+- `--no-one-live-handoff`: with a bid on each side, or three bids, a trick
+  boundary where exactly one bid is still live stays in the shape's own search
+  instead of being handed to the single-nil search, which is the same game up
+  to sign and a constant (same answers; many more nodes).
+  `corpus_opposed_no_one_live_handoff`, `corpus_threenil_no_one_live_handoff`.
+- `--one-live-broken-dd T`: inside those handed-off searches, the broken-band
+  ceiling from T tricks up (8 by default; `--broken-dd` still sets the single
+  nil's own, 10). `corpus_opposed_one_live_broken_dd_low` (and its values-only
+  twin) and `corpus_threenil_one_live_broken_dd_low` run it at 2 tricks.
+- `--no-pv-null`: a line's moves are re-derived by asking each candidate
+  "exactly v?" under a width-two window, instead of the one-sided null-window
+  question that is equivalent at an exact node (same lines; more nodes).
+  `corpus_no_pv_null`, `corpus_multinil_no_pv_null`, `corpus_opposed_no_pv_null`,
+  `corpus_threenil_no_pv_null`.
+
 `--no-narrow` is the control arm for window narrowing (roadmap item 22), and it
 is the one with the most riding on it. Full mode narrows its window as a node's
 moves come back, which is what makes the alpha-beta cutoff reachable there at

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <iomanip>
+#include <memory>
 #include <sstream>
 
 #include "nil/bounds.hpp"
@@ -288,6 +289,27 @@ struct Ctx {
     // for a pair that both bid (SearchOptions::twin_dd_live_min_t); everywhere
     // else --dd-live-bounds keeps its old, unfloored behaviour.
     int dd_live_min_t = 0;
+    // SearchOptions::pv_null_window: canonical_move_for asks each candidate
+    // one null-window question.
+    bool pv_null_window = false;
+    // ITEM 100: THE SINGLE-NIL SEARCH A ONE-LIVE BOUNDARY IS HANDED TO, one per
+    // seat that can be the last bid standing, indexed by that seat; null where
+    // there is none (every shape but the opposed and three-bid ones, the
+    // minimise direction, and the control arm).  Built by configure() and owned
+    // here, so it lives exactly as long as this solve: the rows of a per-card
+    // call share it, and with it the killers it learns.  See one_live_handoff.
+    std::unique_ptr<Ctx> one_live[4];
+    // How a handed-off value maps back.  `one_live_flip`: the live bid is on
+    // the far side, the side this context's value is written for, so the
+    // single-nil value is this one negated.  `one_live_shift`: the live bid is
+    // on the near side, so the far side's tricks are the tricks left less the
+    // live side's, and the value is the single-nil one plus secondary * t.
+    bool one_live_flip[4] = {false, false, false, false};
+    bool one_live_shift[4] = {false, false, false, false};
+    bool has_one_live = false;  // any of one_live[] set: one test on the hot path
+    // This context IS one of those handed-off searches; see the table block in
+    // search_core for what that changes.
+    bool one_live_child = false;
 };
 
 // Roadmap item 32's population count.  Split out so the expression at the call
@@ -1804,6 +1826,97 @@ inline int charge_for_mask(const Ctx& ctx, unsigned before, unsigned after) {
     return ctx.primary_weight * count_cards(static_cast<Hand>(after & ~before));
 }
 
+// ---- item 100: ONE LIVE BID, HANDED TO THE SINGLE-NIL SEARCH ----------------
+// (Oct 2026; SearchOptions::one_live_handoff.)
+//
+// WHAT IT IS.  With a bid on each side -- or three bids -- a trick boundary
+// where exactly one bid L is still live is a single-nil position.  Item 81 made
+// the argument in Sept 2026 and it still holds: the dead bids never come back,
+// so the only thing left that can move the outcome rank is whether L survives.
+// What item 81 then tried was to revive the single-nil PROOFS inside the
+// opposed search, one at a time, and the measurement killed it -- they fired on
+// one boundary in ten.  This hands the whole position to a single-nil search
+// instead, with everything that search owns.
+//
+// THE ARGUMENT, exact rather than approximate.  From a boundary with mask m
+// (every bid but L down) and t tricks left, this context's value is
+//
+//     V = D * [L breaks] + S * F            D = P * (rank(m | L) - rank(m))
+//
+// with F the far side's tricks from here and S the secondary weight.  L's own
+// side dislikes the break in every strictly opposed lean and on both three-bid
+// ladders -- side_rank and three_nil_rank give a side's bid surviving the higher
+// rank whatever else happens -- so D < 0 when L sits on the far side (which
+// maximises V) and D > 0 when it sits on the near side.  configure() checks the
+// sign rather than assuming it, and builds no handoff for a seat that fails.
+// Now take the ordinary single-nil objective for L, with L's partner as the
+// cover, |D| as its primary and -S as its secondary (default direction: -K):
+//
+//     V1 = |D| * [L breaks] - S * F_L        F_L = L's side's tricks
+//
+// L on the far side: F_L = F and V = -V1.  L on the near side: F_L = t - F and
+// V = V1 + S * t.  On EVERY line, so the two games are the same game: the side
+// minimising V1 is L's side, which is the side maximising V exactly when V = -V1.
+// A minimax value maps through the same affine map, a fail-soft bound maps to
+// a bound on the matching side (negation swaps "at least" and "at most", and
+// the window (alpha, beta) with it), and a best move stays a best move.  The
+// primary being |D| rather than K*K is what keeps the map exact when D is two
+// or three rungs of the ladder; every bound the single-nil search spends reads
+// its weights from its context rather than assuming K*K.
+//
+// WHERE ITS ENTRIES GO.  Its own tag, TAG_ONE_LIVE: the scale is the single-nil
+// one, but the primary is |D|, not K*K.  The key carries the broken-bid mask,
+// dead bids included, so while its bid is live the near bid's handoff and the
+// far bid's never share an entry; past the break the masks coincide, and the
+// table block in search_core keeps those positions out.  This context never
+// stores a one-live position at all.  The handed-off context is configured
+// once per solve with this one's options and shares its table and engine
+// without resetting either (own_resources).
+//
+// WHY IT IS WORTH A SEARCH OF ITS OWN.  Measured before building, at HEAD
+// 63ff41b: on 48 random `0 2 3 0` deals, 81% of the general search's nodes
+// were in the one-live region (493M of 607M) and 1.3% had both bids live, and
+// the deals with a bid doomed at the root -- where the WHOLE call is one-live
+// -- were 61% of the wall time.  On seed-1 #4 (North holds AKQ94 of spades, so
+// its bid is doomed at the root) the per-card call took 4.7 s and 59.3M nodes
+// as `0 2 3 0`, and 1.4 s and 14.5M on the same cards asked as the single nil
+// they are, `3 2 3 0` -- the same rows and the same lines, card for card.  Most
+// of that gap is the target and later-tricks bounds (2.1M nodes with them on
+// the rows, 11.6M without) and the broken-band ceiling (5.2M without).
+//
+// WHAT IT BUYS.  The per-card call on 96 random double-nil deals (`0 2 3 0` and
+// `0 3 2 0`, `bench_random13` seeds 1 and 3, rows with lines, tables kept
+// across calls, Oct 2026): switching the handoff off, everything else on,
+// takes 60 s to 114 s and 530M nodes to 1,202M.  Seed-1 #4 goes 4.7 s -> 1.1 s.
+// Three bids, which reach the same region, -10% to -15% in total; the slowest
+// three-bid deal (seed-1 #4 again, which is the twin question) +1.5% of nodes.
+// See the ROADMAP entry for the whole table.
+//
+// ONE MORE KNOB, AND WHY.  The single-nil broken-band ceiling (item 99e) runs
+// from `one_live_broken_dd_min_t` tricks up in these searches, 8 by default,
+// rather than from broken_dd_min_t's 10.  Swept on the same 96 deals with the
+// handoff on: 10 -> 8 is -11% of wall time (67.2 s -> 59.9 s) and -14% of nodes,
+// and off altogether it is +57%; 7 and 6 measured flat against 8 on values-only
+// rows.
+int one_live_handoff(Ctx& ctx, const State& st, int L, CardId& best_move, int alpha, int beta,
+                     bool want_move) {
+    Ctx& sub = *ctx.one_live[L];
+    const int shift =
+        ctx.one_live_shift[L] ? ctx.secondary_weight * count_cards(st.hands[st.leader]) : 0;
+    const bool flip = ctx.one_live_flip[L];
+    // WINDOW_MIN is -WINDOW_MAX, so the sentinels negate onto each other; the
+    // shift is a few hundred against 2^29 of headroom.
+    const int a = flip ? -beta : alpha - shift;
+    const int b = flip ? -alpha : beta - shift;
+    const std::uint64_t before = sub.nodes;
+    sub.want_move = want_move;
+    CardId move = NO_CARD;
+    const int r = search_impl<false>(sub, st, move, a, b, nullptr);
+    ctx.nodes += sub.nodes - before;
+    best_move = move;
+    return flip ? -r : r + shift;
+}
+
 template <bool TRACK>
 int search_core(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta,
                 [[maybe_unused]] Hand* essential);
@@ -1859,6 +1972,22 @@ int search_core(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
     ctx.bf_must_take = -1;
     signed char known_cbf = -1;
     if (st.empty()) return 0;
+    // Item 100: one bid live, at a boundary -- the single-nil search takes it.
+    // Ahead of everything else here, including the table: what this context
+    // would store for the position, the handed-off one stores instead.
+    // Never under TRACK, whose essential sets the handoff does not carry;
+    // configure() builds no handoff when rank tracking is on.
+    if constexpr (!TRACK) {
+        if (ctx.has_one_live && st.trick_len == 0) {
+            const unsigned live = ctx.nil_mask & ~st.nils_broken;
+            if (live && !(live & (live - 1))) {
+                const int L = lowest_card(static_cast<Hand>(live));
+                if (ctx.one_live[L]) {
+                    return one_live_handoff(ctx, st, L, best_move, alpha, beta, want_move);
+                }
+            }
+        }
+    }
     if (ctx.dd_engine && st.trick_len == 0) {
         int offset = 0;
         if ((ctx.nil_mask & ~st.nils_broken) == 0 ||
@@ -2795,7 +2924,17 @@ int search_core(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
     // window: children are searched under `alpha` and `beta` unchanged.
     int cut_bound = 0;
     bool have_cut_bound = false;
-    if (ctx.tt && (st.trick_len == 0 || !ctx.tt_boundaries_only)) {
+    // A handed-off search (item 100) keys nothing past its own bid's break.
+    // Every bid is down there, so the broken-bid mask is the same in each of a
+    // solve's handed-off searches -- and their values are not: each counts its
+    // own live bid's side's tricks.  With the double-dummy engine on, which the
+    // handoff requires, every such boundary is settled by the engine above
+    // before the table is reached, so in the default configuration this test
+    // never fires; it is what keeps `--tt-all-plies` from sharing a mid-trick
+    // entry between two of them.  Found by sharing one: the handoff run without
+    // the engine collided on exactly these positions.
+    if (ctx.tt && (st.trick_len == 0 || !ctx.tt_boundaries_only) &&
+        !(ctx.one_live_child && (st.nils_broken & ctx.nil_mask) != 0)) {
         keyed = encode_state_key(st.hands, st.leader, st.broken, st.trick, st.trick_len, key,
                                  profile, st.nils_broken,
                                      ctx.multi_nil || ctx.opposing || ctx.nil_mask != 0);
@@ -3260,7 +3399,7 @@ void disable_single_nil_machinery(Ctx& ctx) {
 }
 
 void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
-               const ObjectiveWeights& weights) {
+               const ObjectiveWeights& weights, bool own_resources = true) {
     // The search still reasons about ONE nil seat and takes the coalitions from
     // its parity, exactly as it did when the caller passed that seat directly.
     // The roles array is the caller's description; this is where phase two will
@@ -3395,6 +3534,7 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
     ctx.order_moves = opts.order_moves;
     ctx.live_order = opts.live_order;
     ctx.tight_pv = opts.tight_pv;
+    ctx.pv_null_window = opts.pv_null_window;
     ctx.boundary_facts = opts.boundary_facts;
     ctx.multi_live_proofs = opts.multi_live_proofs;
     ctx.pair_proofs = opts.pair_proofs;
@@ -3531,7 +3671,7 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
 
     const std::size_t table_mb =
         opts.tt_megabytes == TT_AUTO ? TT_DEFAULT_MEGABYTES : opts.tt_megabytes;
-    if (opts.use_memo && table_mb > 0) {
+    if (opts.use_memo && table_mb > 0 && own_resources) {
         TranspositionTable& table = shared_table();
         table.resize(table_mb, opts.huge_pages);  // a no-op at the size it already is
         table.new_search();               // this solve may not see the last one's values
@@ -3541,7 +3681,7 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
 
     // The engine's table persists across solves, so this reallocates it only
     // when the request actually changes.
-    if (opts.dd_engine) {
+    if (opts.dd_engine && own_resources) {
         dd::engine().set_huge_pages(opts.huge_pages);
         dd::engine().set_prefetch(opts.dd_prefetch);
         dd::engine().set_dds_order(opts.dd_order);
@@ -3570,6 +3710,56 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
         disable_single_nil_machinery(ctx);
         ctx.target_bounds = false;
         ctx.opposed_reach = false;
+    }
+    // Item 100: the single-nil search each one-live boundary is handed to.
+    // See one_live_handoff for the argument.  Gated on:
+    //   * the opposed or three-bid objective -- a pair that both bid was
+    //     measured with the same handoff and gained nothing (twin item 98:
+    //     -3.5% of nodes, 0% of wall time; re-measured here, -6% and 0%),
+    //     because 98b's one-live bound already does that region's work;
+    //   * not the conjunction probe, whose value is an indicator;
+    //   * the double-dummy engine, which is full mode in the default direction
+    //     with the engine on.  The handed-off searches' entries are told apart
+    //     by the broken-bid mask, which works only while their bid is live;
+    //     past its break every bid is down and the mask is the same in each, so
+    //     those positions must never reach the table -- and with the engine on
+    //     no boundary of them does, because the engine settles it first (the
+    //     table block in search_core keeps the mid-trick ones out).  Without
+    //     the engine the whole post-break region would run with no table at
+    //     all, and measured, that is ruinous: forced on in the minimise
+    //     direction, where the engine never runs, the first four seed-1
+    //     double-nil deals took 14.5 s, 0.5 s, 117 s and 298 s against 0.2 s,
+    //     0.4 s, 0.4 s and 3.2 s (same answers).  So the minimise direction
+    //     keeps the general search;
+    //   * no rank tracking (TRACK) and no item-79 sweep, which measure THIS
+    //     context's tree and would otherwise count the handoff's nodes as none.
+    if (opts.one_live_handoff && ctx.opposing && !ctx.conjunction && ctx.dd_engine &&
+        !ctx.track_ranks && !ctx.opposed_stats) {
+        for (int L = 0; L < 4; ++L) {
+            if (!((ctx.nil_mask >> L) & 1)) continue;
+            const unsigned dead = ctx.nil_mask & ~(1u << L);
+            const int delta = weights.primary * (ctx.rank_of[dead | (1u << L)] - ctx.rank_of[dead]);
+            const bool owner_far = ((L ^ ctx.nil_seat) & 1) != 0;
+            // L's side must dislike the break, or the single-nil objective is
+            // not this one.  Always true of the shapes that reach here; checked
+            // so that a ladder which ever breaks it loses the handoff, not the
+            // answer.
+            if (owner_far ? delta >= 0 : delta <= 0) continue;
+            SearchOptions sub_opts = opts;
+            sub_opts.broken_dd_min_t = opts.one_live_broken_dd_min_t;
+            ObjectiveWeights sub_weights;
+            sub_weights.primary = owner_far ? -delta : delta;
+            sub_weights.secondary = -weights.secondary;
+            auto sub = std::make_unique<Ctx>();
+            configure(*sub, seat_roles_from_nil(L, false), sub_opts, sub_weights, false);
+            sub->tt = ctx.tt;
+            sub->tt_tag = TAG_ONE_LIVE;
+            sub->one_live_child = true;
+            ctx.one_live_flip[L] = owner_far;
+            ctx.one_live_shift[L] = !owner_far;
+            ctx.one_live[L] = std::move(sub);
+            ctx.has_one_live = true;
+        }
     }
 }
 
@@ -3619,6 +3809,43 @@ CardId canonical_move_for(Ctx& ctx, const State& st, int value, int alpha, int b
     // its exact value under the caller's window -- the sentinels, on every
     // per-card line solve_moves() walks -- and is now refuted by a null-width
     // probe the table has usually seen already.
+    //
+    // AND THE QUESTION IS ONE-SIDED, SO ASK IT WITH A NULL WINDOW (item 100;
+    // pv_null_window).  `value` is the exact value of `st`, and no move of a
+    // maximiser is worth more than its node, nor any move of a minimiser less.
+    // So at a maximiser a candidate is worth `value` exactly when it is worth AT
+    // LEAST `value`, and at a minimiser exactly when it is worth at most it --
+    // one null-window question, (value - 1, value) or (value, value + 1), where
+    // the width-two window asked both.  A fail-soft search under a null window
+    // comes back at or beyond its upper edge exactly when the true value is, so
+    // the test below finds the same card.  What it drops is the other half of
+    // the proof for the card that matches: under (value - 1, value + 1) a
+    // matching candidate had to be shown no better than `value` as well as no
+    // worse, and every position it reached had to be pinned exactly.
+    //
+    // Every caller hands in an exact value: walk_pv() the line's own arithmetic
+    // under tight_pv, solve() and solve_moves() a value searched inside a window
+    // that holds it, dd_settled_value() a bisected count.  Under tight_pv only,
+    // which is the flag that says so.
+    //
+    // MEASURED on the double-nil benchmark (96 deals, per-card rows with lines,
+    // the handoff on): `--no-pv-null` is +5% of nodes and +8% of wall time
+    // (558M against 530M; 65.3 s against 60-61 s), all of it in the per-row
+    // line walks, which are a quarter to a third of the call there.  The cost
+    // is in the first two tricks of each line: proving that a canonically lower
+    // card is NOT optimal, and that the matching one is.  Only the second has a
+    // half to drop.
+    if (ctx.tight_pv && ctx.pv_null_window) {
+        const bool max_here = ((st.to_play() ^ ctx.nil_seat) & 1) != 0;
+        const int a = max_here ? value - 1 : value;
+        const int b = max_here ? value : value + 1;
+        for (Hand h = moves; h;) {
+            const CardId card = take_lowest(h);
+            const int r = value_after(ctx, st, card, a, b, nullptr);
+            if (max_here ? r >= value : r <= value) return card;
+        }
+        return NO_CARD;  // caller keeps whatever the search recorded
+    }
     if (ctx.tight_pv) {
         if (alpha < value - 1) alpha = value - 1;
         if (beta > value + 1) beta = value + 1;

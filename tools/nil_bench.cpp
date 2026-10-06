@@ -474,6 +474,11 @@ void usage(const char* argv0) {
               << "  --dd-profiles N   k-profiles per engine header (default 26, was 12)\n"
               << "  --broken-dd N     single nil: broken-band double-dummy ceiling from\n"
               << "                    N tricks up (default 10; 0 off)\n"
+              << "  --no-one-live-handoff  a bid each side or three bids: one live bid is\n"
+              << "                    searched by the shape's own search, not single-nil\n"
+              << "  --one-live-broken-dd N  that single-nil search's broken-band ceiling\n"
+              << "                    from N tricks up (default 8; 0 off)\n"
+              << "  --no-pv-null      line moves re-derived under width-two windows\n"
               << "  --no-boundary-facts  re-ask the nil proofs at every call site\n"
               << "  --values-only     --check-moves rows decoded from their values\n"
               << "  --no-row-order    --check-moves rows scored in canonical order\n"
@@ -556,6 +561,8 @@ std::string memo_label(const nil::SearchOptions& opts) {
         suffix += "+nokiller";
     if (!opts.tight_pv && opts.mode == nil::MODE_FULL) suffix += "+notightpv";
     if (!opts.tt_two_bounds) suffix += "+nottbounds";
+    if (!opts.one_live_handoff && opts.mode == nil::MODE_FULL) suffix += "+noonelive";
+    if (!opts.pv_null_window && opts.mode == nil::MODE_FULL) suffix += "+nopvnull";
     if (!opts.use_memo || opts.tt_megabytes == 0) return "off" + suffix;
     // TT_AUTO is a sentinel, not a size.  Printing it raw put
     // "18446744073709551615mb" in the history file's memo column, which is the
@@ -811,6 +818,12 @@ int main(int argc, char** argv) {
             opts.demoted_dd_min_t = std::atoi(argv[++i]);
         } else if (arg == "--broken-dd" && i + 1 < argc) {
             opts.broken_dd_min_t = std::atoi(argv[++i]);
+        } else if (arg == "--no-one-live-handoff") {
+            opts.one_live_handoff = false;
+        } else if (arg == "--one-live-broken-dd" && i + 1 < argc) {
+            opts.one_live_broken_dd_min_t = std::atoi(argv[++i]);
+        } else if (arg == "--no-pv-null") {
+            opts.pv_null_window = false;
         } else if (arg == "--no-dd-engine") {
             opts.dd_engine = false;
         } else if (arg == "--no-settled-tricks") {

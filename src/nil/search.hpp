@@ -731,6 +731,39 @@ struct SearchOptions {
     // the bound on for every shape at every depth, takes precedence.
     int twin_dd_live_min_t = 11;
 
+    // ONE LIVE BID, HANDED TO THE SINGLE-NIL SEARCH (Oct 2026, ROADMAP item
+    // 100).  With a bid on each side, or three bids, a trick boundary where
+    // exactly one bid is still live is a single-nil position in disguise: the
+    // dead bids never come back, so the value is the live bid's fate, weighted
+    // by one step of outcome rank, plus a trick count -- the single-nil
+    // objective up to sign and a constant.  On, such a boundary is searched by
+    // a single-nil context, with every piece of single-nil machinery the
+    // opposed shape switches off: the proofs spent in full mode, the target
+    // and later-tricks bounds, the demoted and broken-band double-dummy
+    // bounds, the partial-match cutoff bound.  Its values sit under their own
+    // table tag.  Default direction, full mode; the minimise direction keeps
+    // the general search.  Same values and lines; `--no-one-live-handoff` is
+    // the control arm.  The argument and the measurement are at
+    // one_live_handoff in search.cpp.
+    bool one_live_handoff = true;
+
+    // The broken-band ceiling (broken_dd_min_t below) inside those handed-off
+    // searches, from this many tricks up; 0 is off.  Its own knob because the
+    // floor that pays there is lower: measured at 8 (see one_live_handoff in
+    // search.cpp), against 10 for a single nil.  Same values and lines;
+    // `--one-live-broken-dd N`.
+    int one_live_broken_dd_min_t = 8;
+
+    // RE-DERIVE A LINE'S MOVE BY ONE NULL-WINDOW QUESTION PER CANDIDATE (Oct
+    // 2026, ROADMAP item 100).  canonical_move_for() looks for the canonically
+    // lowest move worth the position's exact value v, and asked each candidate
+    // "are you exactly v?" under the window (v - 1, v + 1).  No move of a
+    // maximiser is worth more than v and none of a minimiser's less, so "at
+    // least v" (or "at most v") is the same question, and a null window
+    // answers it with a one-sided proof.  Same moves found; `--no-pv-null` is
+    // the control arm.  Read only under tight_pv, which supplies the exact v.
+    bool pv_null_window = true;
+
     // A4 (Sept 2026): with a single live nil and a safe-band window, bound the
     // node by the pair's double-dummy count on the deal with the nil's cards
     // moved to the bottom of every suit (one engine probe).  Runs only at

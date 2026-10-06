@@ -544,6 +544,12 @@ if(NIL_SOLVER_BUILD_TESTS)
              COMMAND nil_bench --corpus "${NIL_CORPUS}" --check-moves --check-pv
                      --broken-dd 2 --quiet --slowest 0)
     set_tests_properties(corpus_broken_dd_low PROPERTIES TIMEOUT 900)
+    # Item 100's null-window line moves reach every shape's line walk, a single
+    # nil's included; this is their control arm here.
+    add_test(NAME corpus_no_pv_null
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --check-moves --check-pv
+                     --no-pv-null --quiet --slowest 0)
+    set_tests_properties(corpus_no_pv_null PROPERTIES TIMEOUT 900)
     add_test(NAME corpus_broken_dd_low_values_only
              COMMAND nil_bench --corpus "${NIL_CORPUS}" --check-moves --values-only
                      --broken-dd 2 --quiet --slowest 0)
@@ -623,6 +629,12 @@ if(NIL_SOLVER_BUILD_TESTS)
              COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-moves --check-pv
                      --no-shed-order --quiet --slowest 0)
     set_tests_properties(corpus_multinil_no_shed_order PROPERTIES TIMEOUT 900)
+    # Item 100's null-window line moves, on the twin lines.
+    add_test(NAME corpus_multinil_no_pv_null
+             COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-moves --check-pv
+                     --no-pv-null --quiet --slowest 0)
+    set_tests_properties(corpus_multinil_no_pv_null PROPERTIES TIMEOUT 900)
+
     add_test(NAME corpus_multinil_no_tt_two_bounds
              COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-moves --check-pv
                      --no-tt-two-bounds --quiet --slowest 0)
@@ -709,10 +721,73 @@ if(NIL_SOLVER_BUILD_TESTS)
       set_tests_properties(corpus_threenil_${_name} PROPERTIES TIMEOUT 600)
     endforeach()
 
+    # Item 100 reaches three bids too: a boundary with one of the three still
+    # live is handed to the single-nil search.  The default runs above take
+    # it; this arm does not.  The handoff's broken-band ceiling is pushed down
+    # to 2 tricks in the *_low run, where it fires.
+    foreach(_arm no-one-live-handoff no-pv-null)
+      string(REPLACE "-" "_" _name "${_arm}")
+      add_test(NAME corpus_threenil_${_name}
+               COMMAND nil_bench --corpus "${NIL_THREENIL_CORPUS}" --check-moves --check-pv
+                       --${_arm} --quiet --slowest 0)
+      set_tests_properties(corpus_threenil_${_name} PROPERTIES TIMEOUT 600)
+    endforeach()
+    add_test(NAME corpus_threenil_one_live_broken_dd_low
+             COMMAND nil_bench --corpus "${NIL_THREENIL_CORPUS}" --check-moves --check-pv
+                     --one-live-broken-dd 2 --quiet --slowest 0)
+    set_tests_properties(corpus_threenil_one_live_broken_dd_low PROPERTIES TIMEOUT 600)
+
     # The key carries the broken-bid mask and the shape has its own tag; with
     # the table off nothing can be confused for anything.
     add_test(NAME corpus_threenil_no_tt
              COMMAND nil_bench --corpus "${NIL_THREENIL_CORPUS}" --cards-only 4
+                     --no-memo --quiet --slowest 0)
+  endif()
+
+  # ONE BID ON EACH SIDE (Oct 2026, ROADMAP item 100).  The one shape with no
+  # oracle corpus until now: opposing_crosscheck compares the game value and
+  # nothing here held an opposed LINE against nil_oracle.py.  Every row is the
+  # oracle's, PV included, across all eight strictly opposed role arrays, every
+  # trick depth and both directions (tools/make_opposed_corpus.py).
+  set(NIL_OPPOSED_CORPUS "${CMAKE_CURRENT_SOURCE_DIR}/tests/corpus/opposed.txt")
+  if(NIL_SOLVER_BUILD_BENCH AND EXISTS "${NIL_OPPOSED_CORPUS}")
+    add_test(NAME corpus_opposed
+             COMMAND nil_bench --corpus "${NIL_OPPOSED_CORPUS}" --check-pv --quiet --slowest 0)
+    set_tests_properties(corpus_opposed PROPERTIES TIMEOUT 600)
+    add_test(NAME corpus_opposed_moves
+             COMMAND nil_bench --corpus "${NIL_OPPOSED_CORPUS}" --check-moves --check-pv
+                     --quiet --slowest 0)
+    set_tests_properties(corpus_opposed_moves PROPERTIES TIMEOUT 600)
+    add_test(NAME corpus_opposed_values_only
+             COMMAND nil_bench --corpus "${NIL_OPPOSED_CORPUS}" --check-moves --values-only
+                     --quiet --slowest 0)
+    set_tests_properties(corpus_opposed_values_only PROPERTIES TIMEOUT 600)
+
+    # Item 100's control arms.  The handoff fires at every depth, so the
+    # default runs above take it and corpus_opposed_no_one_live_handoff does
+    # not; the null-window line moves likewise.  The handoff's broken-band
+    # ceiling runs from 8 tricks up, which no row reaches -- so the default
+    # runs are its OFF arm, and the *_one_live_broken_dd_low runs push it down
+    # to 2 tricks, where it fires.  Every arm must land on the oracle's values
+    # and lines.  The key carries the broken-bid mask and the handoff has its
+    # own tag; with the table off nothing can be confused for anything.
+    foreach(_arm no-one-live-handoff no-pv-null)
+      string(REPLACE "-" "_" _name "${_arm}")
+      add_test(NAME corpus_opposed_${_name}
+               COMMAND nil_bench --corpus "${NIL_OPPOSED_CORPUS}" --check-moves --check-pv
+                       --${_arm} --quiet --slowest 0)
+      set_tests_properties(corpus_opposed_${_name} PROPERTIES TIMEOUT 600)
+    endforeach()
+    add_test(NAME corpus_opposed_one_live_broken_dd_low
+             COMMAND nil_bench --corpus "${NIL_OPPOSED_CORPUS}" --check-moves --check-pv
+                     --one-live-broken-dd 2 --quiet --slowest 0)
+    set_tests_properties(corpus_opposed_one_live_broken_dd_low PROPERTIES TIMEOUT 600)
+    add_test(NAME corpus_opposed_one_live_broken_dd_low_values_only
+             COMMAND nil_bench --corpus "${NIL_OPPOSED_CORPUS}" --check-moves --values-only
+                     --one-live-broken-dd 2 --quiet --slowest 0)
+    set_tests_properties(corpus_opposed_one_live_broken_dd_low_values_only PROPERTIES TIMEOUT 600)
+    add_test(NAME corpus_opposed_no_tt
+             COMMAND nil_bench --corpus "${NIL_OPPOSED_CORPUS}" --cards-only 4
                      --no-memo --quiet --slowest 0)
   endif()
 

@@ -129,6 +129,14 @@ void usage(const char* argv0) {
         << "  --broken-dd N           single nil: bound broken-band boundaries by the\n"
         << "                          pair's double-dummy count from N tricks up\n"
         << "                          (default 10; 0 off; same answer)\n"
+        << "  --no-one-live-handoff   a bid each side, or three bids: keep searching a\n"
+        << "                          boundary with one bid live in the shape's own\n"
+        << "                          search, not the single-nil one (same answer)\n"
+        << "  --one-live-broken-dd N  the broken-band ceiling inside those single-nil\n"
+        << "                          searches from N tricks up (default 8; 0 off;\n"
+        << "                          same answer)\n"
+        << "  --no-pv-null            re-derive each line move by a width-two window per\n"
+        << "                          candidate, not a null one (same line; control arm)\n"
         << "  --no-boundary-facts     re-ask the nil proofs at every call site of a\n"
         << "                          boundary (same answer, same nodes; a control arm)\n"
         << "  --values-only           --moves: decode each card's counts from its value\n"
@@ -450,6 +458,12 @@ int main(int argc, char** argv) {
             opts.demoted_dd_min_t = std::atoi(argv[++i]);
         } else if (arg == "--broken-dd" && i + 1 < argc) {
             opts.broken_dd_min_t = std::atoi(argv[++i]);
+        } else if (arg == "--no-one-live-handoff") {
+            opts.one_live_handoff = false;
+        } else if (arg == "--one-live-broken-dd" && i + 1 < argc) {
+            opts.one_live_broken_dd_min_t = std::atoi(argv[++i]);
+        } else if (arg == "--no-pv-null") {
+            opts.pv_null_window = false;
         } else if (arg == "--no-dd-engine") {
             opts.dd_engine = false;
         } else if (arg == "--no-canonical-pv") {

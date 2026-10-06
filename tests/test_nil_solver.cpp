@@ -458,8 +458,19 @@ int main(int argc, char** argv) {
     {
         // End to end on layouts built out of runs, where the reduction has the
         // most to remove: same answer, same principal variation, fewer nodes.
+        //
+        // The width-two line question (pv_null_window off), as when this was
+        // written.  A solve's `nodes` include the root's canonical re-derivation,
+        // which on three cards is a large share of the count, and item 100's
+        // null-window question makes it cheap enough that the second solve here
+        // -- which inherits the first one's engine table -- came in under the
+        // first on AKQ.2.. nil N (38 against 34; 38 against 58 from a fresh
+        // table).  The reduction's own claim is about the search, so the test
+        // keeps the question it was written against.
         SearchOptions on;
+        on.pv_null_window = false;
         SearchOptions off;
+        off.pv_null_window = false;
         off.collapse_equivalents = false;
         const char* deals[] = {
             "N:AKQ.2.. JT9.3.. 876.4.. 543.5..",
@@ -753,6 +764,14 @@ int main(int argc, char** argv) {
         // variation, and strictly more nodes.
         SearchOptions wide = full;
         wide.narrow_window = false;
+        // THE WIDTH-TWO LINE QUESTION, on both arms (item 100).  On two cards
+        // most of what narrowing saved was in the root's canonical
+        // re-derivation, which `nodes` counts: 237 against 335 nodes with the
+        // width-two question.  The null-window question removes that work from
+        // both arms alike -- 226 and 226 -- so the comparison is made the way
+        // it was written.
+        full.pv_null_window = false;
+        wide.pv_null_window = false;
         // Node counts are only comparable from the same starting point.  The
         // double-dummy engine's table survives between solves by design (its
         // entries are valid across deals), so without this the second run
@@ -1586,6 +1605,13 @@ int main(int argc, char** argv) {
                 SearchOptions on;
                 on.mode = nil::MODE_FULL;
                 on.minimise_own_tricks = (which++ % 2 != 0);
+                // The width-two line question, as when this was measured (item
+                // 100).  The root's canonical re-derivation is in `nodes`, and
+                // under the null-window question this sample comes out 68,419
+                // with the partial-match bound against 68,313 without: +0.16%,
+                // which is the bound's interplay with one-sided entries on
+                // 160 five-card solves, not a property of either change.
+                on.pv_null_window = false;
                 SearchOptions off = on;
                 off.tt_narrow_window = false;
                 const Solution a = must_solve(pos, seat, on);
@@ -2606,6 +2632,117 @@ int main(int argc, char** argv) {
             check(std::string("and the arm for ") + arm_names[arm] + " changes the tree",
                   nodes_on[arm] != nodes_off[arm], true);
         }
+    }
+
+    std::cout << "One live bid handed to the single-nil search; null-window line moves (item 100)\n";
+    {
+        // THE ARMS, each off against the default: per-card rows (every field
+        // the row reports) and the position's line, on one bid per side and
+        // three bids in every lean, both directions and both row modes, and on
+        // a single nil for the line question, which every shape's walk asks.
+        // The handoff's broken-band ceiling is pushed down to 2 tricks so that
+        // it fires at this size, as the corpus arm does.  Each must leave every
+        // row and line alone, and each must change the tree in aggregate, or
+        // its switch is not plumbed through.  The engine's table outlives a
+        // solve, so it is cleared before each one (shrunk to 1 MiB for the
+        // sweep, as the twin block above does).
+        auto row_text = [](const std::vector<nil::MoveScore>& ms) {
+            std::string t;
+            for (const nil::MoveScore& m : ms) {
+                t += nil::card_to_string(m.card) + ":" + std::to_string(m.value) + ":" +
+                     std::to_string(m.nils_set) + ":" + std::to_string(m.nils_set_mask) + ":" +
+                     std::to_string(m.nil_tricks) + ":" + std::to_string(m.nil_side_tricks) + ":" +
+                     std::to_string(m.opponent_tricks) + ":" + (m.is_best ? "1" : "0");
+                for (int s = 0; s < 4; ++s) t += ":" + std::to_string(m.seat_tricks[s]);
+                t += " ";
+            }
+            return t;
+        };
+        Rng rng;
+        const char* seatings[] = {"0 0 3 2", "0 0 2 3", "0 3 2 0", "0 2 3 0",
+                                  "0 0 3 0", "0 0 2 0", "0 3 2 3"};
+        const char* arm_names[] = {"the one-live handoff", "its broken-band ceiling at 2 tricks",
+                                   "the null-window line question"};
+        int positions = 0;
+        int rows_differ[3] = {0, 0, 0};
+        int lines_differ[3] = {0, 0, 0};
+        long long nodes_on[3] = {0, 0, 0};
+        long long nodes_off[3] = {0, 0, 0};
+        const std::size_t engine_mb = nil::dd::engine().megabytes();
+        nil::dd::engine().resize(1);
+        for (int deal = 0; deal < 6; ++deal) {
+            const Position pos = random_deal(rng, 6);
+            for (const char* seating : seatings) {
+                nil::SeatRoles roles;
+                std::string err;
+                nil::parse_seat_roles(seating, nil::SEAT_NORTH, roles, err);
+                for (int dir = 0; dir < 2; ++dir) {
+                    for (int values_only = 0; values_only < 2; ++values_only) {
+                        SearchOptions base;
+                        base.minimise_own_tricks = dir != 0;
+                        base.row_lines = values_only == 0;
+                        base.one_live_broken_dd_min_t = 2;
+                        ++positions;
+                        for (int arm = 0; arm < 3; ++arm) {
+                            SearchOptions off = base;
+                            if (arm == 0) off.one_live_handoff = false;
+                            if (arm == 1) off.one_live_broken_dd_min_t = 0;
+                            if (arm == 2) off.pv_null_window = false;
+                            Solution a;
+                            Solution b;
+                            std::vector<nil::MoveScore> ma;
+                            std::vector<nil::MoveScore> mb;
+                            nil::dd::engine().clear();
+                            const bool ok_a = nil::solve_moves(pos, roles, base, a, ma, err);
+                            nil::dd::engine().clear();
+                            const bool ok_b = nil::solve_moves(pos, roles, off, b, mb, err);
+                            if (!ok_a || !ok_b) {
+                                std::cerr << "test bug: solve_moves failed: " << err << "\n";
+                                std::exit(70);
+                            }
+                            if (row_text(ma) != row_text(mb)) ++rows_differ[arm];
+                            if (nil::format_pv_compact(a) != nil::format_pv_compact(b))
+                                ++lines_differ[arm];
+                            nodes_on[arm] += static_cast<long long>(a.nodes);
+                            nodes_off[arm] += static_cast<long long>(b.nodes);
+                        }
+                    }
+                }
+            }
+        }
+        nil::dd::engine().resize(engine_mb);
+        check("item 100 arms: sweep ran", positions, 168);
+        for (int arm = 0; arm < 3; ++arm) {
+            check(std::string(arm_names[arm]) + " never moves a per-card row", rows_differ[arm], 0);
+            check(std::string(arm_names[arm]) + " never moves the line", lines_differ[arm], 0);
+            check(std::string("and the arm for ") + arm_names[arm] + " changes the tree",
+                  nodes_on[arm] != nodes_off[arm], true);
+        }
+
+        // The plain solve() takes the handoff too, under item 77's presolve
+        // band and the shifted line walk that rides on it.
+        nil::SeatRoles opposed;
+        std::string err;
+        nil::parse_seat_roles("0 2 3 0", nil::SEAT_NORTH, opposed, err);
+        int solves_differ = 0;
+        for (int deal = 0; deal < 12; ++deal) {
+            const Position pos = random_deal(rng, 8);
+            SearchOptions on;
+            SearchOptions off;
+            off.one_live_handoff = false;
+            Solution a;
+            Solution b;
+            if (!nil::solve(pos, opposed, on, a, err) || !nil::solve(pos, opposed, off, b, err)) {
+                std::cerr << "test bug: solve failed: " << err << "\n";
+                std::exit(70);
+            }
+            if (a.value != b.value || a.nils_set_mask != b.nils_set_mask ||
+                a.nil_tricks != b.nil_tricks || a.nil_side_tricks != b.nil_side_tricks ||
+                nil::format_pv_compact(a) != nil::format_pv_compact(b)) {
+                ++solves_differ;
+            }
+        }
+        check("the handoff never moves a plain solve's answer or line", solves_differ, 0);
     }
 
     std::cout << "One nil on each side\n";
