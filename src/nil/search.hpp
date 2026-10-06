@@ -656,6 +656,31 @@ struct SearchOptions {
     // fact stays true in every deal -- and `--no-dd-age` is the control arm.
     bool dd_age = true;
 
+    // THE OCT 2026 ENGINE PASS (ROADMAP item 99): four changes inside the
+    // double-dummy engine, each with its control arm.  The engine answers the
+    // same question either way -- can N/S take `target` of the rest -- so every
+    // value, verdict, row and line is unchanged; only its node count moves.
+    // dd::Engine::search has the argument for each, and item 99 the numbers.
+    //
+    //   dd_order        DDS's heuristic move ordering (heuristic_sorting.cpp)
+    //                   in place of the engine's own short score.  --no-dd-order
+    //   dd_lowest_win   DDS's lowest-win rule: a refuted card whose rank is
+    //                   below every rank its refutation read stands for the
+    //                   mover's lower cards of that suit.  --no-dd-lowest-win
+    //   dd_win_by_rank  a trick's winner is a rank the proof relied on only if
+    //                   it beat another card of its suit (DDS 6.1).
+    //                   --no-dd-by-rank
+    //   dd_profiles     k-profiles per table header, 1..26 (was 12).
+    //                   --dd-profiles N
+    //
+    // Each turned off with the rest on, 88 random 13-card deals, values-only
+    // rows, tables kept: +33.9% / +12.8% / +2.9% / +3.6% wall on `0 3 2 3` and
+    // +146% / +46% / +7.9% / +13.6% on `1 3 2 3`, which is all engine.
+    bool dd_order = true;
+    bool dd_lowest_win = true;
+    bool dd_win_by_rank = true;
+    int dd_profiles = 26;
+
     // Ask the two every-line nil predicates once per trick boundary rather than
     // once per call site (Q7, Sept 2026): the doom check, the double-dummy
     // handoff's pin test and the full-mode static block all asked them of the
@@ -714,6 +739,21 @@ struct SearchOptions {
     // nodes and -3.2% wall on the single-nil deals of the per-card benchmark.
     // `--demoted-dd 0` is the control arm.
     int demoted_dd_min_t = 8;
+
+    // THE BROKEN-BAND CEILING (Oct 2026, ROADMAP item 99): with a single live
+    // nil and a window in the BROKEN band -- the question "can the opponents
+    // break the nil and hold the pair to x tricks?" -- bound the node by the
+    // pair's plain double-dummy count D (one engine probe): a broken outcome
+    // leaves the pair at least D, so the value is at most K*K - K*D, and the
+    // node fails low whenever D > x.  It is the upper half of
+    // dd_one_live_bound, which is off for this shape because its other half
+    // (the safe band, now A4's) and its every-depth probes lost on the slowest
+    // deals; with the faster engine of item 99 and a floor on the tricks left,
+    // this half pays.  Runs at boundaries with at least this many tricks left;
+    // 0 is off.  Same answers.  `--broken-dd 0` is the control arm (+18.9%
+    // wall on the 88 single-nil deals of item 99, values-only); the sweep is
+    // at broken_dd_ceiling in search.cpp.
+    int broken_dd_min_t = 10;
 
     // Back up which card ranks a subtree's value actually depended on, and
     // record how coarse the resulting table entries would have been.

@@ -280,6 +280,7 @@ struct Ctx {
     bool m4_safe = true;
     bool m4_doom = true;
     int demoted_dd_min_t = 0;  // SearchOptions::demoted_dd_min_t (A4); 0 is off
+    int broken_dd_min_t = 0;   // SearchOptions::broken_dd_min_t (item 99); 0 is off
     // SearchOptions::pair_proofs: the one-of-two proofs where both of a pair's
     // bids are live.  See the block after M4 in search_core.
     bool pair_proofs = false;
@@ -1110,6 +1111,70 @@ bool demoted_dd_bound(Ctx& ctx, const State& st, int beta, int& value) {
     ctx.nodes += eng.stats().nodes - before;
     if (reach) return false;
     value = -K * x;  // D' <= x, so the value is at least -K * x, which is >= beta
+    return true;
+}
+
+// THE BROKEN-BAND CEILING (Oct 2026, ROADMAP item 99;
+// SearchOptions::broken_dd_min_t).
+//
+// A single live nil, the default direction, a trick boundary, and a window in
+// the BROKEN band: alpha >= K*K - K*t, so the question is "can the opponents
+// break the nil AND hold the pair to x tricks?", x = floor((K*K - alpha) / K)
+// rounded the way `need` is below.  Let D be the pair's plain double-dummy
+// count, the nil being just another card.  Then the value is at most K*K - K*D,
+// and the node fails low whenever D > x.
+//
+// WHY.  This is dd_one_live_bound's upper half, and its argument: if the value
+// is a broken one with the pair taking F, the opponents have a strategy that
+// breaks the nil and holds the pair to F against every defence -- in
+// particular against the pair's double-dummy strategy, which takes at least D
+// whatever the opponents do -- so F >= D, and K*K - K*F <= K*K - K*D.  A safe
+// value is at most 0, below every window this gate admits.
+//
+// WHY IT EARNS ITS PROBE NOW.  The full dd_one_live_bound is off for a single
+// nil: with the old engine, a probe at every one-live boundary cost the
+// slowest deals 156 s -> 239 s.  Its lower half is A4's job, done tighter by
+// the demoted count.  This half alone, with the item-99 engine (3.5x faster on
+// `1 3 2 3`, which is all engine) and a floor on the tricks left, was swept
+// on the 88 single-nil deals of the Oct 2026 benchmark (values-only rows,
+// tables kept, lab build), against the ceiling off (56.9 s):
+//
+//     every depth   -5.5%    median 0.20 -> 0.11 s   s4-05 20.0 -> 27.2 s
+//     from t >= 4   -2.6%
+//     from t >= 7   -11.8%
+//     from t >= 10  -15.0%   median 0.20 -> 0.11 s   s4-05 20.0 -> 22.4 s  <- default
+//     from t >= 11  -14.3%
+//     from t >= 12  -13.6%
+//
+// Most of the doomed deals gain a lot (s3-10 3.5 -> 1.5 s, s3-18 2.2 -> 0.9 s,
+// s1-36 1.0 -> 0.2 s); the slowest deal pays 12% for probes that rarely cut on
+// it, because its broken outcome costs the opponents nothing over plain double
+// dummy at the top of the tree.
+//
+// Returns true and sets `value` when it cuts.  Fail-soft, stored nowhere, and
+// a band bound in the A4 sense -- never fed to dd_pinned_offset or the doom
+// charge, which this bound does not touch.
+bool broken_dd_ceiling(Ctx& ctx, const State& st, int alpha, int& value) {
+    const int t = count_cards(st.hands[st.leader]);
+    const int K = -ctx.secondary_weight;
+    const long long P = ctx.primary_weight;
+    // value <= P - K*D <= alpha  <=>  D >= ceil((P - alpha) / K)
+    const long long num = P - alpha;
+    const long long need = num <= 0 ? 0 : (num + K - 1) / K;
+    if (need > t) return false;  // not even every trick would be enough
+    if (need > 0) {
+        dd::Engine& eng = dd::engine();
+        const std::uint64_t before = eng.stats().nodes;
+        const int nil = ctx.nil_seat;
+        const bool nil_ns = (nil & 1) == 0;
+        const bool reach = nil_ns ? eng.ns_reach(st.hands, st.leader, st.broken,
+                                                 static_cast<int>(need), nullptr)
+                                  : !eng.ns_reach(st.hands, st.leader, st.broken,
+                                                  t - static_cast<int>(need) + 1, nullptr);
+        ctx.nodes += eng.stats().nodes - before;
+        if (!reach) return false;
+    }
+    value = static_cast<int>(P - static_cast<long long>(K) * need);  // <= alpha
     return true;
 }
 
@@ -2815,6 +2880,26 @@ int search_core(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
         }
     }
 
+    // The broken-band ceiling (item 99; argument and sweep at broken_dd_ceiling):
+    // one live nil in the plain single-nil objective, default direction, at a
+    // boundary deep enough to be worth a probe, and a window already inside
+    // the broken band.  --dd-live-bounds asks the full bound below instead.
+    if (ctx.broken_dd_min_t > 0 && st.trick_len == 0 && ctx.dd_engine && !ctx.dd_live_bounds &&
+        !ctx.multi_nil && !ctx.opposing && !ctx.conjunction && !ctx.value_is_nil_tricks &&
+        ctx.primary_weight > 0 && ctx.secondary_weight < 0 &&
+        ((ctx.nil_mask >> ctx.nil_seat) & 1) && !(st.nils_broken & (1u << ctx.nil_seat))) {
+        const int t = count_cards(st.hands[st.leader]);
+        if (t >= ctx.broken_dd_min_t && alpha >= ctx.primary_weight + ctx.secondary_weight * t) {
+            int bound = 0;
+            if (broken_dd_ceiling(ctx, st, alpha, bound)) {
+                best_move = first_legal_move(st);
+                if constexpr (TRACK)
+                    *essential = st.hands[0] | st.hands[1] | st.hands[2] | st.hands[3];
+                return bound;
+            }
+        }
+    }
+
     if (ctx.dd_live_bounds && st.trick_len == 0 &&
         count_cards(st.hands[st.leader]) >= ctx.dd_live_min_t) {
         int bound = 0;
@@ -3314,6 +3399,7 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
     ctx.multi_live_proofs = opts.multi_live_proofs;
     ctx.pair_proofs = opts.pair_proofs;
     ctx.demoted_dd_min_t = opts.demoted_dd_min_t;
+    ctx.broken_dd_min_t = opts.broken_dd_min_t;
     ctx.m4_safe = opts.adversarial_safe;
     ctx.m4_doom = opts.adversarial_doom;
     // MODE_FULL only.  The nil question asks whether a bidder can be made to
@@ -3458,6 +3544,10 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
     if (opts.dd_engine) {
         dd::engine().set_huge_pages(opts.huge_pages);
         dd::engine().set_prefetch(opts.dd_prefetch);
+        dd::engine().set_dds_order(opts.dd_order);
+        dd::engine().set_lowest_win(opts.dd_lowest_win);
+        dd::engine().set_win_by_rank(opts.dd_win_by_rank);
+        dd::engine().set_profile_cap(opts.dd_profiles);
         dd::engine().new_solve(opts.dd_age);
     }
 

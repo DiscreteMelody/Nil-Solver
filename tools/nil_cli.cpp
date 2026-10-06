@@ -118,6 +118,17 @@ void usage(const char* argv0) {
         << "                          time (same answer, same nodes; a control arm)\n"
         << "  --no-dd-age             keep the engine's table entries from earlier solves\n"
         << "                          on equal terms (same answer; a control arm)\n"
+        << "  --no-dd-order           order the engine's moves by its own short score,\n"
+        << "                          not DDS's weights (same answer; a control arm)\n"
+        << "  --no-dd-lowest-win      search every engine move rather than skip those a\n"
+        << "                          refuted lower card stands for (same answer)\n"
+        << "  --no-dd-by-rank         record every trick winner in the engine's proofs,\n"
+        << "                          not only those that won by rank (same answer)\n"
+        << "  --dd-profiles N         k-profiles per engine table header, 1..26\n"
+        << "                          (default 26; 12 is the old engine; same answer)\n"
+        << "  --broken-dd N           single nil: bound broken-band boundaries by the\n"
+        << "                          pair's double-dummy count from N tricks up\n"
+        << "                          (default 10; 0 off; same answer)\n"
         << "  --no-boundary-facts     re-ask the nil proofs at every call site of a\n"
         << "                          boundary (same answer, same nodes; a control arm)\n"
         << "  --values-only           --moves: decode each card's counts from its value\n"
@@ -415,6 +426,14 @@ int main(int argc, char** argv) {
             opts.dd_prefetch = false;
         } else if (arg == "--no-dd-age") {
             opts.dd_age = false;
+        } else if (arg == "--no-dd-order") {
+            opts.dd_order = false;
+        } else if (arg == "--no-dd-lowest-win") {
+            opts.dd_lowest_win = false;
+        } else if (arg == "--no-dd-by-rank") {
+            opts.dd_win_by_rank = false;
+        } else if (arg == "--dd-profiles" && i + 1 < argc) {
+            opts.dd_profiles = std::atoi(argv[++i]);
         } else if (arg == "--no-boundary-facts") {
             opts.boundary_facts = false;
         } else if (arg == "--values-only") {
@@ -429,6 +448,8 @@ int main(int argc, char** argv) {
             opts.twin_dd_live_min_t = std::atoi(argv[++i]);
         } else if (arg == "--demoted-dd" && i + 1 < argc) {
             opts.demoted_dd_min_t = std::atoi(argv[++i]);
+        } else if (arg == "--broken-dd" && i + 1 < argc) {
+            opts.broken_dd_min_t = std::atoi(argv[++i]);
         } else if (arg == "--no-dd-engine") {
             opts.dd_engine = false;
         } else if (arg == "--no-canonical-pv") {

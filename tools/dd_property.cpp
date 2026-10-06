@@ -34,6 +34,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <random>
+#include <string>
 #include <vector>
 
 #include "nil/cards.hpp"
@@ -202,12 +203,37 @@ void deal_low_cards_again(const Hand h[4], Hand out[4], std::mt19937& rng) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    const int cases = argc > 1 ? std::atoi(argv[1]) : 2000;
-    const int max_tricks = argc > 2 ? std::atoi(argv[2]) : 5;
-    const unsigned seed = argc > 3 ? static_cast<unsigned>(std::atoi(argv[3])) : 7u;
-    const int variants = argc > 4 ? std::atoi(argv[4]) : 0;
+    // Positional arguments first; the engine's Oct 2026 switches (ROADMAP item
+    // 99) may follow, so that each change can be held against brute force with
+    // it off as well as on -- the default run is the ON arm.
+    std::vector<const char*> pos;
+    bool dds_order = true, lowest_win = true, by_rank = true;
+    int profiles = dd::Engine::PROFILES;
+    for (int i = 1; i < argc; ++i) {
+        const std::string a = argv[i];
+        if (a == "--no-dd-order") {
+            dds_order = false;
+        } else if (a == "--no-dd-lowest-win") {
+            lowest_win = false;
+        } else if (a == "--no-dd-by-rank") {
+            by_rank = false;
+        } else if (a == "--dd-profiles" && i + 1 < argc) {
+            profiles = std::atoi(argv[++i]);
+        } else {
+            pos.push_back(argv[i]);
+        }
+    }
+    const int np = static_cast<int>(pos.size());
+    const int cases = np > 0 ? std::atoi(pos[0]) : 2000;
+    const int max_tricks = np > 1 ? std::atoi(pos[1]) : 5;
+    const unsigned seed = np > 2 ? static_cast<unsigned>(std::atoi(pos[2])) : 7u;
+    const int variants = np > 3 ? std::atoi(pos[3]) : 0;
     std::mt19937 rng(seed);
     dd::engine().resize(16);
+    dd::engine().set_dds_order(dds_order);
+    dd::engine().set_lowest_win(lowest_win);
+    dd::engine().set_win_by_rank(by_rank);
+    dd::engine().set_profile_cap(profiles);
 
     int failures = 0;
     int unbroken_positions = 0;

@@ -468,6 +468,12 @@ void usage(const char* argv0) {
               << "  --no-huge-pages   do not ask for 2 MiB pages for the tables\n"
               << "  --no-dd-prefetch  read the engine's table profiles one miss at a time\n"
               << "  --no-dd-age       no aging in the engine's table across solves\n"
+              << "  --no-dd-order     the engine's own move score, not DDS's weights\n"
+              << "  --no-dd-lowest-win  no DDS lowest-win skipping in the engine\n"
+              << "  --no-dd-by-rank   every trick winner pinned in the engine's proofs\n"
+              << "  --dd-profiles N   k-profiles per engine header (default 26, was 12)\n"
+              << "  --broken-dd N     single nil: broken-band double-dummy ceiling from\n"
+              << "                    N tricks up (default 10; 0 off)\n"
               << "  --no-boundary-facts  re-ask the nil proofs at every call site\n"
               << "  --values-only     --check-moves rows decoded from their values\n"
               << "  --no-row-order    --check-moves rows scored in canonical order\n"
@@ -781,6 +787,14 @@ int main(int argc, char** argv) {
             opts.dd_prefetch = false;
         } else if (arg == "--no-dd-age") {
             opts.dd_age = false;
+        } else if (arg == "--no-dd-order") {
+            opts.dd_order = false;
+        } else if (arg == "--no-dd-lowest-win") {
+            opts.dd_lowest_win = false;
+        } else if (arg == "--no-dd-by-rank") {
+            opts.dd_win_by_rank = false;
+        } else if (arg == "--dd-profiles" && i + 1 < argc) {
+            opts.dd_profiles = std::atoi(argv[++i]);
         } else if (arg == "--no-boundary-facts") {
             opts.boundary_facts = false;
         } else if (arg == "--values-only") {
@@ -795,6 +809,8 @@ int main(int argc, char** argv) {
             opts.twin_dd_live_min_t = std::atoi(argv[++i]);
         } else if (arg == "--demoted-dd" && i + 1 < argc) {
             opts.demoted_dd_min_t = std::atoi(argv[++i]);
+        } else if (arg == "--broken-dd" && i + 1 < argc) {
+            opts.broken_dd_min_t = std::atoi(argv[++i]);
         } else if (arg == "--no-dd-engine") {
             opts.dd_engine = false;
         } else if (arg == "--no-settled-tricks") {

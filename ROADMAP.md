@@ -38,6 +38,7 @@ expensive node. Read items 11 and 31 in that light.
 
 | | Optimization | Landed | Effect |
 |---|---|---|---|
+| ✅ | ~~Single nil on the bot's call: DDS's move ordering, lowest-win, by-rank winners and 26 profiles in the double-dummy engine; the broken-band ceiling (item 99)~~ | Oct 2026 | **THE ENGINE WAS HALF OF THE SINGLE-NIL CALL AND ALL OF `1 3 2 3`, AND ITS GAP TO DDS WAS THE MOVE ORDER.** Against DDS built here with a node counter, 68.1M nodes to its 4.7M on 30 root counts; DDS without its ordering takes x54. So the engine now orders by DDS's own weights (heuristic_sorting.cpp, case for case), skips lowest-win siblings, counts a trick's winner as relevant only when it won by rank, and keeps 26 profiles per header: 7.9M on the same counts. In the general search, with one nil live and a broken-band window from 10 tricks up, the pair's plain double-dummy count is a ceiling (one probe). On 88 random deals, in-process, values-only rows: `0 3 2 3` 77.5 -> 45.1 s (-42%), mean 0.88 -> 0.51 s, 75 -> 82 under 1 s; default rows -36%; `1 3 2 3` -71%; the 400-deal `nil13_verdict` -60%; twins -10%, one bid per side -15/-16%, three nils -4%. Every row byte-identical. Five switches, CLI and ctest only (the ABI flag word is full). s4-05 (20.8 s) is what is left. See item 99 |
 | ✅ | ~~Three nils: twins on one side, a lone bid and its lean on the other (item 97)~~ | Oct 2026 | **A NEW SHAPE, NOT AN OPTIMIZATION -- and it rides on the opposed machinery rather than beside it.** `--seats 0 0 3 0`: E/W both bid, N bid, S's 3 or 2 is the lone side's lean. The objective is T's conversion rule as a ladder: a broken twin takes the lean opposite the lone side's partner (-> one bid per side, strictly opposed), a broken lone bid makes its side two opponents (-> the twin shape); T placed "all three make" so the ladder is lexicographic, `2d + n` under lean 3 and `3n + d` under lean 2, the twins' rank 5 minus it -- zero-sum by construction. Live bids only; the caller converts after a break. Searched through `Ctx::opposing` with the outcome rank as a 16-entry table and item 79's reach tables indexed by mask; two-bid node counts identical to HEAD. 112 oracle rows with eleven control arms, an oracle crosscheck of every root card, and a re-solve-from-the-converted-roles check of the conversion rule itself. Per-card at 13 cards it costs what its hardest converted subgame costs: 91.6 s on the 12 seed-1 deals against 90.3 s for the twin shape alone, the slowest deal being the twin shape's own 70 s deal. See item 97 |
 | ✅ | ~~Move ordering in the minimise direction: the shed order for every seat without a live bid, 6b off the front against a single nil~~ | Oct 2026 minimise-direction study | **THE TRICK ORDER RAN IN BOTH DIRECTIONS, AND IN THIS ONE IT IS BACKWARDS.** Nothing in the ordering read `minimise_own_tricks`, so under `--secondary min` -- each pair sheds what it can; the opponents' two interests (break the nil, then hand the nil side tricks) point the same way as their own shedding -- every seat without a live bid tried first the card it least wants. On 3,000 generated positions labelled by the per-card call in BOTH directions, the trick order put an optimal card first on 69-80% of the non-trivial ones by seat in the default direction and 34-43% in this one (9.5% following suit with no live bid -- canonical ascending order did better); in 13-card searches the first move cut at 75.9% of cut nodes. And the double-dummy handoff is off in this direction (`configure` needs the far side's tricks to carry a positive weight), so the misere tail after a broken nil -- 62% of the nodes with a choice -- was general search, ordered the wrong way round: on the same deals the minimise direction cost ~16x the default direction's nodes. **METHOD** (MOVE_ORDERING.md; the tools stay outside the branch): a fixed-seed generator reaching every position by legal play (1-13 cards, 0-3 on the trick, every seat, single/dead/partner/opposed, ten deal styles); ~16,000 positions labelled by the per-card call; 48,586 in-search samples with every legal move searched cold under the node's own window; single features, hand-built rule lists and fitted linear scores, trained and tested on different deals; then the solver A/B, one binary, arms interleaved, every row compared. **WHAT SHIPPED** (`shed_order_moves`, search.cpp; minimise direction, MODE_FULL, rides on trick_order): following suit, the losing cards highest first, then the winners cheapest first; void, the cards that do not win highest first across suits, then the winners highest first; on lead a score (+2 lowest card held in the suit, -3 the suit's top card, -3 an opponent void in it, +2 partner void in it, +1 singleton, -1 spade); and 6b's attack no longer first against a SINGLE nil (it stays first when the live bid is one of two). The same order for both pairs: best-first 28%/26% for the two pairs in the misere region before, 80%/82% after. Cheaper per call than the trick order (48.6 against 63.0 ns over 44,857 in-search states). **MEASURED**, per-card full scoring, values-only rows: **32 13-card deals (all shapes) 7,912.7M -> 631.6M nodes (-92.0%), 1,101.5 -> 63.0 s (-94.3%), median 9.73 -> 0.80 s, 3 -> 18 under a second, all 32 faster (the least x0.33), the slowest 339 -> 20.5 s; MTD probes 811 -> 812.** **40 held-out 13-card deals (never used for tuning; two reps) 15,675.3M -> 830.1M (-94.7%), 1,922.6 -> 70.1 s (-96.4%), median 5.00 -> 0.72 s, 8 -> 22 under a second, 20 -> 5 over five seconds, all 40 faster (the least x0.67), the slowest 1,043.5 -> 14.1 s.** 200 positions at 10-12 cards -87.7% nodes / -90.6% wall (193 better, 5 worse); 1,500 at 4-9 cards -71.6% / -75.5%; 1,500 at 1-3 cards -11.2% nodes. First-move cuts 75.9% -> 95.8% at 13 cards. **REJECTED ON THE WAY**, each on the solver: dumping high on partner's trick, winning with the highest card, a spade first when dumping (all three better up to 12 cards, worse at 13: dropping them with 6b gated was -25.5% over 88 13-card deals, 75 better / 10 worse; gating them by tricks left lost at both sizes); the cover overtaking a winning live partner first (-6.3% at 13 cards without it); 6b removed in the two-bid shapes too (-0.6%/-3.7%/+4.2%, not changed); ruffing low (+1.8%); a bonus for discarding the suit's top card (+0.1%); leading low where an opponent must overtake (+8.3%). **KEPT**, measured in this direction: the killer second (+4.1%/+4.2% without it), the row order (neutral), 6a/6d (97-99.8% first-move cut), the live bidder's suit rotation. **CHECKED**: differential against HEAD on 7,700 generated positions (6,000 minimise and 1,500 default at 1-8 cards, 200 minimise at 9-11): per-card rows with lines, plain solve with line, fast verdict, and values-only rows -- byte-identical; ctest 73/73 with the new arms `corpus_no_shed_order`, `corpus_shed_single_attack`, `corpus_multinil_no_shed_order` and a unit section (56 per-card solves at 7 cards in seven shapes: rows and lines identical with the order on, off and 6b back in front; MODE_FAST and the default direction identical node for node); `crosscheck.py` 400 positions, half minimise. **BANKED BASELINE MOVES**: positions full 226,244 -> 145,489 (-35.7%, its 270 `min` rows); `--no-shed-order` reproduces it exactly; the other eight unchanged. **NO ABI BIT**: `NIL_FLAG_NO_LIVE_ORDER` turns the shed order off with the trick order it rides on; `--no-shed-order` and `--shed-single-attack` exist in nil_cli, nil_bench and ctest. **WHERE THE REST IS**: the misere tail is still 56% of the 13-card nodes with a choice -- a misere double-dummy engine, not ordering, is the next lever in this direction; who leads next is what most remaining ordering failures share. **NOT MEASURED**: Windows/MSVC; one process per solve. | 73/73 |
 | ✅ | ~~The second Sept 2026 optimization pass: the deployment, the memory system, values-only rows, best-first rows, the demoted double-dummy bound, proofs in one-live-bid regions, an aging engine table~~ | Sept 2026, second pass | **MEASURED ON THE BOT'S CALL**, `solve_moves` in full mode, the 155 thirteen-card deals of the ordering study (40/24/24 `bench_random13` deals at seeds 1/3/4, 12 one-bid-per-side, 12 partner-nil, 35 pathological, the 8 `opposed13.txt` rows), long-lived processes interleaved deal by deal, Linux GCC 13 Release, Xeon (Cascade Lake, 33 MiB L3), one core. **HEAD -> this pass, values-only rows (`NIL_FLAG_FAST_LINE`): 229.5 s -> 143.2 s (-37.6%), median deal 355 -> 234 ms, 122 -> 134 under a second, 154 deals faster and none slower by 2%+; the slowest deal 38.8 -> 21.0 s.** Default rows (lines walked; every row, trick count and line byte-identical to HEAD): -23.7%. On 4 KiB pages (a Windows service without the large-page privilege): -31.2%. **With the engine's table kept across solves, as a pool worker keeps it** (every earlier benchmark cleared it, which hid a 19% production cost): 272.3 s -> 148.9 s (-45.3%); 120 determinizations of six positions -41.7%. **WHAT SHIPPED, each with its own switch and corpus arm**: (Q1) `NilSolverPool` defaults to the library's 512 MiB table instead of 32 MiB -- at 32 MiB the set took +85% wall and the slowest deal 189 s against 40 s; 1024 bought nothing. (Q5) both tables in demand-zero, page-aligned OS memory, with 2 MiB pages requested (`--no-huge-pages`): -3.0% steady state for the layout, -9.9% for the pages (139 deals faster, 6 slower), ~250 ms less per new process (ctest 203 s -> 77 s; `conjunction_crosscheck` 42.6 -> 1.1 s). (Q9b) the engine's profile scan requests every candidate bucket at once (`--no-dd-prefetch`): -1.3% on 4 KiB pages, nil on 2 MiB pages. (Q7) the every-line nil proofs asked once per boundary (`--no-boundary-facts`): node-identical, -0.5% instructions. (Q3) **values-only rows** (`--values-only`; `NIL_FLAG_FAST_LINE` on `nil_solve_moves`, `NilFlags.FastLine` in C#): each row's counts decoded from its exact value instead of a walked and replayed line, -17.8% wall, -16.7% nodes, 145 deals faster / 2 slower; `nil_tricks` is withheld, every other field identical row for row (rows whose mask the value cannot pin still walk their line). (Q4) rows scored best-first and reported canonically (`--no-row-order`): -4.8% wall, -4.9% nodes, a coin flip per deal carried by one pathological deal 14.1 -> 6.2 s. (M4) S11 and D1/D1b where exactly one bid of two is live (`--no-multi-live-proofs`): -4.4% wall, -7.7% nodes, all on the two-bid deals (one bid per side #4, the slowest deal, 24.5 -> 22.3 s; #6 2.1 -> 0.6 s); item 81's revival condition, met. (A4) **the nil-demoted double-dummy bound** on safe-band windows from 8 tricks up (`--demoted-dd 0` is off): the pair's double-dummy count with the nil's cards moved to the bottom of every suit bounds what a clean nil's side can take; -3.2% wall and -3.7% nodes on the single-nil deals, one deal 34.1M -> 9.8M nodes; threshold swept 4..12. (DD aging) the engine's entries carry the solve that stored them and stale ones are replaced first (`--no-dd-age`): with the table kept, 181.9 -> 149.5 s on 120 determinizations. **CHECKED**: every A/B compared every pinned row field of every arm (0 mismatches anywhere); the default rows byte-identical to HEAD including `nil_tricks` and lines; verify-only lab builds for M1 (0 of 1.08M firings wrong), M4 (0 of 9.2M) and A4 (0 of 6.55M); random-position hunters, 2-9 cards, seven seat shapes, both directions, a third mid-trick, every new bound on against all off: 0 differences in 112,000 solves plus their per-card rows in both modes; `dd_property` with an aging epoch per position, 3,000 positions to 6 tricks and 9,000 variants; ctest 70/70; `crosscheck.py`; baselines re-banked with causes in `tools/check_baselines.py`. **REJECTED, see "Evaluated and rejected"**: M1, Q8, partner-entry quick tricks, Q9a, LTO on GCC, cross-solve main-table reuse. **FOR THE SHIPPED DLL**: profile-guided optimization, measured once on GCC (trained on the seed-1 random deals of the same set, so optimistic): -5.5% wall, 104 deals faster / 21 slower, answers identical -- worth doing for the release build, never for an A/B arm. **NOT MEASURED**: anything on Windows/MSVC (MinGW cross-builds and links the DLL; MSVC itself, `/GL`, PGO there and large pages under the privilege are unmeasured); the shed direction beyond the corpus and the hunters. | 70/70 |
@@ -5095,6 +5096,176 @@ row's.
 **Not measured:** MSVC/Windows; the minimise direction at 13 cards (correct on
 the corpus, the arms and the crosschecks, not timed); seeds other than 1; one
 process per call (`bench_random13.py`'s protocol); PGO.
+
+### 99. Single nil on the bot's call: DDS's move ordering in the engine, and the broken-band ceiling — ⭐⭐⭐⭐ — **done, Oct 2026 (99a-99e); the slowest deal is not**
+
+**The task.** Wall time of `nil_solve_moves` in full mode on 13-card hands for a
+single nil -- `0 3 2 3`, and what the bot passes once the nil is set, `1 3 2 3`
+-- with twins, one bid per side and three nils as regression gates.
+Answer-neutral throughout.
+
+**The benchmark.** 88 random deals, `bench_random13` seeds 1, 3 and 4 (the
+first twelve are the earlier baseline's twelve, and its 3.35 s deal is s1-03),
+in both seatings; T's 400-deal `nil13_verdict.txt` with its own seats; the gates
+on 24 seed-1 deals. In-process, as `NilSolverPool` runs it: tables kept across
+solves, four warm-up deals first (the sandbox pays a first-touch cost for every
+new huge page), values-only rows -- `NilFlags.FastLine` -- and default rows as
+separate runs. HEAD and the patch ran side by side, one per core of a 2-vCPU
+sandbox; on deals with identical node counts the two arms differ by up to
++/-3% in total.
+
+**Where the time goes (HEAD, sampling profile and counters).**
+
+* **The double-dummy engine is 48% of the single-nil call's wall time**, and
+  all of `1 3 2 3`'s: once the nil is set, every boundary hands off at once.
+* **The engine against DDS itself** (github.com/dds-bridge/dds built here with
+  a node counter, bridge rules on 30 of these deals): 68.1M nodes for the 30
+  root counts against DDS's 4.7M, at about the same cost per node. Switching
+  DDS's own pieces off one at a time: quick and later tricks x1.7 nodes,
+  lowest-win x1.8, move ordering x54. The gap is the ordering.
+* **The slow single-nil deals are doomed nils.** Nine of the ten slowest end
+  with the nil broken: their rows' values sit in the broken band -- "can the opponents break the nil AND hold the pair to x?" --
+  where none of the static nil proofs speak, and the search's own MTD probes
+  descend through it a trick at a time.
+* **MTD probes that do not end a row** are 19% of the general search's nodes
+  on the 88 deals and 29% on the 400 (the first row's safe-band descent alone
+  is 186M of the 400's 1.75G). Not attacked here: seeding the first row from a
+  double-dummy count costs every easy deal a probe.
+
+**99a. DDS's move ordering in the engine** (`dd::Engine::set_dds_order`,
+`SearchOptions::dd_order`, `--no-dd-order`). The WeightAlloc functions of
+`heuristic_sorting.cpp`, case for case, with the trump fixed at spades: the
+moves listed as DDS lists them (class tops from the top down, suits in order,
+because two helpers read list positions), DDS's per-depth best lead and the
+table's stored lead as DDS reads them, the trick's top two cards as of its
+start. The argument and the encoding are at the section head in
+`ddtricks.cpp`. Ordering only.
+
+**99b. Lowest-win** (`set_lowest_win`, `--no-dd-lowest-win`). A refuted move
+whose rank is below every rank its refutation read stands for the mover's
+lower cards in that suit: they are skipped. No straddle repair is needed --
+the refutation's proof is the same position for every such card.
+
+**99c. A trick's winner joins the relevant ranks only when it won by rank**
+(`set_win_by_rank`, `--no-dd-by-rank`; DDS 6.1). A ruff or a lone card of the
+led suit won the trick whatever its rank, so its rank is not a fact the stored
+bound depends on; entries generalise over more positions.
+
+**99d. 26 k-profiles per table header** (`set_profile_cap`, `--dd-profiles N`;
+it was 12). One cache line. The measurement is at `Engine::PROFILES`.
+
+The engine alone, the 30 root counts, each change added in turn (nodes;
+"bridge" is spades broken from the start, "ours" unbroken, as a hand begins):
+
+| | bridge | ours |
+|---|---|---|
+| HEAD | 68.1M | 27.4M |
+| + 99a ordering | 17.2M | 9.0M |
+| + 99b lowest-win | 10.5M | 5.0M |
+| + 99c by rank | 8.6M | 4.4M |
+| + 99d 26 profiles | 7.9M | 4.2M |
+| DDS | 4.7M | -- |
+
+**99e. The broken-band ceiling** (`SearchOptions::broken_dd_min_t`,
+`--broken-dd T`, 10 by default). With a single live nil, a boundary with at
+least T tricks left and a window in the broken band: the pair's plain
+double-dummy count D bounds the node at `K*K - K*D` (one engine probe), so it
+fails low whenever D > x. The upper half of `dd_one_live_bound`, which stays
+off for this shape: its safe-band half is A4's, done tighter by the demoted
+count, and it was the half that cost. Argument and sweep at
+`broken_dd_ceiling` in `search.cpp`: -15.0% wall from 10 tricks, -5.5% at
+every depth, and the slowest deal pays +8-12% for probes that rarely cut on it.
+
+**Each switch off, everything else on** (88 deals, values-only; `0 3 2 3` |
+`1 3 2 3`):
+
+| arm | `0 3 2 3` | `1 3 2 3` |
+|---|---|---|
+| all on | 45.1 s, 331.7M | 7.9 s, 37.5M |
+| `--no-dd-order` | +33.9%, 420.5M | +145.9%, 109.0M |
+| `--no-dd-lowest-win` | +12.8%, 375.1M | +45.8%, 64.2M |
+| `--no-dd-by-rank` | +2.9%, 345.3M | +7.9%, 45.1M |
+| `--dd-profiles 12` | +3.6%, 343.4M | +13.6%, 45.7M |
+| `--broken-dd 0` | +18.9%, 414.5M | (does not apply; same nodes, -2.3%) |
+
+**RESULTS** (HEAD | patch):
+
+| shape, rows | total | mean | median | < 1 s | slowest | nodes |
+|---|---|---|---|---|---|---|
+| `0 3 2 3`, values-only, 88 | 77.5 \| 45.1 s (-41.8%) | 0.88 \| 0.51 | 0.29 \| 0.09 | 75 \| 82 | 26.6 \| 20.8 | 586 \| 332M |
+| `0 3 2 3`, default, 88 | 95.7 \| 61.4 s (-35.8%) | 1.09 \| 0.70 | 0.37 \| 0.18 | 71 \| 77 | 31.0 \| 24.3 | 716 \| 444M |
+| `1 3 2 3`, values-only, 88 | 27.2 \| 7.9 s (-71.1%) | 0.31 \| 0.09 | 0.11 \| 0.03 | 81 \| 87 | 7.1 \| 2.5 | 190 \| 38M |
+| `1 3 2 3`, default, 88 | 36.2 \| 11.4 s (-68.5%) | 0.41 \| 0.13 | 0.14 \| 0.05 | 80 \| 87 | 8.3 \| 2.9 | 244 \| 54M |
+| `nil13_verdict`, values-only, 400 | 557.4 \| 224.7 s (-59.7%) | 1.39 \| 0.56 | 0.34 \| 0.17 | 309 \| 354 | 87.4 \| 28.6 | 4082 \| 1788M |
+| `3 0 3 0`, values-only, 24 | 98.8 \| 88.7 s (-10.2%) | 4.12 \| 3.70 | 0.47 \| 0.33 | 15 \| 16 | 54.2 \| 54.3 | 760 \| 690M |
+| `0 3 2 0`, values-only, 24 | 27.8 \| 23.5 s (-15.4%) | 1.16 \| 0.98 | 0.86 \| 0.82 | 13 \| 15 | 4.8 \| 4.0 | 270 \| 239M |
+| `0 2 3 0`, values-only, 24 | 31.4 \| 26.3 s (-16.3%) | 1.31 \| 1.09 | 1.01 \| 0.77 | 11 \| 15 | 4.5 \| 4.1 | 288 \| 250M |
+| `0 0 3 0`, values-only, 24 | 112.3 \| 108.3 s (-3.6%) | 4.68 \| 4.51 | 1.16 \| 1.22 | 12 \| 11 | 53.2 \| 53.9 | 969 \| 928M |
+| `0 0 2 0`, values-only, 24 | 115.9 \| 111.6 s (-3.7%) | 4.83 \| 4.65 | 1.13 \| 1.04 | 11 \| 12 | 55.9 \| 56.4 | 1021 \| 984M |
+| `nil13_verdict`, default, 400 | 655.7 \| 298.6 s (-54.5%) | 1.64 \| 0.75 | 0.46 \| 0.27 | 278 \| 335 | 99.1 \| 34.1 | 4832 \| 2353M |
+| `3 0 3 0`, default, 24 | 113.5 \| 100.0 s (-11.8%) | 4.73 \| 4.17 | 0.55 \| 0.42 | 14 \| 16 | 55.5 \| 55.5 | 841 \| 755M |
+| `0 3 2 0`, default, 24 | 38.0 \| 32.7 s (-13.9%) | 1.59 \| 1.36 | 1.15 \| 1.10 | 11 \| 12 | 6.0 \| 5.8 | 349 \| 310M |
+| `0 2 3 0`, default, 24 | 41.1 \| 35.4 s (-13.8%) | 1.71 \| 1.47 | 1.30 \| 1.08 | 10 \| 12 | 5.9 \| 5.4 | 368 \| 322M |
+| `0 0 3 0`, default, 24 | 128.7 \| 121.4 s (-5.6%) | 5.36 \| 5.06 | 1.65 \| 1.47 | 10 \| 11 | 54.9 \| 55.2 | 1062 \| 1012M |
+| `0 0 2 0`, default, 24 | 124.6 \| 122.1 s (-2.0%) | 5.19 \| 5.09 | 1.42 \| 1.36 | 10 \| 11 | 55.1 \| 57.6 | 1109 \| 1063M |
+
+One process per call, as `bench_random13.py` runs it (the 12 seed-1 deals,
+default rows, both binaries on one core): `0 3 2 3` 5.2-5.5 s -> 2.7-2.8 s
+without the first call of each run, which pays 1.4-1.8 s of cold start
+whichever binary it is; 10 -> 11 of 12 under 1 s; s1-03 2.5-2.7 -> 1.24-1.29 s.
+`1 3 2 3` 2.62 -> 0.51 s, 11 -> 12 under 1 s.
+
+The baseline's twelve deals, `0 3 2 3` default rows: 5.60 -> 2.44 s, mean
+0.47 -> 0.20 s, 10 -> 11 of 12 under 1 s; s1-03 2.77 -> 1.20 s (values-only
+2.47 -> 0.92 s; `1 3 2 3` 1.35 -> 0.04 s). Without s4-05 the single-nil mean
+is 0.59 -> 0.28 s values-only and 0.74 -> 0.43 s default.
+
+Every row of every run is byte-identical between HEAD and the patch (a hash of
+each row's value, counts, mask and status and of the line). Slower by more than
+0.1 s on any deal, values-only: `nil13_verdict` #189 3.23 -> 3.61 s and #3
+1.99 -> 2.23 s, `0 3 2 3` s4-13 1.46 -> 1.69 s, `0 2 3 0` s1-04 2.39 -> 2.56 s,
+`0 0 3 0` s1-16 1.34 -> 1.44 s; default rows: `nil13_verdict` #189 3.53 ->
+3.91 s, #3 2.90 -> 3.04 s, #41 1.43 -> 1.53 s, `0 2 3 0` s1-11 1.42 -> 1.55 s,
+`0 0 2 0` s1-04 55.1 -> 57.6 s and s1-01 0.69 -> 0.90 s. Each has the same or
+fewer nodes, and the two `0 0 2 0` deals re-run alone on one core came out even
+(s1-04 55.4 / 57.5 s against HEAD's 55.6 / 56.2 s; s1-01 0.72 / 0.85 against
+0.72 / 0.74): the engine's ordering costs a little more per node, and where
+the general search dominates that is all that shows. `0 0 3 0` s1-22 0.97 ->
+1.04 s (values-only, -7% nodes) crosses the 1 s line.
+
+**Built, measured, rejected** (do not retry without new evidence):
+
+| idea | measured | why not |
+|---|---|---|
+| The nil-live engine: hand a single-live-nil boundary to a double-dummy-style search of "can the opponents break the nil and hold the pair to x", with the winning-rank table | correct (brute-force property test, the corpus), but +8% to +35% wall at every handoff depth (3, 5, 7, 13 tricks: 48.3 / 59.8 / 55.1 / 60.3 s against 44.8 s) | the general search's static nil proofs and its MTD-seeded table settle more per node than a second engine does; 99e takes the one bound that pays |
+| DDS's weights in the general search, for seats without a live bid | -17% nodes, +7.7% wall (45.2 -> 48.7 s); other variants +40-50% | the weights cost more per node than the nodes they save |
+| `dd_one_live_bound`, both halves, for a single nil | at HEAD +33% (77.1 -> 102.5 s); with 99a-d -1.2% overall but s4-05 19.7 -> 28.3 s; the safe-band half alone +4.4% | the safe-band half costs; 99e is the other half alone |
+| A4's floor at 4 or 6 tricks instead of 8 | -2.3% / -0.9% wall, -0.5% nodes | within noise |
+| A killer per depth and seat in the engine's old order | -33% nodes on the 30 root counts, but +12% and +18% on two of five slow deals | superseded by 99a, which carries DDS's own best lead per depth |
+| A 256 MiB engine table (64 MiB is the default) | -1.1% / -2.3% wall, -0.3% nodes | memory per worker for noise |
+| 58 profiles per header | -4% engine nodes | lost again in the longer scans |
+| Settling each row's nil verdict by MODE_FAST first | not built: s4-05's per-card MODE_FAST call alone is 8.1 s against its 20.8 s full call | the rows already get their band from the MTD probes |
+
+**What is left, in the order worth trying:**
+
+1. **s4-05** (`N:Q.K97.QT85.KQ642 KJ5.AT42.K632.95 A862.QJ863..AJT3
+   T9743.5.AJ974.87`, East leads; 20.8 s values-only, nine rows, the nil
+   broken with the pair on 6). Its broken outcome costs the opponents nothing
+   over plain double dummy near the root, so 99e's probes do not cut; the
+   cost is the general search proving the break against every defence.
+2. **The engine's quick tricks.** DDS's quick-tricks and later-tricks bounds
+   are still x1.7 nodes ahead of `quick_tricks()` here (7.9M against 4.7M
+   on the 30 root counts), and `1 3 2 3` is all engine.
+3. **The first row's MTD descent** (about a tenth of the 400-deal set's
+   nodes): a better first guess than 0 for the deals that need it, without
+   charging the easy deals a probe.
+4. **Parallel rows (A1).**
+
+**Not measured:** MSVC/Windows (never profiled); the minimise direction at 13
+cards (correct on the corpus, the arms, the crosschecks and the differential,
+not timed); one process per call beyond the 12 deals above; the 155-deal set
+itself (seeds 1, 3 and 4 are 88 of its deals); several solver threads sharing
+the machine; PGO; other CPUs.
 
 ## Suggested sequence
 

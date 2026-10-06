@@ -176,6 +176,917 @@ inline bool can_beat(Hand hand, CardId c, int led) {
     return true;
 }
 
+// ---- move ordering: DDS's heuristic weights (Oct 2026, ROADMAP item 99) ----
+//
+// WHY THIS IS HERE.  Profiling the per-card call on 88 random 13-card single-
+// nil deals put 48% of its wall time in this engine, and the call the bot makes
+// once its nil is down (`1 3 2 3`) is ALL engine.  Against DDS itself (built
+// from github.com/dds-bridge/dds with a node counter, bridge rules -- spades
+// trump, no breaking rule -- on 30 of those deals) this engine searched 68.1M
+// nodes for the root count where DDS searched 4.7M, at about the same cost per
+// node.  Turning
+// DDS's own pieces off one at a time said where its advantage lives:
+//
+//     DDS as shipped                      4.7M nodes
+//     quick tricks and later tricks off   8.2M    (x1.7)
+//     lowest-win skipping off             8.4M    (x1.8)
+//     move ordering off (low card first)  255.6M  (x54)
+//
+// and this engine's short score against no ordering at all was worth x12.6 on
+// the same positions.  So the weights below are DDS's, case for case: the
+// WeightAlloc functions of heuristic_sorting.cpp (Haglund and Hein; the DDS
+// repository is Apache-2.0 licensed), with the bridge-specific trump index
+// fixed at spades and nothing else changed.  Ordering only, so the engine's
+// answers cannot move; what moves is how soon a node finds its cutoff.
+// The same 30 root counts, each change of this pass added in turn (nodes;
+// "bridge" is spades broken from the start, as DDS plays, "ours" is spades
+// unbroken, as every Spades hand begins):
+//
+//                                         bridge     ours
+//     before this pass                    68.1M     27.4M
+//     + DDS's ordering (this section)     17.2M      9.0M
+//     + lowest-win skipping               10.5M      5.0M
+//     + trick winner by rank only          8.6M      4.4M
+//     + 26 profiles per header             7.9M      4.2M
+//
+// and with everything else on, taking the ordering back out costs x4.8 / x4.1
+// (38.2M / 17.1M).  The rest of the gap to DDS is its quick-tricks and later-
+// tricks bounds, which are stronger than quick_tricks() below.  See
+// SearchOptions::dd_order for what this does to the per-card call.
+//
+// THE ENCODING.  Ranks are DDS ranks, 2..14, with 0 for "none"; a rank set is
+// one suit's 13-bit lane, bit 0 the two, which is exactly DDS's bit_map_rank
+// layout -- so DDS's habit of comparing two hands' holdings as integers
+// ("rank_in_suit[rho] > rank_in_suit[partner]" means rho's top card is higher)
+// carries over unchanged.  `winner` and `second_best` are DDS's: the top two
+// cards of the suit AS THE TRICK BEGAN (DDS updates them only when a trick
+// completes), while holdings, lengths and `aggr` are the cards still in hand.
+// A move is one class of equal cards, as this engine generates them; its rank
+// is the class's TOP card, as DDS's groups are named, and it is played as the
+// class's lowest card, as this engine always plays it -- the two are the same
+// move.  Within a suit the classes are listed from the top down and the suits
+// in order, as DDS generates them, because two of the helpers (rank_forces_ace,
+// get_top_number) read positions in that list.
+// Ranks here are DDS ranks: 2..14, 0 meaning "none".  A rank set is the 13-bit
+// lane of one suit, bit 0 = the two, exactly DDS's bit_map_rank layout.
+
+struct OMove {
+    CardId card;   // the representative the engine plays (lowest of its class)
+    int suit;
+    int rank;      // DDS rank of the TOP card of the class
+    int seq;       // nonzero when the class has more than one card
+    Hand cls;      // the whole class
+    int weight;
+};
+
+struct OCtx {
+    // Current holdings, read on demand: most nodes are followers reading a
+    // handful of them, and building all sixteen lanes and their lengths for
+    // every node cost more than the weights themselves.
+    const Hand* h;
+    unsigned ris(int q, int s) const { return sbits(h[q], s); }
+    int len(int q, int s) const { return pop32(sbits(h[q], s)); }
+    unsigned aggr(int s) const { return sbits(h[0] | h[1] | h[2] | h[3], s); }
+    // At trick start: the top two cards of each suit and who holds them, and
+    // the ranks gone before this trick began.  Constant through a trick, so a
+    // lead computes them and its followers inherit them (Engine::Pos).
+    const TrickStart* ts;
+    int lead_hand, lead_suit, curr_hand, curr_trick;
+    int lead0_rank = 0, move1_rank = 0, move1_suit = 0, high1 = 0;
+    int move2_rank = 0, move2_suit = 0, high2 = 0;
+    CardId best_move = NO_CARD;     // killer for this depth (leads)
+    Hand best_move_tt = 0;          // class of the table's stored move (leads)
+};
+
+inline int o_hi(unsigned m) { return m ? top_bit(m) + 2 : 0; }
+inline int o_lo(unsigned m) { return m ? lowest_card(static_cast<Hand>(m)) + 2 : 0; }
+inline unsigned o_bit(int r) { return r >= 2 ? 1u << (r - 2) : 0u; }
+inline int o_rel_rank(unsigned aggr, int r) { return r >= 2 ? pop32(aggr >> (r - 2)) : 0; }
+constexpr int O_LHO[4] = {1, 2, 3, 0};
+constexpr int O_RHO[4] = {3, 0, 1, 2};
+constexpr int O_PART[4] = {2, 3, 0, 1};
+
+// k-th highest card (1-based) of `aggr` in suit s: its holder, or -1.
+inline int o_abs_hand(const OCtx& c, int s, unsigned aggr, int k) {
+    unsigned a = aggr;
+    for (int i = 1; i < k && a; ++i) a &= ~(1u << top_bit(a));
+    if (!a) return -1;
+    const unsigned b = 1u << top_bit(a);
+    for (int h = 0; h < 4; ++h)
+        if (c.ris(h, s) & b) return h;
+    return -1;
+}
+
+// DDS group_data for a rank set: runs of adjacent ranks, g = 0 the lowest.
+struct OGroups {
+    int last = -1;
+    int rank[13];
+    unsigned fullseq[13];
+    unsigned gap[13];
+};
+inline void o_groups(unsigned ris, OGroups& g) {
+    g.last = -1;
+    int r = 0;
+    while (r < 13) {
+        if (!((ris >> r) & 1u)) { ++r; continue; }
+        int lo = r;
+        while (r < 13 && ((ris >> r) & 1u)) ++r;
+        const int hi = r - 1;  // bit index of the run's top
+        ++g.last;
+        g.rank[g.last] = hi + 2;
+        g.fullseq[g.last] = ((2u << hi) - 1u) & ~((1u << lo) - 1u);
+        if (g.last == 0) {
+            g.gap[0] = 0;
+        } else {
+            const int prev_top = g.rank[g.last - 1] - 2;  // bit index
+            g.gap[g.last] = ((1u << lo) - 1u) & ~((2u << prev_top) - 1u);
+        }
+    }
+}
+
+int o_rank_forces_ace(const OCtx& c, const OMove* m, int n, unsigned cards4th) {
+    OGroups gd;
+    o_groups(cards4th, gd);
+    int g = gd.last;
+    const unsigned removed = c.ts->removed[c.lead_suit];
+    while (g >= 1 && (gd.gap[g] & removed) == gd.gap[g]) g--;
+    if (g <= 0) return -1;
+    const int secondRHO = gd.rank[g - 1];
+    if (secondRHO > c.move1_rank) {
+        int k = 0;
+        while (k < n && m[k].rank > secondRHO) k++;
+        if (k) return k - 1;
+    } else if (c.high1 == 1) {
+        int k = 0;
+        while (k < n && m[k].rank > c.move1_rank) k++;
+        if (k) return k - 1;
+    }
+    return -1;
+}
+
+void o_get_top_number(const OCtx& c, const OMove* m, int n, unsigned ris, int prank,
+                      int& top_number, int& mno) {
+    top_number = -10;
+    mno = 0;
+    while (mno < n - 1 && m[1 + mno].rank > prank) mno++;
+    OGroups gd;
+    o_groups(ris, gd);
+    int g = gd.last;
+    const unsigned removed = c.ts->removed[c.lead_suit] | o_bit(prank);
+    if (g < 0) {
+        top_number = -1;
+        return;
+    }
+    unsigned fullseq = gd.fullseq[g];
+    while (g >= 1 && (gd.gap[g] & removed) == gd.gap[g]) fullseq |= gd.fullseq[--g];
+    top_number = pop32(fullseq) - 1;
+}
+
+constexpr int TRUMP = 0;
+
+void o_trump0(const OCtx& c, OMove* m, int from, int to, int suit) {
+    const int lh = c.lead_hand;
+    const int L = O_LHO[lh], R = O_RHO[lh], P = O_PART[lh];
+    const int suitCount = c.len(lh, suit);
+    const int suit_count_lh = c.len(L, suit);
+    const int suit_count_rh = c.len(R, suit);
+    const unsigned aggr = c.aggr(suit);
+    const int countLH = (suit_count_lh == 0 ? c.curr_trick + 1 : suit_count_lh) << 2;
+    const int countRH = (suit_count_rh == 0 ? c.curr_trick + 1 : suit_count_rh) << 2;
+    const int suit_weight_d = -(((countLH + countRH) << 5) / 13);
+    for (int k = from; k < to; k++) {
+        int suit_bonus = 0;
+        bool win_move = false;
+        const int r_rank = o_rel_rank(aggr, m[k].rank);
+        if (suit != TRUMP && ((c.ris(L, suit) == 0 && c.ris(L, TRUMP) != 0) ||
+                              (c.ris(R, suit) == 0 && c.ris(R, TRUMP) != 0)))
+            suit_bonus = -12;
+        if (suit != TRUMP && c.len(P, suit) == 0 && c.len(P, TRUMP) > 0 && suit_count_rh > 0)
+            suit_bonus += 17;
+        if (c.ts->win_hand[suit] == R || c.ts->sec_hand[suit] == R) {
+            if (suit_count_rh != 1) suit_bonus += -12;
+        } else if (c.ts->win_hand[suit] == L && c.ts->sec_hand[suit] == P) {
+            if (c.len(P, suit) != 1) suit_bonus += 27;
+        }
+        if (suit != TRUMP && suitCount == 1 && c.len(lh, TRUMP) > 0 && c.len(P, suit) > 1 &&
+            c.ts->win_hand[suit] == P)
+            suit_bonus += 19;
+        int suit_weight_delta = suit_bonus + suit_weight_d;
+        if (c.ts->win_rank[suit] == m[k].rank) {
+            if (suit != TRUMP) {
+                if (c.len(P, suit) != 0 || c.len(P, TRUMP) == 0) {
+                    if ((c.len(L, suit) != 0 || c.len(L, TRUMP) == 0) &&
+                        (c.len(R, suit) != 0 || c.len(R, TRUMP) == 0))
+                        win_move = true;
+                } else if ((c.len(L, suit) != 0 || c.ris(P, TRUMP) > c.ris(L, TRUMP)) &&
+                           (c.len(R, suit) != 0 || c.ris(P, TRUMP) > c.ris(R, TRUMP)))
+                    win_move = true;
+            } else
+                win_move = true;
+        } else if (c.ris(P, suit) > (c.ris(L, suit) | c.ris(R, suit))) {
+            if (suit != TRUMP) {
+                if ((c.len(L, suit) != 0 || c.len(L, TRUMP) == 0) &&
+                    (c.len(R, suit) != 0 || c.len(R, TRUMP) == 0))
+                    win_move = true;
+            } else
+                win_move = true;
+        } else if (suit != TRUMP) {
+            if (c.len(P, suit) == 0 && c.len(P, TRUMP) != 0) {
+                if (c.len(L, suit) == 0 && c.len(L, TRUMP) != 0 && c.len(R, suit) == 0 &&
+                    c.len(R, TRUMP) != 0) {
+                    if (c.ris(P, TRUMP) > (c.ris(L, TRUMP) | c.ris(R, TRUMP))) win_move = true;
+                } else if (c.len(L, suit) == 0 && c.len(L, TRUMP) != 0) {
+                    if (c.ris(P, TRUMP) > c.ris(L, TRUMP)) win_move = true;
+                } else if (c.len(R, suit) == 0 && c.len(R, TRUMP) != 0) {
+                    if (c.ris(P, TRUMP) > c.ris(R, TRUMP)) win_move = true;
+                } else
+                    win_move = true;
+            }
+        }
+        const bool is_best = c.best_move != NO_CARD && (m[k].cls & card_bit(c.best_move));
+        const bool is_tt = (m[k].cls & c.best_move_tt) != 0;
+        if (win_move) {
+            if ((suit_count_lh == 1 && c.ts->win_hand[suit] == L) ||
+                (suit_count_rh == 1 && c.ts->win_hand[suit] == R))
+                m[k].weight = suit_weight_delta + 35 + r_rank;
+            else if (c.ts->win_hand[suit] == lh) {
+                if (c.ts->sec_hand[suit] == P)
+                    m[k].weight = suit_weight_delta + 48 + r_rank;
+                else if (c.ts->win_rank[suit] == m[k].rank)
+                    m[k].weight = suit_weight_delta + 31;
+                else
+                    m[k].weight = suit_weight_delta - 3 + r_rank;
+            } else if (c.ts->win_hand[suit] == P) {
+                if (c.ts->sec_hand[suit] == lh)
+                    m[k].weight = suit_weight_delta + 42 + r_rank;
+                else
+                    m[k].weight = suit_weight_delta + 28 + r_rank;
+            } else if (m[k].seq && m[k].rank == c.ts->sec_rank[suit])
+                m[k].weight = suit_weight_delta + 40;
+            else if (m[k].seq)
+                m[k].weight = suit_weight_delta + 22 + r_rank;
+            else
+                m[k].weight = suit_weight_delta + 11 + r_rank;
+            if (is_best)
+                m[k].weight += 55;
+            else if (is_tt)
+                m[k].weight += 18;
+        } else {
+            const int thirdBestHand = o_abs_hand(c, suit, aggr, 3);
+            if (c.ts->sec_hand[suit] == P && P == thirdBestHand)
+                suit_weight_delta += 20;
+            else if ((c.ts->sec_hand[suit] == lh && P == thirdBestHand && c.len(P, suit) > 1) ||
+                     (c.ts->sec_hand[suit] == P && lh == thirdBestHand && c.len(P, suit) > 1))
+                suit_weight_delta += 13;
+            if ((suit_count_lh == 1 && c.ts->win_hand[suit] == L) ||
+                (suit_count_rh == 1 && c.ts->win_hand[suit] == R))
+                m[k].weight = suit_weight_delta + r_rank + 2;
+            else if (c.ts->win_hand[suit] == lh) {
+                if (c.ts->sec_hand[suit] == P)
+                    m[k].weight = suit_weight_delta + 33 + r_rank;
+                else if (c.ts->win_rank[suit] == m[k].rank)
+                    m[k].weight = suit_weight_delta + 38;
+                else
+                    m[k].weight = suit_weight_delta - 14 + r_rank;
+            } else if (c.ts->win_hand[suit] == P)
+                m[k].weight = suit_weight_delta + 34 + r_rank;
+            else if (m[k].seq && m[k].rank == c.ts->sec_rank[suit])
+                m[k].weight = suit_weight_delta + 35;
+            else
+                m[k].weight = suit_weight_delta + 17 - m[k].rank;
+            if (is_best) m[k].weight += 18;
+        }
+    }
+}
+
+void o_nt0(const OCtx& c, OMove* m, int from, int to, int suit) {
+    const int lh = c.lead_hand;
+    const int L = O_LHO[lh], R = O_RHO[lh], P = O_PART[lh];
+    const unsigned aggr = c.aggr(suit);
+    const int suit_count_lh = c.len(L, suit);
+    const int suit_count_rh = c.len(R, suit);
+    const int countLH = (suit_count_lh == 0 ? c.curr_trick + 1 : suit_count_lh) << 2;
+    const int countRH = (suit_count_rh == 0 ? c.curr_trick + 1 : suit_count_rh) << 2;
+    int suit_weight_d = -(((countLH + countRH) << 5) / 19);
+    if (c.len(P, suit) == 0) suit_weight_d += -9;
+    for (int k = from; k < to; k++) {
+        int suit_weight_delta = suit_weight_d;
+        const int r_rank = o_rel_rank(aggr, m[k].rank);
+        const bool is_best = c.best_move != NO_CARD && (m[k].cls & card_bit(c.best_move));
+        const bool is_tt = (m[k].cls & c.best_move_tt) != 0;
+        if (c.ts->win_rank[suit] == m[k].rank ||
+            c.ris(P, suit) > (c.ris(L, suit) | c.ris(R, suit))) {
+            if (c.ts->sec_hand[suit] == R) {
+                if (suit_count_rh != 1) suit_weight_delta += -1;
+            } else if (c.ts->sec_hand[suit] == L) {
+                if (suit_count_lh != 1)
+                    suit_weight_delta += 22;
+                else
+                    suit_weight_delta += 16;
+            }
+            if ((c.ts->sec_hand[suit] != L || suit_count_lh == 1) &&
+                (c.ts->sec_hand[suit] != R || suit_count_rh == 1))
+                m[k].weight = suit_weight_delta + 45 + r_rank;
+            else
+                m[k].weight = suit_weight_delta + 18 + r_rank;
+            if (is_best)
+                m[k].weight += 126;
+            else if (is_tt)
+                m[k].weight += 32;
+        } else {
+            if (c.ts->win_hand[suit] == R || c.ts->sec_hand[suit] == R) {
+                if (suit_count_rh != 1) suit_weight_delta += -10;
+            } else if (c.ts->win_hand[suit] == L && c.ts->sec_hand[suit] == P) {
+                if (c.len(P, suit) != 1) suit_weight_delta += 31;
+            }
+            const int thirdBestHand = o_abs_hand(c, suit, aggr, 3);
+            if (c.ts->sec_hand[suit] == P && P == thirdBestHand)
+                suit_weight_delta += 35;
+            else if ((c.ts->sec_hand[suit] == lh && P == thirdBestHand && c.len(P, suit) > 1) ||
+                     (c.ts->sec_hand[suit] == P && lh == thirdBestHand && c.len(P, suit) > 1))
+                suit_weight_delta += 25;
+            if ((suit_count_lh == 1 && c.ts->win_hand[suit] == L) ||
+                (suit_count_rh == 1 && c.ts->win_hand[suit] == R))
+                m[k].weight = suit_weight_delta + 28 + r_rank;
+            else if (c.ts->win_hand[suit] == lh)
+                m[k].weight = suit_weight_delta - 17 + r_rank;
+            else if (!m[k].seq)
+                m[k].weight = suit_weight_delta + 12 + r_rank;
+            else if (m[k].rank == c.ts->sec_rank[suit])
+                m[k].weight = suit_weight_delta + 48;
+            else
+                m[k].weight = suit_weight_delta + 29 - r_rank;
+            if (is_best)
+                m[k].weight += 47;
+            else if (is_tt)
+                m[k].weight += 19;
+        }
+    }
+}
+
+void o_trump_notvoid1(const OCtx& c, OMove* m, int n) {
+    const int lh = c.lead_hand, ls = c.lead_suit;
+    const int P = O_PART[lh], R = O_RHO[lh];
+    const int max3rd = o_hi(c.ris(P, ls));
+    const int maxpd = o_hi(c.ris(R, ls));
+    const int min3rd = o_lo(c.ris(P, ls));
+    const int minpd = o_lo(c.ris(R, ls));
+    for (int k = 0; k < n; k++) {
+        bool win_move = false;
+        const int r_rank = o_rel_rank(c.aggr(ls), m[k].rank);
+        if (ls == TRUMP) {
+            if (maxpd > c.lead0_rank && maxpd > max3rd)
+                win_move = true;
+            else if (m[k].rank > c.lead0_rank && m[k].rank > max3rd)
+                win_move = true;
+        } else {
+            if (m[k].rank > c.lead0_rank && m[k].rank > max3rd) {
+                if (max3rd != 0 || c.len(P, TRUMP) == 0)
+                    win_move = true;
+                else if (maxpd == 0 && c.len(R, TRUMP) != 0 && c.ris(R, TRUMP) > c.ris(P, TRUMP))
+                    win_move = true;
+            } else if (maxpd > c.lead0_rank && maxpd > max3rd) {
+                if (max3rd != 0 || c.len(P, TRUMP) == 0) win_move = true;
+            } else if (c.lead0_rank > maxpd && c.lead0_rank > max3rd && c.lead0_rank > m[k].rank) {
+                if (maxpd == 0 && c.len(R, TRUMP) != 0) {
+                    if (max3rd != 0 || c.len(P, TRUMP) == 0)
+                        win_move = true;
+                    else if (c.ris(R, TRUMP) > c.ris(P, TRUMP))
+                        win_move = true;
+                }
+            } else if (maxpd == 0 && c.len(R, TRUMP) != 0)
+                win_move = true;
+        }
+        if (win_move) {
+            if (min3rd > m[k].rank)
+                m[k].weight = 40 + r_rank;
+            else if (maxpd > c.lead0_rank && c.ris(lh, ls) > c.ris(R, ls))
+                m[k].weight = 41 + r_rank;
+            else if (m[k].rank > c.lead0_rank) {
+                if (m[k].rank < maxpd)
+                    m[k].weight = 78 - m[k].rank;
+                else if (m[k].rank > max3rd)
+                    m[k].weight = 73 - m[k].rank;
+                else if (m[k].seq)
+                    m[k].weight = 62 - m[k].rank;
+                else
+                    m[k].weight = 49 - m[k].rank;
+            } else if (maxpd > 0)
+                m[k].weight = 47 - m[k].rank;
+            else
+                m[k].weight = 40 - m[k].rank;
+        } else if (m[k].rank < min3rd || m[k].rank < minpd)
+            m[k].weight = -9 + r_rank;
+        else if (m[k].rank < c.lead0_rank)
+            m[k].weight = -16 + r_rank;
+        else if (m[k].seq)
+            m[k].weight = 22 - m[k].rank;
+        else
+            m[k].weight = 10 - m[k].rank;
+    }
+}
+
+void o_nt_notvoid1(const OCtx& c, OMove* m, int n) {
+    const int lh = c.lead_hand, ls = c.lead_suit;
+    const int P = O_PART[lh], R = O_RHO[lh];
+    const int max3rd = o_hi(c.ris(P, ls));
+    const int maxpd = o_hi(c.ris(R, ls));
+    if (maxpd > c.lead0_rank && maxpd > max3rd) {
+        for (int k = 0; k < n; k++) m[k].weight = -m[k].rank;
+    } else {
+        const int min3rd = o_lo(c.ris(P, ls));
+        const int minpd = o_lo(c.ris(R, ls));
+        for (int k = 0; k < n; k++) {
+            const int r_rank = o_rel_rank(c.aggr(ls), m[k].rank);
+            if (m[k].rank > c.lead0_rank && m[k].rank > max3rd)
+                m[k].weight = 81 - m[k].rank;
+            else if (min3rd > m[k].rank || minpd > m[k].rank)
+                m[k].weight = -3 + r_rank;
+            else if (m[k].rank < c.lead0_rank)
+                m[k].weight = -11 + r_rank;
+            else if (m[k].seq)
+                m[k].weight = 10 + r_rank;
+            else
+                m[k].weight = 13 - m[k].rank;
+        }
+    }
+}
+
+void o_trump_void1(const OCtx& c, OMove* m, int from, int to, int suit) {
+    const int lh = c.lead_hand, ls = c.lead_suit, ch = c.curr_hand;
+    const int P = O_PART[lh], R = O_RHO[lh];
+    const int suitCount = c.len(ch, suit);
+    int suitAdd;
+    if (ls == TRUMP) {
+        if (c.ris(R, ls) > (c.ris(P, ls) | o_bit(c.lead0_rank)))
+            suitAdd = (suitCount << 6) / 44;
+        else {
+            suitAdd = (suitCount << 6) / 36;
+            if (suitCount == 2 && c.ts->sec_hand[suit] == ch) suitAdd += -4;
+        }
+        for (int k = from; k < to; k++) m[k].weight = -m[k].rank + suitAdd;
+    } else if (suit != TRUMP) {
+        if (c.len(P, ls) != 0) {
+            if (c.ris(R, ls) > (c.ris(P, ls) | o_bit(c.lead0_rank)))
+                suitAdd = 60 + (suitCount << 6) / 44;
+            else if (c.len(R, ls) == 0 && c.len(R, TRUMP) != 0)
+                suitAdd = 60 + (suitCount << 6) / 44;
+            else {
+                suitAdd = -2 + (suitCount << 6) / 36;
+                if (suitCount == 2 && c.ts->sec_hand[suit] == ch) suitAdd += -4;
+            }
+        } else if (c.len(R, ls) == 0 && c.ris(R, TRUMP) > c.ris(P, TRUMP))
+            suitAdd = 60 + (suitCount << 6) / 44;
+        else if (c.len(P, TRUMP) == 0 && c.ris(R, ls) > o_bit(c.lead0_rank))
+            suitAdd = 60 + (suitCount << 6) / 44;
+        else {
+            suitAdd = -2 + (suitCount << 6) / 36;
+            if (suitCount == 2 && c.ts->sec_hand[suit] == ch) suitAdd += -4;
+        }
+        for (int k = from; k < to; k++) m[k].weight = -m[k].rank + suitAdd;
+    } else if (c.len(P, ls) != 0) {
+        suitAdd = (suitCount << 6) / 44;
+        for (int k = from; k < to; k++) m[k].weight = 24 - m[k].rank + suitAdd;
+    } else if (c.len(R, ls) == 0 && c.len(R, TRUMP) != 0 && c.ris(R, TRUMP) > c.ris(P, TRUMP)) {
+        suitAdd = (suitCount << 6) / 44;
+        for (int k = from; k < to; k++) m[k].weight = 24 - m[k].rank + suitAdd;
+    } else {
+        for (int k = from; k < to; k++) {
+            if (o_bit(m[k].rank) > c.ris(P, TRUMP)) {
+                suitAdd = (suitCount << 6) / 44;
+                m[k].weight = 24 - m[k].rank + suitAdd;
+            } else {
+                suitAdd = (suitCount << 6) / 36;
+                if (suitCount == 2 && c.ts->sec_hand[suit] == ch) suitAdd += -4;
+                m[k].weight = 15 - m[k].rank + suitAdd;
+            }
+        }
+    }
+}
+
+void o_nt_void1(const OCtx& c, OMove* m, int from, int to, int suit) {
+    const int lh = c.lead_hand, ls = c.lead_suit, ch = c.curr_hand;
+    const int P = O_PART[lh], R = O_RHO[lh];
+    const int suitCount = c.len(ch, suit);
+    if (c.ris(R, ls) > (c.ris(P, ls) | o_bit(c.lead0_rank))) {
+        int suitAdd = (suitCount << 6) / 23;
+        if (suitCount == 2 && c.ts->sec_hand[suit] == ch)
+            suitAdd += -2;
+        else if (suitCount == 1 && c.ts->win_hand[suit] == ch)
+            suitAdd += -3;
+        for (int k = from; k < to; k++) m[k].weight = -m[k].rank + suitAdd;
+    } else {
+        int suitAdd = (suitCount << 6) / 33;
+        if (suitCount == 2 && c.ts->sec_hand[suit] == ch)
+            suitAdd += -6;
+        else if (suitCount == 1 && c.ts->win_hand[suit] == ch)
+            suitAdd += -8;
+        for (int k = from; k < to; k++) m[k].weight = -m[k].rank + suitAdd;
+    }
+}
+
+void o_trump_notvoid2(const OCtx& c, OMove* m, int n) {
+    const int lh = c.lead_hand, ls = c.lead_suit;
+    const int R = O_RHO[lh];
+    const unsigned cards4th = c.ris(R, ls);
+    const int max4th = o_hi(cards4th);
+    const int min4th = o_lo(cards4th);
+    const int max3rd = m[0].rank;
+    if (ls == TRUMP) {
+        if (c.high1 == 0 && c.lead0_rank > max4th) {
+            for (int k = 0; k < n; k++) m[k].weight = -m[k].rank;
+            return;
+        } else if (max3rd < min4th || max3rd < c.move1_rank) {
+            for (int k = 0; k < n; k++) m[k].weight = -m[k].rank;
+            return;
+        } else if (max3rd > max4th) {
+            for (int k = 0; k < n; k++) {
+                if (m[k].rank > max4th && m[k].rank > c.move1_rank)
+                    m[k].weight = 58 - m[k].rank;
+                else
+                    m[k].weight = -m[k].rank;
+            }
+        } else {
+            const int kBonus = o_rank_forces_ace(c, m, n, cards4th);
+            for (int k = 0; k < n; k++) m[k].weight = -m[k].rank;
+            if (kBonus != -1) m[kBonus].weight += 20;
+            return;
+        }
+    } else if (c.move1_suit == TRUMP) {
+        for (int k = 0; k < n; k++) m[k].weight = -m[k].rank;
+        return;
+    } else if (c.high1 == 0) {
+        if (max4th == 0) {
+            for (int k = 0; k < n; k++) m[k].weight = -m[k].rank;
+            return;
+        } else if (c.lead0_rank > max4th) {
+            for (int k = 0; k < n; k++) m[k].weight = -m[k].rank;
+            return;
+        } else if (max3rd < min4th || max3rd < c.move1_rank) {
+            for (int k = 0; k < n; k++) m[k].weight = -m[k].rank;
+            return;
+        } else if (max3rd > max4th) {
+            for (int k = 0; k < n; k++) {
+                if (m[k].rank > max4th)
+                    m[k].weight = 58 - m[k].rank;
+                else
+                    m[k].weight = -m[k].rank;
+            }
+        } else {
+            const int kBonus = o_rank_forces_ace(c, m, n, cards4th);
+            for (int k = 0; k < n; k++) {
+                if (m[k].rank > c.move1_rank && m[k].rank > max4th)
+                    m[k].weight = 60 - m[k].rank;
+                else
+                    m[k].weight = -m[k].rank;
+            }
+            if (kBonus != -1) m[kBonus].weight += 20;
+        }
+    } else {
+        if (max4th == 0) {
+            for (int k = 0; k < n; k++) {
+                if (m[k].rank > c.move1_rank)
+                    m[k].weight = 20 - m[k].rank;
+                else
+                    m[k].weight = -m[k].rank;
+            }
+            return;
+        } else if (max3rd < min4th || max3rd < c.move1_rank) {
+            for (int k = 0; k < n; k++) m[k].weight = -m[k].rank;
+            return;
+        } else if (max3rd > max4th) {
+            for (int k = 0; k < n; k++) {
+                if (m[k].rank > c.move1_rank && m[k].rank > max4th)
+                    m[k].weight = 58 - m[k].rank;
+                else
+                    m[k].weight = -m[k].rank;
+            }
+            return;
+        }
+        const int kBonus = o_rank_forces_ace(c, m, n, cards4th);
+        for (int k = 0; k < n; k++) {
+            if (m[k].rank > c.move1_rank && m[k].rank > max4th)
+                m[k].weight = 60 - m[k].rank;
+            else
+                m[k].weight = -m[k].rank;
+        }
+        if (kBonus != -1) m[kBonus].weight += 20;
+    }
+}
+
+void o_nt_notvoid2(const OCtx& c, OMove* m, int n) {
+    const int lh = c.lead_hand, ls = c.lead_suit, ch = c.curr_hand;
+    const int R = O_RHO[lh], L = O_LHO[lh], P = O_PART[lh];
+    const unsigned cards4th = c.ris(R, ls);
+    const int max4th = o_hi(cards4th);
+    const int min4th = o_lo(cards4th);
+    const int max3rd = m[0].rank;
+    if (c.high1 == 0 && c.lead0_rank > max4th) {
+        for (int k = 0; k < n; k++) m[k].weight = -m[k].rank;
+        if (c.len(lh, ls) == 0 && c.ts->win_hand[ls] == ch) {
+            int oppLen = c.len(R, ls) - 1;
+            const int lhoLen = c.len(L, ls);
+            if (lhoLen > oppLen) oppLen = lhoLen;
+            int top_number, mno;
+            o_get_top_number(c, m, n, c.ris(P, ls), c.lead0_rank, top_number, mno);
+            if (oppLen <= top_number) m[mno].weight += 20;
+        }
+        return;
+    } else if (max3rd < min4th || max3rd < c.move1_rank) {
+        for (int k = 0; k < n; k++) m[k].weight = -m[k].rank;
+        return;
+    }
+    int kBonus = -1;
+    if (max4th > max3rd && max4th > c.move1_rank) kBonus = o_rank_forces_ace(c, m, n, cards4th);
+    for (int k = 0; k < n; k++) {
+        if (m[k].rank > c.move1_rank && m[k].rank > max4th)
+            m[k].weight = 60 - m[k].rank;
+        else
+            m[k].weight = -m[k].rank;
+    }
+    if (kBonus != -1) m[kBonus].weight += 20;
+}
+
+void o_trump_void2(const OCtx& c, OMove* m, int from, int to, int suit) {
+    const int lh = c.lead_hand, ls = c.lead_suit, ch = c.curr_hand;
+    const int R = O_RHO[lh];
+    int suitAdd;
+    const int suitCount = c.len(ch, suit);
+    const int max4th = o_hi(c.ris(R, ls));
+    if (ls == TRUMP || suit != TRUMP) {
+        suitAdd = (suitCount << 6) / 40;
+        for (int k = from; k < to; k++) m[k].weight = -m[k].rank + suitAdd;
+        return;
+    } else if (c.high1 == 0 && c.lead0_rank > max4th && (max4th != 0 || c.len(R, TRUMP) == 0)) {
+        for (int k = from; k < to; k++) m[k].weight = -m[k].rank - 50;
+        return;
+    }
+    for (int k = from; k < to; k++) {
+        if (c.move1_suit == TRUMP && m[k].rank < c.move1_rank) {
+            const int r_rank = o_rel_rank(c.aggr(suit), m[k].rank);
+            suitAdd = (suitCount << 6) / 40;
+            m[k].weight = -32 + r_rank + suitAdd;
+        } else if (c.high1 == 0) {
+            if (max4th != 0) {
+                suitAdd = (suitCount << 6) / 50;
+                if (c.ts->sec_hand[ls] == lh)
+                    m[k].weight = 36 - m[k].rank + suitAdd;
+                else
+                    m[k].weight = 48 - m[k].rank + suitAdd;
+            } else if (o_bit(m[k].rank) > c.ris(R, TRUMP)) {
+                suitAdd = (suitCount << 6) / 50;
+                m[k].weight = 48 - m[k].rank + suitAdd;
+            } else {
+                suitAdd = (suitCount << 6) / 50;
+                m[k].weight = -12 - m[k].rank + suitAdd;
+            }
+        } else if (max4th != 0) {
+            suitAdd = (suitCount << 6) / 50;
+            m[k].weight = 72 - m[k].rank + suitAdd;
+        } else if (o_bit(m[k].rank) > c.ris(R, TRUMP)) {
+            suitAdd = (suitCount << 6) / 50;
+            m[k].weight = 48 - m[k].rank + suitAdd;
+        } else {
+            suitAdd = (suitCount << 6) / 50;
+            m[k].weight = 36 - m[k].rank + suitAdd;
+        }
+    }
+}
+
+void o_nt_void2(const OCtx& c, OMove* m, int from, int to, int suit) {
+    const int ch = c.curr_hand;
+    const int suitCount = c.len(ch, suit);
+    int suitAdd = (suitCount << 6) / 24;
+    if (suitCount == 2 && c.ts->sec_hand[suit] == ch) suitAdd -= 4;
+    if (suitCount == 1 && c.ts->win_hand[suit] == ch) suitAdd -= 4;
+    for (int k = from; k < to; k++) m[k].weight = -m[k].rank + suitAdd;
+}
+
+void o_combined_notvoid3(const OCtx& c, OMove* m, int n) {
+    if (c.high2 == 1 || (c.lead_suit != TRUMP && c.move2_suit == TRUMP)) {
+        for (int k = 0; k < n; k++) m[k].weight = -m[k].rank;
+    } else {
+        for (int k = 0; k < n; k++) {
+            if (m[k].rank > c.move2_rank)
+                m[k].weight = 30 - m[k].rank;
+            else
+                m[k].weight = -m[k].rank;
+        }
+    }
+}
+
+void o_trump_void3(const OCtx& c, OMove* m, int from, int to, int suit) {
+    const int ch = c.curr_hand, ls = c.lead_suit;
+    const int mylen = c.len(ch, suit);
+    int val = (mylen << 6) / 24;
+    if (mylen == 2 && c.ts->sec_hand[suit] == ch) val -= 2;
+    if (ls == TRUMP) {
+        for (int k = from; k < to; k++) m[k].weight = -m[k].rank + val;
+    } else if (c.high2 == 1) {
+        if (suit == TRUMP)
+            for (int k = from; k < to; k++) m[k].weight = 2 - m[k].rank + val;
+        else
+            for (int k = from; k < to; k++) m[k].weight = 25 - m[k].rank + val;
+    } else if (c.move2_suit == TRUMP) {
+        if (suit == TRUMP) {
+            for (int k = from; k < to; k++) {
+                const int r_rank = o_rel_rank(c.aggr(suit), m[k].rank);
+                if (m[k].rank > c.move2_rank)
+                    m[k].weight = 33 + r_rank;
+                else
+                    m[k].weight = -13 + r_rank;
+            }
+        } else
+            for (int k = from; k < to; k++) m[k].weight = 14 - m[k].rank + val;
+    } else if (suit == TRUMP) {
+        for (int k = from; k < to; k++) {
+            const int r_rank = o_rel_rank(c.aggr(suit), m[k].rank);
+            m[k].weight = 33 + r_rank;
+        }
+    } else {
+        for (int k = from; k < to; k++) m[k].weight = 14 - m[k].rank + val;
+    }
+}
+
+void o_nt_void3(const OCtx& c, OMove* m, int from, int to, int suit) {
+    const int ch = c.curr_hand;
+    const int mylen = c.len(ch, suit);
+    int val = (mylen << 6) / 27;
+    if (mylen == 2 && c.ts->sec_hand[suit] == ch)
+        val -= 6;
+    else if (mylen == 1 && c.ts->win_hand[suit] == ch)
+        val -= 8;
+    for (int k = from; k < to; k++) m[k].weight = -m[k].rank + val;
+}
+
+// The driver: what DDS's MoveGen0 (leads) and MoveGen123 (followers) do around
+// the weight functions above -- build the move list in DDS's order, pick the
+// weight case (4 * position + trump-left + void, as moves.cpp encodes it), and
+// sort by weight, highest first.  The sort is stable where DDS's sorting
+// networks are not, so ties can come out in a different order than DDS's; that
+// is ordering only.  `killer` is DDS's best_move for this depth and `tt_class`
+// the class of the table's stored lead (best_move_tt); both are read at leads
+// only, as DDS reads them.
+void trick_start_of(const Hand h[4], TrickStart& ts) {
+    for (int s = 0; s < 4; ++s) {
+        ts.win_rank[s] = ts.sec_rank[s] = 0;
+        ts.win_hand[s] = ts.sec_hand[s] = -1;
+        const unsigned a0 = sbits(h[0] | h[1] | h[2] | h[3], s);
+        ts.removed[s] = static_cast<std::uint16_t>(~a0 & 0x1FFFu);
+        if (!a0) continue;
+        const int b1 = top_bit(a0);
+        ts.win_rank[s] = static_cast<std::int8_t>(b1 + 2);
+        for (int q = 0; q < 4; ++q)
+            if ((sbits(h[q], s) >> b1) & 1u) ts.win_hand[s] = static_cast<std::int8_t>(q);
+        const unsigned a1 = a0 & ~(1u << b1);
+        if (a1) {
+            const int b2 = top_bit(a1);
+            ts.sec_rank[s] = static_cast<std::int8_t>(b2 + 2);
+            for (int q = 0; q < 4; ++q)
+                if ((sbits(h[q], s) >> b2) & 1u) ts.sec_hand[s] = static_cast<std::int8_t>(q);
+        }
+    }
+}
+
+int dds_order_moves(const Hand h[4], const CardId trick[4], int leader, int len, int seat,
+                    const TrickStart& ts, Hand legal, Hand moves, Hand relevant, CardId killer,
+                    Hand tt_class, CardId out[13]) {
+    OCtx oc;
+    oc.h = h;
+    oc.ts = &ts;
+    oc.lead_hand = leader;
+    oc.lead_suit = len ? card_suit(trick[0]) : 0;
+    oc.curr_hand = seat;
+    oc.curr_trick = pop(h[seat]) - 1;  // DDS's `tricks`: tricks left after this one
+    // The trick so far, as DDS's track records it: the card winning after the
+    // second and third plays, and which play it was.
+    if (len >= 1) oc.lead0_rank = (trick[0] & 15) + 2;
+    if (len >= 2) {
+        CardId w = trick[0];
+        int hi = 0;
+        for (int i = 1; i < len; ++i) {
+            const CardId c = trick[i];
+            if (card_suit(c) == card_suit(w)) {
+                if ((c & 15) > (w & 15)) {
+                    w = c;
+                    hi = i;
+                }
+            } else if (card_suit(c) == TRUMP) {
+                w = c;
+                hi = i;
+            }
+            if (i == 1) {
+                oc.move1_rank = (w & 15) + 2;
+                oc.move1_suit = card_suit(w);
+                oc.high1 = hi;
+            } else {
+                oc.move2_rank = (w & 15) + 2;
+                oc.move2_suit = card_suit(w);
+                oc.high2 = hi;
+            }
+        }
+    }
+    if (len == 0) {
+        oc.best_move = killer;
+        oc.best_move_tt = tt_class;
+    }
+
+    // Each class's TOP card, all at once: a legal card is the top of its class
+    // when the next relevant card above it is not legal.  The mirror image of
+    // distinct_moves' upward flood (rules.hpp), filling downward through ranks
+    // no relevant card occupies.
+    Hand tops;
+    {
+        Hand gap = ~(relevant | SUIT_PADDING);
+        Hand flood = legal;
+        flood |= gap & (flood >> 1);
+        gap &= gap >> 1;
+        flood |= gap & (flood >> 2);
+        gap &= gap >> 2;
+        flood |= gap & (flood >> 4);
+        gap &= gap >> 4;
+        flood |= gap & (flood >> 8);
+        tops = legal & ~(flood >> 1);
+    }
+
+    OMove om[13];
+    int n = 0;
+    int from[4], to[4];
+    for (int s = 0; s < 4; ++s) {
+        from[s] = n;
+        Hand rs = moves & suit_mask(s);
+        const int first = n;
+        while (rs) {
+            const CardId r = take_lowest(rs);
+            const Hand rbit = card_bit(r);
+            // The first top at or above the representative is its class's.
+            const CardId top = lowest_card(tops & ~(rbit - 1));
+            const Hand cls = legal & ((card_bit(top) << 1) - rbit);
+            om[n++] = OMove{r, s, (top & 15) + 2, top != r ? 1 : 0, cls, 0};
+        }
+        std::reverse(om + first, om + n);  // top class first, as DDS lists them
+        to[s] = n;
+    }
+
+    const bool trump_left = ts.win_rank[TRUMP] != 0;
+    if (len == 0) {
+        for (int s = 0; s < 4; ++s) {
+            if (to[s] == from[s]) continue;
+            if (trump_left)
+                o_trump0(oc, om, from[s], to[s], s);
+            else
+                o_nt0(oc, om, from[s], to[s], s);
+        }
+    } else if (oc.ris(seat, oc.lead_suit) != 0) {
+        OMove* m = om + from[oc.lead_suit];
+        const int k = to[oc.lead_suit] - from[oc.lead_suit];
+        if (len == 1) {
+            if (trump_left)
+                o_trump_notvoid1(oc, m, k);
+            else
+                o_nt_notvoid1(oc, m, k);
+        } else if (len == 2) {
+            if (trump_left)
+                o_trump_notvoid2(oc, m, k);
+            else
+                o_nt_notvoid2(oc, m, k);
+        } else {
+            o_combined_notvoid3(oc, m, k);
+        }
+    } else {
+        for (int s = 0; s < 4; ++s) {
+            if (to[s] == from[s]) continue;
+            if (len == 1) {
+                if (trump_left)
+                    o_trump_void1(oc, om, from[s], to[s], s);
+                else
+                    o_nt_void1(oc, om, from[s], to[s], s);
+            } else if (len == 2) {
+                if (trump_left)
+                    o_trump_void2(oc, om, from[s], to[s], s);
+                else
+                    o_nt_void2(oc, om, from[s], to[s], s);
+            } else {
+                if (trump_left)
+                    o_trump_void3(oc, om, from[s], to[s], s);
+                else
+                    o_nt_void3(oc, om, from[s], to[s], s);
+            }
+        }
+    }
+    for (int i = 1; i < n; ++i) {
+        const OMove x = om[i];
+        int j = i;
+        while (j > 0 && om[j - 1].weight < x.weight) {
+            om[j] = om[j - 1];
+            --j;
+        }
+        om[j] = x;
+    }
+    for (int i = 0; i < n; ++i) out[i] = om[i].card;
+    return n;
+}
+
 }  // namespace
 
 // ---- table -----------------------------------------------------------------
@@ -214,6 +1125,7 @@ void Engine::resize(std::size_t megabytes, bool huge_pages) {
 void Engine::clear() {
     if (table_) std::fill(table_, table_ + (mask_ + 1) * WAYS, Entry{});
     if (headers_) std::fill(headers_, headers_ + (hmask_ + 1) * HEADER_WAYS, Header{});
+    for (CardId& k : lead_killer_) k = NO_CARD;
 }
 
 namespace {
@@ -321,7 +1233,7 @@ bool Engine::probe(const Key& key, int target, bool& result, CardId& move, const
     // off costs 1.3% of wall time (68 deals slower, 33 faster by 2%+).  On
     // 2 MiB pages it is within noise (+0.2%): with the table's page walks gone
     // the serial misses were already cheap.  Kept for the 4 KiB case.
-    const int count = hd->count;
+    const int count = std::min<int>(hd->count, profile_cap_);
     std::uint32_t pats[PROFILES][4];
     const Entry* buckets[PROFILES];
     const std::uint8_t fmeta = static_cast<std::uint8_t>(key.meta | 0x80);
@@ -375,18 +1287,22 @@ void Engine::store(const Key& key, const unsigned rel[4], int lo, int hi, CardId
         prof = static_cast<std::uint16_t>(prof | (k << (4 * s)));
     }
     Header* hd = header(key, true);
+    // Only the first `profile_cap_` profiles are ever read (probe), so only
+    // they count as present; a header filled under a larger cap keeps its
+    // extra slots, unread, until they are pushed out.
+    const int live = std::min<int>(hd->count, profile_cap_);
     int i = 0;
-    while (i < hd->count && hd->prof[i] != prof) ++i;
-    if (i == hd->count) {
+    while (i < live && hd->prof[i] != prof) ++i;
+    if (i == live) {
         if (mru_) {
-            if (hd->count < PROFILES) ++hd->count;
+            if (hd->count < profile_cap_) ++hd->count;
             for (int j = hd->count - 1; j > 0; --j) hd->prof[j] = hd->prof[j - 1];
             hd->prof[0] = prof;
-        } else if (hd->count < PROFILES) {
+        } else if (hd->count < profile_cap_) {
             hd->prof[hd->count++] = prof;
         } else {
             hd->prof[hd->next] = prof;  // the displaced profile's facts go unreachable
-            hd->next = static_cast<std::uint8_t>((hd->next + 1) % PROFILES);
+            hd->next = static_cast<std::uint8_t>((hd->next + 1) % profile_cap_);
         }
     }
     std::uint32_t pat[4];
@@ -529,7 +1445,21 @@ bool Engine::search(const Pos& p, int target, CardId* witness, unsigned rel[4],
                               ? equivalent_moves(tt_card, legal, relevant)
                               : 0;
 
-    for (Hand m = moves; m;) {
+    // DDS's weights (item 99) where there is a choice to order; the score
+    // below is the engine's original order and the control arm (--no-dd-order).
+    // A lead computes what the weights read about the trick's start once, for
+    // itself and its three followers.
+    TrickStart lead_ts;
+    const TrickStart* ts = p.ts;
+    if (dds_order_ && p.len == 0) {
+        trick_start_of(p.h, lead_ts);
+        ts = &lead_ts;
+    }
+    if (dds_order_ && (moves & (moves - 1))) {
+        n = dds_order_moves(p.h, p.trick, p.leader, p.len, seat, *ts, legal, moves, relevant,
+                            p.len == 0 ? lead_killer_[t] : NO_CARD, tt_class, mv);
+    }
+    for (Hand m = n ? Hand{0} : moves; m;) {
         const CardId c = take_lowest(m);
         const int s = card_suit(c);
         const int rk = c & 15;
@@ -590,11 +1520,43 @@ bool Engine::search(const Pos& p, int target, CardId* witness, unsigned rel[4],
     CardId best = NO_CARD;
     unsigned acc[4] = {0, 0, 0, 0};
     unsigned facc[4] = {0, 0, 0, 0};
+    // LOWEST WIN (DDS's Moves::MakeNext; item 99, lowest_win).  Per suit, the
+    // rank below which the mover's remaining cards of that suit are already
+    // known to fail: 0 until a refuted move sets it.
+    //
+    // THE RULE.  A move that came back without a cut has a refutation, and the
+    // ranks that refutation relied on are its `crel`: every card that won a
+    // trick by rank somewhere in it, and every rank a stored fact or a static
+    // bound read.  If the refuted card's own rank is below the lowest such rank
+    // in its suit -- below `low`, taken over everything refuted at this node so
+    // far, which can only be lower -- then nothing in the refutation compared
+    // that card with anything, and the same refutation answers any other card
+    // of the mover's in that suit that is also below `low`: swap the two cards'
+    // names and every trick along every line of it has the same winner.  So
+    // those cards are not searched.  That is DDS's lowest_win, and it costs
+    // DDS 1.8x in nodes to turn off.
+    //
+    // WHY IT NEEDS NO STRADDLE REPAIR, when the static classes below do.  The
+    // static collapse calls two cards equal because no LIVE card sits between
+    // them -- a fact about this position, which a stored fact read back on a
+    // different position need not share.  This equality is a fact about the
+    // refutation: it holds in every position that agrees on the ranks the
+    // refutation read, and the fact this node stores pins at least those
+    // (`acc` contains the refuted move's `crel`, so the stored cut is at or
+    // below `low`).  In any position the fact is read back on, the mover's
+    // cards of that suit below `low` are refuted by the same refutation, pinned
+    // or not.
+    unsigned lowest_win[4] = {0, 0, 0, 0};
     for (int i = 0; i < n; ++i) {
         const CardId c = mv[i];
+        if (lowest_win_ && (c & 15) < static_cast<int>(lowest_win[card_suit(c)])) {
+            ++stats_.lowest_win_skips;
+            continue;
+        }
         Pos child = p;
         child.h[seat] &= ~card_bit(c);
         child.broken = spades_broken_after(p.broken, card_suit(c));
+        child.ts = ts;
         int child_target = target;
         CardId trick_win = NO_CARD;
         if (p.len < 3) {
@@ -610,7 +1572,23 @@ bool Engine::search(const Pos& p, int target, CardId* witness, unsigned rel[4],
         }
         unsigned crel[4], cforb[4];
         const bool r = search(child, child_target, nullptr, crel, cforb);
-        if (trick_win != NO_CARD) crel[card_suit(trick_win)] |= 1u << (trick_win & 15);
+        // The trick's winner is a rank the proof relied on -- but only when it
+        // won BY RANK, beating another card of its own suit (DDS 6.1, the rule
+        // the main search's TRACK backup already follows; item 99,
+        // win_by_rank).  A ruff with no other spade in the trick wins whatever
+        // the spade's rank, and so does a card nobody else could follow or
+        // ruff; pinning such a card pinned its whole suit from the top down to
+        // it for nothing, which cost the stored fact most of its reach.
+        if (trick_win != NO_CARD) {
+            const int ws = card_suit(trick_win);
+            bool by_rank = true;
+            if (win_by_rank_) {
+                const int same = (card_suit(p.trick[0]) == ws) + (card_suit(p.trick[1]) == ws) +
+                                 (card_suit(p.trick[2]) == ws) + (card_suit(c) == ws);
+                by_rank = same >= 2;
+            }
+            if (by_rank) crel[ws] |= 1u << (trick_win & 15);
+        }
         if (ns_to_move ? r : !r) {
             result = r;
             best = c;
@@ -618,11 +1596,33 @@ bool Engine::search(const Pos& p, int target, CardId* witness, unsigned rel[4],
                 acc[s] = crel[s];
                 facc[s] = cforb[s];
             }
+            if (p.len == 0 && t < 14) lead_killer_[t] = c;
             break;
         }
         for (int s = 0; s < 4; ++s) {
             acc[s] |= crel[s];
             facc[s] |= cforb[s];
+        }
+        if (lowest_win_) {
+            const int cs = card_suit(c);
+            if (lowest_win[cs] == 0) {
+                // The lowest rank the refutations so far relied on in this
+                // suit, AFTER the straddle repair below would lower it: a
+                // refuted class's range under the cut takes the cut down to its
+                // representative, exactly as it will when the boundary above
+                // stores the fact.  16 when the suit was never read at all --
+                // then every card of it the mover holds is refuted alike.
+                int low = 16;
+                if (acc[cs]) {
+                    unsigned cut = acc[cs] & (0u - acc[cs]);
+                    if (facc[cs] & cut) {
+                        while (facc[cs] & (cut >> 1)) cut >>= 1;
+                        cut >>= 1;
+                    }
+                    low = cut ? lowest_card(static_cast<Hand>(cut)) : 0;
+                }
+                if ((c & 15) < low) lowest_win[cs] = static_cast<unsigned>(low);
+            }
         }
     }
     // A REFUTED CLASS MUST NOT STRADDLE THE CUT.
@@ -714,6 +1714,7 @@ bool Engine::ns_reach(const Hand hands[4], int leader, bool broken, int target,
     p.len = 0;
     p.broken = broken;
     p.trick[0] = p.trick[1] = p.trick[2] = p.trick[3] = NO_CARD;
+    p.ts = nullptr;
     if (witness) *witness = NO_CARD;
     unsigned rel[4], forb[4];
     return search(p, target, witness, rel, forb);

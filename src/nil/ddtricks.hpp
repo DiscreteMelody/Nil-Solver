@@ -62,6 +62,19 @@ struct DDStats {
     std::uint64_t tt_cuts = 0;      // boundary answered by stored bounds
     std::uint64_t quick_cuts = 0;   // boundary answered by quick tricks
     std::uint64_t later_cuts = 0;   // boundary answered by the top-spade bound
+    std::uint64_t lowest_win_skips = 0;  // moves skipped as equal to a refuted one
+};
+
+// What the engine's DDS move ordering reads about each suit as the current
+// trick began -- the top two cards and who holds them, and the ranks gone
+// before it -- computed once at the lead and shared by the three followers.
+// An implementation detail of Engine::search; see dds_order_moves.
+struct TrickStart {
+    std::int8_t win_rank[4];
+    std::int8_t win_hand[4];
+    std::int8_t sec_rank[4];
+    std::int8_t sec_hand[4];
+    std::uint16_t removed[4];
 };
 
 class Engine {
@@ -92,6 +105,27 @@ public:
     int ns_exact(const Hand hands[4], int leader, bool broken, int lo, int hi, CardId* best);
 
     void set_mru(bool on) { mru_ = on; }
+    // THE OCT 2026 ENGINE PASS (ROADMAP item 99).  Four switches, each the
+    // control arm of one change; every one leaves every answer exactly as it
+    // was and moves only the node count.  See Engine::search for each.
+    //
+    //   dds_order     move ordering by DDS's own heuristic weights (Haglund
+    //                 and Hein, heuristic_sorting.cpp), in place of the short
+    //                 score this engine started with
+    //   lowest_win    DDS's lowest-win rule: a move refuted with its rank
+    //                 below every rank its proof relied on stands for the
+    //                 mover's other cards of that suit below that line
+    //   win_by_rank   a trick's winner joins the ranks a proof relied on only
+    //                 when it beat another card of its own suit (DDS 6.1)
+    //   profile_cap   how many k-profiles a header keeps before the oldest is
+    //                 displaced (it was 12, and a full header was the common
+    //                 case on a hard 13-card deal)
+    void set_dds_order(bool on) { dds_order_ = on; }
+    void set_lowest_win(bool on) { lowest_win_ = on; }
+    void set_win_by_rank(bool on) { win_by_rank_ = on; }
+    void set_profile_cap(int cap) {
+        profile_cap_ = cap < 1 ? 1 : (cap > PROFILES ? PROFILES : cap);
+    }
     // On (the default): after the most recently used profile, request every
     // other profile's bucket at once.  Off: read them one miss at a time, as
     // before.  Same answers either way; see probe().
@@ -102,6 +136,9 @@ public:
     void new_solve(bool age) {
         age_ = age;
         if (++epoch_ == 0) epoch_ = 1;
+        // DDS resets its best moves for every board, and so does this: a lead
+        // that cut in another deal is no better a guess than none.
+        for (CardId& k : lead_killer_) k = NO_CARD;
     }
     const DDStats& stats() const { return stats_; }
     void reset_stats() { stats_ = DDStats(); }
@@ -114,6 +151,7 @@ private:
         int leader;
         int len;
         bool broken;
+        const TrickStart* ts;  // set by the lead for its followers (dds_order)
     };
     // A stored fact: bounds on N/S's tricks from any position with these suit
     // lengths per hand, this leader and breaking state, and these owners for
@@ -144,11 +182,24 @@ private:
         // cost per solve.  Headers carry the same mark.  `--no-dd-age`.
         std::uint8_t pad[3];     // pad[0] is the age
     };
+public:
     // Which k-profiles have been stored for one (lengths, leader, broken).  A
     // probe tries each: truncating the position's own patterns to a profile
     // gives an exact key, so the fact table stays a plain hash table instead
     // of a list scan.
-    static constexpr int PROFILES = 12;
+    //
+    // 26 slots, which makes a Header exactly one 64-byte cache line.  It was
+    // 12, and on the hard deals that was the binding limit rather than the
+    // table: over one plain 13-card double-dummy solve of the slowest
+    // single-nil deal (s4-05, ROADMAP item 99) 393K of 904K stores opened a new profile
+    // and 269K of those found the header full and pushed one out -- and every
+    // fact stored under a displaced profile becomes unreachable at once.  At
+    // 26 that falls to 57K displacements and the solve takes 19% fewer nodes;
+    // 58 slots saves another 4% of nodes and loses it in the longer scans.
+    // `profile_cap` (default PROFILES; --dd-profiles) is how many are used.
+    static constexpr int PROFILES = 26;
+
+private:
     struct Header {
         std::uint64_t lengths;
         std::uint8_t meta;       // | 0x80 when used
@@ -157,6 +208,7 @@ private:
         std::uint8_t pad;        // the age, as Entry's
         std::uint16_t prof[PROFILES];  // k per suit, 4 bits each
     };
+    static_assert(sizeof(Header) == 64, "a header is one cache line");
     struct Key {
         std::uint64_t lengths;
         std::uint8_t meta;
@@ -189,6 +241,15 @@ private:
     std::size_t megabytes_ = 0;
     bool mru_ = true;
     bool prefetch_ = true;
+    bool dds_order_ = true;
+    bool lowest_win_ = true;
+    bool win_by_rank_ = true;
+    int profile_cap_ = PROFILES;
+    // The DDS "best move" at each lead depth: the lead that last cut a node
+    // with this many tricks left.  Ordering only (dds_order).  Indexed by
+    // tricks remaining, 0..13.
+    CardId lead_killer_[14] = {NO_CARD, NO_CARD, NO_CARD, NO_CARD, NO_CARD, NO_CARD, NO_CARD,
+                               NO_CARD, NO_CARD, NO_CARD, NO_CARD, NO_CARD, NO_CARD, NO_CARD};
     std::uint8_t epoch_ = 1;  // the current solve, for aging; never 0
     bool age_ = true;
     bool stale(std::uint8_t e) const { return age_ && e != epoch_; }

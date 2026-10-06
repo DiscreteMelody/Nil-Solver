@@ -710,6 +710,25 @@ both bid, with arms on the two-nil corpus:
   with it at 2 tricks, where it fires. `--dd-live-bounds` still turns the bound
   on everywhere, at every depth.
 
+The Oct 2026 single-nil pass (ROADMAP item 99) added five, four inside the
+double-dummy engine and one in the general search. None has a `NIL_FLAG_*` bit
+(the flag word is full); each is a `nil_cli` / `nil_bench` flag with a corpus
+arm, the engine ones on the two-nil corpus too and in `dd_property`
+(`dd_property_variants_<arm>`), which checks the engine against brute force:
+
+- `--no-dd-order`: the engine orders moves by its own short score instead of
+  DDS's heuristic weights. `corpus_no_dd_order`.
+- `--no-dd-lowest-win`: no DDS lowest-win skipping -- a refuted card no longer
+  stands for the mover's lower cards of its suit. `corpus_no_dd_lowest_win`.
+- `--no-dd-by-rank`: a trick's winner counts as a rank the proof relied on even
+  when it won by a ruff or a discard. `corpus_no_dd_by_rank`.
+- `--dd-profiles N`: k-profiles per engine table header, 1..26 (26 by default,
+  12 before). `corpus_dd_profiles_12`.
+- `--broken-dd T`: with a single live nil, the pair's plain double-dummy count
+  as a ceiling on broken-band windows from T tricks up (10 by default);
+  `--broken-dd 0` switches it off. `corpus_broken_dd_low` (and its values-only
+  twin) run the corpus with it at 2 tricks, where it fires.
+
 `--no-narrow` is the control arm for window narrowing (roadmap item 22), and it
 is the one with the most riding on it. Full mode narrows its window as a node's
 moves come back, which is what makes the alpha-beta cutoff reachable there at

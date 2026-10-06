@@ -195,6 +195,23 @@ if(NIL_SOLVER_BUILD_TESTS)
   # five of these 9000 positions.  About eight seconds.
   add_test(NAME dd_property_variants COMMAND dd_property 1000 5 1 8)
   set_tests_properties(dd_property_variants PROPERTIES TIMEOUT 300)
+  # The Oct 2026 engine pass (ROADMAP item 99) changed how the engine searches
+  # -- DDS's move ordering, DDS's lowest-win skipping, trick winners pinned only
+  # when they won by rank, 26 profiles per header -- and the runs above are its
+  # ON arm.  These hold the engine with each change OFF against the same brute
+  # force, on the generalizing variants, where a stored fact that claims too
+  # much is caught.  Lowest-win and by-rank change what a fact pins, so they
+  # also get a deeper run of their own.
+  foreach(_arm no-dd-order no-dd-lowest-win no-dd-by-rank)
+    string(REPLACE "-" "_" _name "${_arm}")
+    add_test(NAME dd_property_variants_${_name} COMMAND dd_property 1000 5 3 8 --${_arm})
+    set_tests_properties(dd_property_variants_${_name} PROPERTIES TIMEOUT 300)
+  endforeach()
+  add_test(NAME dd_property_variants_profiles_12
+           COMMAND dd_property 1000 5 3 8 --dd-profiles 12)
+  set_tests_properties(dd_property_variants_profiles_12 PROPERTIES TIMEOUT 300)
+  add_test(NAME dd_property_variants_deep COMMAND dd_property 60 6 5 6)
+  set_tests_properties(dd_property_variants_deep PROPERTIES TIMEOUT 300)
 
   # The corpus is the accuracy regression test: answers came from
   # nil_oracle.py once, and replaying them needs neither Python nor the oracle.
@@ -501,6 +518,36 @@ if(NIL_SOLVER_BUILD_TESTS)
              COMMAND nil_bench --corpus "${NIL_CORPUS}" --check-moves --check-pv
                      --demoted-dd 2 --quiet --slowest 0)
     set_tests_properties(corpus_demoted_dd_low PROPERTIES TIMEOUT 900)
+
+    # The Oct 2026 engine pass (ROADMAP item 99).  Each switch is a control
+    # arm in the usual sense -- the default runs above take the change, these
+    # do not, and every one must land on the oracle's values and lines:
+    #   --no-dd-order          the engine's own move score, not DDS's weights
+    #   --no-dd-lowest-win     no lowest-win skipping in the engine
+    #   --no-dd-by-rank        every trick winner pinned in the engine's facts
+    #   --dd-profiles 12       twelve profiles per engine header, as before
+    # The broken-band double-dummy ceiling runs from 10 tricks up by default,
+    # which no row of this corpus reaches -- so the default run is its OFF arm,
+    # and corpus_broken_dd_low pushes it down to 2 tricks, where it fires.
+    foreach(_arm no-dd-order no-dd-lowest-win no-dd-by-rank)
+      string(REPLACE "-" "_" _name "${_arm}")
+      add_test(NAME corpus_${_name}
+               COMMAND nil_bench --corpus "${NIL_CORPUS}" --check-moves --check-pv --${_arm}
+                       --quiet --slowest 0)
+      set_tests_properties(corpus_${_name} PROPERTIES TIMEOUT 900)
+    endforeach()
+    add_test(NAME corpus_dd_profiles_12
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --check-moves --check-pv
+                     --dd-profiles 12 --quiet --slowest 0)
+    set_tests_properties(corpus_dd_profiles_12 PROPERTIES TIMEOUT 900)
+    add_test(NAME corpus_broken_dd_low
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --check-moves --check-pv
+                     --broken-dd 2 --quiet --slowest 0)
+    set_tests_properties(corpus_broken_dd_low PROPERTIES TIMEOUT 900)
+    add_test(NAME corpus_broken_dd_low_values_only
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --check-moves --values-only
+                     --broken-dd 2 --quiet --slowest 0)
+    set_tests_properties(corpus_broken_dd_low_values_only PROPERTIES TIMEOUT 900)
   endif()
 
   # TWO NILS ON ONE SIDE.  A separate corpus because it is a separate question:
@@ -583,8 +630,11 @@ if(NIL_SOLVER_BUILD_TESTS)
 
     # Second Sept 2026 pass, on two nils: the per-card driver changes (row
     # order; values-only rows, whose mask the value cannot always pin here, so
-    # those rows still walk their line) and the memory-layout arms.
-    foreach(_arm no-row-order no-huge-pages no-dd-prefetch no-multi-live-proofs)
+    # those rows still walk their line) and the memory-layout arms.  The Oct
+    # 2026 engine pass (item 99) adds its three engine switches: every row here
+    # reaches positions with both bids down, which is where the engine runs.
+    foreach(_arm no-row-order no-huge-pages no-dd-prefetch no-multi-live-proofs
+            no-dd-order no-dd-lowest-win no-dd-by-rank)
       string(REPLACE "-" "_" _name "${_arm}")
       add_test(NAME corpus_multinil_${_name}
                COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-moves --check-pv
