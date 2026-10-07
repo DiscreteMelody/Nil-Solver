@@ -3564,6 +3564,130 @@ int main(int argc, char** argv) {
               values_known < values_rows, true);
     }
 
+    // ---- C0: per-call limits across the C ABI (nil_solve_moves_limited) ----
+    //
+    // The corpus check (nil_bench --check-limits) holds every stopped call's
+    // rows against the finished ones; this pins the ABI's side of it: NULL or
+    // zero limits are the plain call, a stopped call says NIL_INCOMPLETE and
+    // still lists every card, unknown fields read -1, and the three ways to
+    // stop all stop.
+    {
+        std::cout << "\nC ABI: nil_solve_moves_limited\n";
+        char err[256] = {0};
+        const char* deal = "N:KJ.7.A3.Q6 .A.Q8.AKJ3 .T9863.74. AT764..T2.";
+        const std::int32_t shape[4] = {NIL_ROLE_NIL, NIL_ROLE_OPPONENT, NIL_ROLE_NIL,
+                                       NIL_ROLE_OPPONENT};
+        nil_result ra, rb;
+        nil_move ma[NIL_MAX_MOVES], mb[NIL_MAX_MOVES];
+        std::int32_t na = 0, nb = 0;
+        const std::int32_t e1 = nil_solve_moves(deal, NIL_SEAT_EAST, "", shape, 0, &ra, ma,
+                                                NIL_MAX_MOVES, &na, err, sizeof err);
+        const std::int32_t e2 = nil_solve_moves_limited(deal, NIL_SEAT_EAST, "", shape, 0, nullptr,
+                                                        &rb, mb, NIL_MAX_MOVES, &nb, err,
+                                                        sizeof err);
+        check("plain call returns NIL_OK", static_cast<long long>(e1), 0LL);
+        check("NULL limits return NIL_OK", static_cast<long long>(e2), 0LL);
+        bool same = na == nb && ra.nodes == rb.nodes && ra.nils_set == rb.nils_set &&
+                    ra.nil_tricks == rb.nil_tricks && ra.nil_side_tricks == rb.nil_side_tricks;
+        for (std::int32_t i = 0; same && i < na; ++i) {
+            same = std::memcmp(&ma[i], &mb[i], sizeof(nil_move)) == 0;
+        }
+        check("NULL limits are the plain call, row for row and node for node", same, true);
+
+        nil_limits zero;
+        std::memset(&zero, 0, sizeof zero);
+        zero.struct_size = sizeof(nil_limits);
+        const std::int32_t e3 = nil_solve_moves_limited(deal, NIL_SEAT_EAST, "", shape, 0, &zero,
+                                                        &rb, mb, NIL_MAX_MOVES, &nb, err,
+                                                        sizeof err);
+        same = e3 == NIL_OK && na == nb && ra.nodes == rb.nodes;
+        for (std::int32_t i = 0; same && i < na; ++i) {
+            same = std::memcmp(&ma[i], &mb[i], sizeof(nil_move)) == 0;
+        }
+        check("all-zero limits are the plain call", same, true);
+
+        nil_limits unsized = zero;
+        unsized.struct_size = 0;
+        unsized.max_nodes = 1;
+        check("a struct_size never set is refused",
+              static_cast<long long>(nil_solve_moves_limited(deal, NIL_SEAT_EAST, "", shape, 0,
+                                                             &unsized, &rb, mb, NIL_MAX_MOVES,
+                                                             &nb, err, sizeof err)),
+              static_cast<long long>(NIL_ERR_NULL_ARG));
+
+        // One node: stopped before any row is proven.
+        nil_limits one = zero;
+        one.max_nodes = 1;
+        const std::int32_t e4 = nil_solve_moves_limited(deal, NIL_SEAT_EAST, "", shape, 0, &one,
+                                                        &rb, mb, NIL_MAX_MOVES, &nb, err,
+                                                        sizeof err);
+        check("a one-node budget returns NIL_INCOMPLETE", static_cast<long long>(e4),
+              static_cast<long long>(NIL_INCOMPLETE));
+        check("and still lists every card", static_cast<long long>(nb), static_cast<long long>(na));
+        bool cards = true;
+        bool unknown = true;
+        for (std::int32_t i = 0; i < nb && i < na; ++i) {
+            cards = cards && mb[i].suit == ma[i].suit && mb[i].rank == ma[i].rank &&
+                    mb[i].equal_ranks == ma[i].equal_ranks;
+            // The first row may have proven its outcome by the first check;
+            // whatever it reports must be the finished row's, and nothing
+            // unproven may read as anything but -1.
+            unknown = unknown && mb[i].nil_tricks == NIL_TRICKS_UNKNOWN && mb[i].is_best == 0 &&
+                      (mb[i].nils_set == NIL_TRICKS_UNKNOWN || mb[i].nils_set == ma[i].nils_set);
+            for (int seat = 0; seat < 4; ++seat) {
+                unknown = unknown && mb[i].seat_tricks[seat] == NIL_TRICKS_UNKNOWN;
+            }
+        }
+        check("the same cards, in the same order", cards, true);
+        check("nothing unproven reads as a value", unknown, true);
+        check("the position's answer is unknown", static_cast<long long>(rb.nils_set),
+              static_cast<long long>(NIL_TRICKS_UNKNOWN));
+        check("and the nodes spent are reported", rb.nodes >= 1, true);
+
+        // A cancel word already set, and a millisecond budget, on a 13-card
+        // deal that takes about a second unlimited (seed-1 #30, twins): each
+        // stops at the first check, after at most 64K nodes per context.
+        const char* big = "N:AKJT8.2.AKQJT.KJ 72.AQ63.98765.A4 63.KT874.42.T976 Q954.J95.3.Q8532";
+        const std::int32_t twins[4] = {NIL_ROLE_OPPONENT, NIL_ROLE_NIL, NIL_ROLE_OPPONENT,
+                                       NIL_ROLE_NIL};
+        volatile std::int32_t cancel_word = 1;
+        nil_limits cancel = zero;
+        cancel.cancel = &cancel_word;
+        const std::int32_t e5 = nil_solve_moves_limited(big, NIL_SEAT_SOUTH, "", twins, 0, &cancel,
+                                                        &rb, mb, NIL_MAX_MOVES, &nb, err,
+                                                        sizeof err);
+        check("a cancel word already set returns NIL_INCOMPLETE", static_cast<long long>(e5),
+              static_cast<long long>(NIL_INCOMPLETE));
+        check("within a few checks", rb.nodes < 5u * 65536u, true);
+        nil_limits ms = zero;
+        ms.max_ms = 1;
+        const std::int32_t e6 = nil_solve_moves_limited(big, NIL_SEAT_SOUTH, "", twins, 0, &ms, &rb,
+                                                        mb, NIL_MAX_MOVES, &nb, err, sizeof err);
+        check("a 1 ms budget returns NIL_INCOMPLETE", static_cast<long long>(e6),
+              static_cast<long long>(NIL_INCOMPLETE));
+        bool statuses = true;
+        for (std::int32_t i = 0; i < nb; ++i) {
+            // N and S hold no bid; E and W are the twins, known or unknown.
+            statuses = statuses && mb[i].seat_status[NIL_SEAT_NORTH] == NIL_SEAT_STATUS_NO_NIL &&
+                       mb[i].seat_status[NIL_SEAT_SOUTH] == NIL_SEAT_STATUS_NO_NIL;
+            if (mb[i].nils_set == NIL_TRICKS_UNKNOWN) {
+                statuses = statuses && mb[i].seat_status[NIL_SEAT_EAST] == NIL_SEAT_STATUS_UNKNOWN &&
+                           mb[i].seat_status[NIL_SEAT_WEST] == NIL_SEAT_STATUS_UNKNOWN;
+            }
+        }
+        check("an unproven row's bidders read NIL_SEAT_STATUS_UNKNOWN", statuses, true);
+
+        // And nothing a stopped call left behind changes the next answer.
+        const std::int32_t e7 = nil_solve_moves(deal, NIL_SEAT_EAST, "", shape, 0, &rb, mb,
+                                                NIL_MAX_MOVES, &nb, err, sizeof err);
+        same = e7 == NIL_OK && na == nb && ra.nils_set == rb.nils_set &&
+               ra.nil_tricks == rb.nil_tricks;
+        for (std::int32_t i = 0; same && i < na; ++i) {
+            same = std::memcmp(&ma[i], &mb[i], sizeof(nil_move)) == 0;
+        }
+        check("the plain call after the stopped ones answers as before", same, true);
+    }
+
     // ---------------------------------------------------------------------
     // The per-row broken-bid mask (item 1 of the handoff).
     //

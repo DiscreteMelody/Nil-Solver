@@ -37,7 +37,12 @@ namespace NilSolver
         /// <summary>Bid nil, and the nil is broken (or already was).</summary>
         NilSet = 1,
         /// <summary>Did not bid nil.</summary>
-        NoNil = 2
+        NoNil = 2,
+        /// <summary>
+        /// A live bid whose fate this row has not proven. Only in a row of a
+        /// call that returned <see cref="NilStatus.Incomplete"/>.
+        /// </summary>
+        Unknown = -1
     }
 
     /// <summary>

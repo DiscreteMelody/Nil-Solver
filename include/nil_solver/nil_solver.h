@@ -628,6 +628,12 @@ extern "C" {
  * in fast mode, fast mode with more than one nil, or a `seats` array this build
  * does not take (see "WHAT IS ACCEPTED TODAY" above). */
 #define NIL_ERR_UNSUPPORTED (-6)
+/* NOT A FAILURE: nil_solve_moves_limited ran out of the budget it was given (or
+ * was cancelled) before every card was scored, and handed back what it had
+ * proven.  Positive on purpose, so a caller that tests `rc < 0` for errors
+ * reads the partial rows, and one that tests `rc != NIL_OK` treats the call as
+ * not done -- both safe readings.  Never returned by any other entry point. */
+#define NIL_INCOMPLETE 1
 
 typedef struct nil_result {
     /* HOW MANY BIDS ARE BROKEN under best play by both sides -- not whether one
@@ -854,6 +860,9 @@ typedef struct nil_move {
 #define NIL_SEAT_STATUS_NIL_MAKES 0 /* bid nil, and the nil survives */
 #define NIL_SEAT_STATUS_NIL_SET 1   /* bid nil, and the nil is broken (or already was) */
 #define NIL_SEAT_STATUS_NO_NIL 2    /* did not bid nil */
+/* A live bid whose fate this row has not proven.  Only in a row of a call that
+ * returned NIL_INCOMPLETE. */
+#define NIL_SEAT_STATUS_UNKNOWN (-1)
 
 /* Solve a position and report EVERY legal card rather than just the answer.
  *
@@ -893,6 +902,77 @@ NIL_SOLVER_API int32_t NIL_SOLVER_CALL nil_solve_moves(const char* pbn, int32_t 
                                                        nil_result* out, nil_move* moves,
                                                        int32_t moves_cap, int32_t* moves_len,
                                                        char* err_buf, int32_t err_len);
+
+/* PER-CALL LIMITS FOR nil_solve_moves (C0, Oct 2026).
+ *
+ * Why: the slowest 13-card calls take a minute or more, and which deals do is a
+ * property of the whole layout, so a caller cannot see one coming.  With solver
+ * calls serialized, one such call holds up every call behind it.  A budget is
+ * the only thing that bounds that; what to do with a call that ran out is the
+ * caller's decision, so the call hands back exactly what it had proven.
+ *
+ *   struct_size  sizeof(nil_limits).  Lets the struct grow without a new entry
+ *                point: the library reads only the fields this size covers.
+ *   max_ms       wall-clock budget in milliseconds from the start of the call.
+ *                0 = none.
+ *   max_nodes    node budget, counted as nil_result.nodes counts them.
+ *                0 = none.  Deterministic for a given thread history, which
+ *                makes it the one to test with; max_ms is the one to deploy.
+ *   cancel       optional.  When non-NULL the library reads the word it points
+ *                at during the search and stops once it is non-zero, so another
+ *                thread can cancel the call (a deadline it tracks itself, a
+ *                user leaving the table).  The caller owns the word, sets it
+ *                with an ordinary or volatile store, and keeps it alive until
+ *                the call returns.
+ *
+ * Limits are tested every 65,536 nodes (about 9 ms on a 13-card hand), so a
+ * call can run past its budget by up to one interval per internal search
+ * context -- tens of milliseconds at worst.  Nothing is checked in fast mode
+ * (NIL_FLAG_FAST_MODE), which ignores the limits. */
+typedef struct nil_limits {
+    uint32_t struct_size;
+    uint32_t max_ms;
+    uint64_t max_nodes;
+    const volatile int32_t* cancel;
+} nil_limits;
+
+/* nil_solve_moves with a budget.  With `limits` NULL, or every limit zero, it is
+ * nil_solve_moves: same rows, same line, same node count.
+ *
+ * When a limit runs out the call returns NIL_INCOMPLETE and still lists EVERY
+ * legal card (`*moves_len` as for a finished call), in canonical order.  Each
+ * row reports what had been proven for it and nothing else; a field nothing
+ * pinned reads NIL_TRICKS_UNKNOWN (-1), never a guess:
+ *
+ *   value proven     nils_set, nils_set_mask, nil_side_tricks and
+ *                    opponent_tricks exactly as NIL_FLAG_FAST_LINE rows give
+ *                    them; nil_tricks and seat_tricks unknown.  A pair that
+ *                    both bid with one of them down: the count is known but not
+ *                    which bid, and the mask is left short of it (below).
+ *   outcome proven   the row's bounds had already settled how many bids fall:
+ *                    nils_set (and the mask, where the bounds pin it) filled,
+ *                    the trick counts unknown.
+ *   nothing proven   nils_set = -1.
+ *   finished         as a finished call reports it, line and all.
+ *
+ * A row whose mask has fewer bits than nils_set has not proven WHICH bid falls,
+ * and its seat_status reads NIL_SEAT_STATUS_UNKNOWN for each live bidder; so
+ * does every live bidder of a row with nils_set = -1.  is_best is 1 only where
+ * every row's value was proven (a stop during the line walk) and the row
+ * achieves the best of them; otherwise 0 everywhere.  `out` reads -1 in
+ * nils_set, nil_tricks, nil_side_tricks and opponent_tricks, 0 in
+ * nils_set_mask and nils_set_mask_determined -- unless every row's value was
+ * proven, in which case it is the best row's, as above -- and out->nodes is
+ * the nodes the call spent.
+ *
+ * What a stopped call leaves behind is safe: nothing half-searched is stored,
+ * and the next call on the thread answers exactly as it would have.  Errors are
+ * nil_solve_moves's, with the same codes; a NULL `limits` is not one, and a
+ * `struct_size` smaller than the first two fields is NIL_ERR_NULL_ARG. */
+NIL_SOLVER_API int32_t NIL_SOLVER_CALL nil_solve_moves_limited(
+    const char* pbn, int32_t leader, const char* current_trick, const int32_t* seats,
+    uint32_t flags, const nil_limits* limits, nil_result* out, nil_move* moves,
+    int32_t moves_cap, int32_t* moves_len, char* err_buf, int32_t err_len);
 
 /* Set the transposition table size, in mebibytes, for subsequent calls on the
  * calling thread.  The table is per-thread, and so is this setting.  Rounded DOWN to a power-of-two bucket count, so the table actually

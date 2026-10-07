@@ -1,6 +1,7 @@
 #include "nil/search.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <iomanip>
 #include <memory>
 #include <sstream>
@@ -76,6 +77,49 @@ QuickTrickStats& quick_trick_stats_storage() {
 // trick's gain cannot overflow.
 constexpr int WINDOW_MIN = -(1 << 29);
 constexpr int WINDOW_MAX = 1 << 29;
+
+// ---- PER-CALL LIMITS (C0, Oct 2026) ------------------------------------------
+//
+// SearchOptions::max_nodes / max_ms / cancel, armed by solve_moves() for one
+// call.  See the note on those options for why the budget exists and why it
+// unwinds by exception.  One CallLimits per call, shared by every search
+// context of that call: the main one and the single-nil searches it hands
+// one-live boundaries to (item 100), which keep their own node counters.
+//
+// HOW EACH CONTEXT ACCOUNTS FOR ITSELF.  A context's `nodes` includes the
+// nodes of every handoff it made, rolled up when the handoff returns
+// (one_live_handoff), and the handed-off context counts those same nodes on
+// its own counter.  So `used` cannot simply sum the counters.  Each context
+// adds only what it spent ITSELF since its last check -- `nodes - limit_mark`,
+// with the mark advanced past every rollup -- and the call's total is `used`
+// plus each context's unreported remainder (limit_nodes_spent).  The engine's
+// nodes, which a context adds to `nodes` after each engine call, count as that
+// context's own, exactly as Solution::nodes counts them.
+struct CallLimits {
+    std::uint64_t used = 0;          // nodes reported by every context so far
+    std::uint64_t max_nodes = 0;     // 0: no node budget
+    std::uint64_t interval = 0;      // nodes between a context's checks
+    bool has_deadline = false;
+    std::chrono::steady_clock::time_point deadline;
+    const volatile std::int32_t* cancel = nullptr;
+};
+
+// What search_core throws when a limit has run out.  Caught in solve_moves()
+// and nowhere else; empty, because the call's state is read off the contexts.
+struct SearchStopped {};
+
+// 64K nodes: about 9 ms at 13 cards, so a 1 s budget overruns by under 1%, and
+// the clock is read about a hundred times a second -- nothing against the
+// nodes in between.  A smaller node budget checks at the budget instead, so
+// the tests can stop a call that would not run 64K nodes at all.
+constexpr std::uint64_t LIMIT_CHECK_NODES = std::uint64_t{1} << 16;
+constexpr std::uint64_t LIMIT_NEVER = ~std::uint64_t{0};
+
+#if defined(_MSC_VER)
+#define NIL_COLD_NOINLINE __declspec(noinline)
+#else
+#define NIL_COLD_NOINLINE __attribute__((noinline, cold))
+#endif
 
 struct Ctx {
     int nil_seat = 0;
@@ -225,6 +269,7 @@ struct Ctx {
     // shape; see SearchOptions::shed_single_attack.
     bool attack_first = true;
     bool killer_order = false;    // SearchOptions::killer_order; see the move loop
+    bool ruff_overtake_leave = false;  // SearchOptions::ruff_overtake_leave (C1)
     // The last move that cut at a scored node, by plies played from the full
     // deal (52 less the cards still in hands).  One solve's worth: a Ctx is
     // made per solve, and solve_moves() runs all its rows through one.
@@ -326,7 +371,52 @@ struct Ctx {
     // ply p hands its candidates' children the plies the probes ordered
     // canonically below them, so the walk reads back what the probes stored.
     int canon_depth = 0;
+    // C0: the call's limits, null when none was set.  `limit_check_at` is the
+    // node count at which search_core next tests them -- LIMIT_NEVER unless
+    // armed, so an unlimited call pays one compare that never succeeds -- and
+    // `limit_mark` the count this context had already reported.  See
+    // CallLimits for why the mark also skips every rolled-up handoff.
+    CallLimits* limits = nullptr;
+    std::uint64_t limit_check_at = LIMIT_NEVER;
+    std::uint64_t limit_mark = 0;
 };
+
+// C0: report what this context spent since its last check, schedule the next
+// one, and throw if any limit has run out.  Out of line and marked cold: it
+// runs once per 64K nodes, and the hot path should carry only the compare
+// that leads here.
+NIL_COLD_NOINLINE void check_limits(Ctx& ctx) {
+    CallLimits& lim = *ctx.limits;
+    lim.used += ctx.nodes - ctx.limit_mark;
+    ctx.limit_mark = ctx.nodes;
+    ctx.limit_check_at = ctx.nodes + lim.interval;
+    if ((lim.max_nodes != 0 && lim.used >= lim.max_nodes) ||
+        (lim.cancel != nullptr && *lim.cancel != 0) ||
+        (lim.has_deadline && std::chrono::steady_clock::now() >= lim.deadline)) {
+        throw SearchStopped{};
+    }
+}
+
+// C0: point a context and every search it hands off to at the call's limits.
+// After configure(), which is what builds the handoffs.
+void arm_limits(Ctx& ctx, CallLimits* lim) {
+    ctx.limits = lim;
+    ctx.limit_mark = ctx.nodes;
+    ctx.limit_check_at = ctx.nodes + lim->interval;
+    for (const auto& sub : ctx.one_live) {
+        if (sub) arm_limits(*sub, lim);
+    }
+}
+
+// C0: every node the call has spent, reported or not -- what a stopped call
+// puts in Solution::nodes.
+std::uint64_t limit_nodes_spent(const Ctx& ctx) {
+    std::uint64_t spent = ctx.nodes - ctx.limit_mark;
+    for (const auto& sub : ctx.one_live) {
+        if (sub) spent += limit_nodes_spent(*sub);
+    }
+    return spent;
+}
 
 // Roadmap item 32's population count.  Split out so the expression at the call
 // site stays one line: the measurement must not reshape the branch it measures.
@@ -1977,12 +2067,52 @@ inline int trick_order_moves(const Ctx& ctx, const State& st, int seat, Hand mov
         // A live bidder holds the trick.  Its own side wants it off it; the
         // other side wants it left -- unless the bidder's partner is still to
         // play and can overtake it anyway.
+        //
+        // C1, OCT 2026 (SearchOptions::ruff_overtake_leave): "can overtake it
+        // anyway" counts only a partner that can FOLLOW with a higher card.
+        // One that is void and would have to ruff no longer cancels the leave.
+        //
+        // WHERE IT CAME FROM.  The tail-latency investigation found that the
+        // slow calls are not badly ordered by the count-weighted metrics the
+        // Sept 2026 study used (first-move cut rates of 91-97%), but that
+        // 54-93% of their nodes sit inside FAILED first tries of a cut node
+        // above them, almost all with 7 or more tricks left.  So this study
+        // weighted every cut node by the nodes its failed tries cost: an
+        // instrumented build dumped each cut node with 7+ tricks left (the
+        // position, the window, every move tried and its subtree), on eleven
+        // 2-16 s corpus calls of every seating.  One class stood out: an
+        // opponent of a live nil whose nil was winning the trick with its
+        // cover still to come, the leave cancelled by the rule above, so the
+        // trick order tried a winner first.  On seed-4 #55 (`0 3 2 3`) a LOSING
+        // card cut after that winner failed on 1,543 such nodes, which held
+        // 7.7M nodes of failed tries, against 1,565 where the winner cut --
+        // by count a coin flip, by cost not.  Split by HOW the cover could
+        // overtake it was one rule: on seed-4 #55 the cover could only ruff,
+        // and leaving the nil there makes it spend a trump to save its nil;
+        // on seed-1 #65, where the cover could follow with a higher card, the
+        // winner cut, as the rule above says.  Count-weighted, nothing here
+        // looks wrong; it is the cost of the failed tries that shows it.
+        //
+        // MEASURED (per-card call, nodes; same rows and lines throughout).
+        // Eleven 2-16 s development calls: -6.5%, largest loss +0.3%
+        // (seed-4 #55 `0 3 2 3` -39%, seed-1 #39 `3 0 3 0` -12%, seed-1 #69
+        // `0 0 3 0` -9%).  The 67-call tail corpus: -2.2% (groups A -2.3%,
+        // B -1.3%, C -10.7%, D +0.2%), worst call +1%, the largest call
+        // (plausible-nil #45, `3 0 3 0`) -14%.  Narrower and wider versions
+        // lost: applying it to void seats only gave up the following-suit half
+        // (-5.7% against -6.5%); leaving the nil there however the cover could
+        // overtake was -4.8% in total but +5% on seed-1 #65; gating that on
+        // the window needing the nil broken did not fix it (-2.8%).
         leave = ((win_seat ^ seat) & 1) != 0;
         if (leave) {
             const int cover = win_seat ^ 2;
             for (int q = st.trick_len + 1; q < 4; ++q) {
-                if (((st.leader + q) & 3) == cover && hand_can_beat(st.hands[cover], best, led))
-                    leave = false;
+                if (((st.leader + q) & 3) != cover || !hand_can_beat(st.hands[cover], best, led))
+                    continue;
+                const Hand follow = st.hands[cover] & led_mask;
+                const bool follows_over = follow && card_suit(best) == led &&
+                                          static_cast<CardId>(highest_card(follow)) > best;
+                if (!ctx.ruff_overtake_leave || follows_over) leave = false;
             }
         }
     } else if (((win_seat ^ seat) & 1) == 0) {
@@ -2185,6 +2315,9 @@ int one_live_handoff(Ctx& ctx, const State& st, int L, CardId& best_move, int al
         r = search_impl<false>(sub, st, move, a, b, nullptr);
     }
     ctx.nodes += sub.nodes - before;
+    // C0: those nodes are the handed-off context's to report against the
+    // call's limits, not this one's (see CallLimits).  One add, armed or not.
+    ctx.limit_mark += sub.nodes - before;
     best_move = move;
     return flip ? -r : r + shift;
 }
@@ -2230,6 +2363,9 @@ template <bool TRACK>
 int search_core(Ctx& ctx, const State& st, CardId& best_move, int alpha, int beta,
                 [[maybe_unused]] Hand* essential) {
     ++ctx.nodes;    best_move = NO_CARD;
+    // C0: the per-call limits.  LIMIT_NEVER unless the caller set one, so this
+    // is a compare that never succeeds on the default call.
+    if (ctx.nodes >= ctx.limit_check_at) check_limits(ctx);
     if constexpr (TRACK) *essential = 0;
     // Does the caller read `best_move`?  Only an entry point does -- search()
     // sets the flag and the first node to see it clears it -- because every
@@ -3859,6 +3995,11 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
     // MODE_FULL only: in MODE_FAST it measured +1.8% of nodes on the 400-deal
     // verdict corpus, where the per-card rows it feeds on do not exist.
     ctx.killer_order = ctx.trick_order && opts.killer_order && opts.mode == MODE_FULL;
+    // MODE_FULL only, like the killer: MODE_FAST (nil_count_set and every
+    // presolve) keeps its order node for node, because nothing was measured
+    // there.  The minimise direction never reaches it (the shed order).
+    ctx.ruff_overtake_leave =
+        ctx.trick_order && opts.ruff_overtake_leave && opts.mode == MODE_FULL;
     // The minimise direction only, and MODE_FULL only: MODE_FAST asks the nil
     // question, which has no direction (minimise_own_tricks is inert there),
     // so its order -- and the presolve every single-nil solve() spends first --
@@ -5134,6 +5275,9 @@ static void fill_seat_status(MoveScore& ms, const SeatRoles& roles) {
 
 bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOptions& opts,
                  Solution& out, std::vector<MoveScore>& moves_out, std::string& err) {
+    // C0: a wall-clock limit runs from here, so it covers everything the call
+    // does, validation and table setup included.
+    const auto call_start = std::chrono::steady_clock::now();
     moves_out.clear();
     if (!validate_seat_roles(roles, err)) return false;
     const int nil_seat = roles.nil_seat();
@@ -5228,6 +5372,39 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
     Ctx ctx;
     configure(ctx, roles, opts, weights);
 
+    // C0: THE PER-CALL LIMITS, armed only when the caller set one.  Full mode
+    // only: fast mode is the boolean and cheap, and its rows have no partial
+    // state worth reporting.  `stopped` is set by the searches below that a
+    // limit interrupted; each of them then leaves its loop, and
+    // finish_stopped() -- defined below, before the rows are scored -- reports
+    // what the call had proven.
+    CallLimits limits;
+    const bool limited =
+        !fast && (opts.max_nodes != 0 || opts.max_ms != 0 || opts.cancel != nullptr);
+    if (limited) {
+        limits.max_nodes = opts.max_nodes;
+        limits.interval = opts.max_nodes != 0 && opts.max_nodes < LIMIT_CHECK_NODES
+                              ? opts.max_nodes
+                              : LIMIT_CHECK_NODES;
+        limits.has_deadline = opts.max_ms != 0;
+        limits.deadline = call_start + std::chrono::milliseconds(opts.max_ms);
+        limits.cancel = opts.cancel;
+        arm_limits(ctx, &limits);
+    }
+    bool stopped = false;
+    // Run one of this function's searches; a limit's SearchStopped becomes
+    // `stopped` here, where `ctx` -- and with it what the call has proven --
+    // is still alive.  Never reached unarmed, since nothing throws then.
+    auto unless_stopped = [&](auto&& search_step) -> bool {
+        try {
+            search_step();
+            return true;
+        } catch (const SearchStopped&) {
+            stopped = true;
+            return false;
+        }
+    };
+
     std::uint64_t presolve_nodes = 0;
     const int alpha = fast ? 0 : WINDOW_MIN;
     int beta = fast ? 1 : WINDOW_MAX;
@@ -5290,7 +5467,10 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
     // and the rows are only asked for booleans.  --moves-root-search restores it.
     CardId root_move = NO_CARD;
     const bool root_first = fast || opts.moves_root_search;
-    int root_value = root_first ? search(ctx, root, root_move, alpha, beta) : 0;
+    int root_value = 0;
+    if (root_first) {
+        unless_stopped([&] { root_value = search(ctx, root, root_move, alpha, beta); });
+    }
 
     // ROWS IN A PROMISING ORDER, REPORTED IN CANONICAL ORDER (Q4, Sept 2026;
     // SearchOptions::row_order).
@@ -5393,6 +5573,164 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
     const int canonical_depth =
         walks_canonically && opts.row_canonical_depth > 0 ? opts.row_canonical_depth : 0;
     ctx.canon_depth = canonical_depth;
+
+    // C0: WHAT A STOPPED CALL HAD PROVEN.  `stop_card` is the row whose probes
+    // a limit interrupted, and [stop_lo, stop_hi] the bounds they had reached;
+    // `stop_walked` is how many rows (in canonical order) had their lines
+    // walked when a limit interrupted the walk.  Rows already in `moves_out`
+    // carry exact values.
+    CardId stop_card = NO_CARD;
+    int stop_lo = WINDOW_MIN;
+    int stop_hi = WINDOW_MAX;
+    std::size_t stop_walked = 0;
+    const unsigned stop_live = live_nil_mask(roles);
+    int stop_tricks = root.trick_len;
+    for (int s = 0; s < 4; ++s) stop_tricks += count_cards(root.hands[s]);
+    stop_tricks /= 4;
+    // A row's fields from a range of values: every (broken mask, side tricks)
+    // pair the row could end in is packed the way decode_row below packs it,
+    // and a field is filled where every pair inside [lo, hi] agrees on it.
+    // With lo == hi this is decode_row exactly, except that a mask the value
+    // does not pin -- a pair that both bid, one of them down -- is left short
+    // of `nils_set` bits rather than sent to a line walk there is no budget
+    // for.  Nothing is estimated: a field the range does not pin stays
+    // TRICKS_NOT_COMPUTED.
+    auto decode_range = [&](MoveScore& ms, int lo, int hi) {
+        bool any = false;
+        bool one_count = true, one_mask = true, one_side = true, one_value = true;
+        int count = 0, side = 0, value = 0;
+        unsigned mask = 0;
+        for (unsigned m = stop_live;; m = (m - 1) & stop_live) {
+            int broken = 0;
+            for (unsigned r = m; r; r &= r - 1) ++broken;
+            for (int T = 0; T <= stop_tricks; ++T) {
+                const int packed =
+                    ctx.opposing ? weights.primary * (far_side_rank(m, ctx) - far_side_rank(0, ctx)) +
+                                       weights.secondary * (stop_tricks - T)
+                                 : weights.primary * broken + weights.secondary * T;
+                if (packed < lo || packed > hi) continue;
+                if (!any) {
+                    any = true;
+                    count = broken;
+                    mask = m;
+                    side = T;
+                    value = packed;
+                    continue;
+                }
+                one_count = one_count && broken == count;
+                one_mask = one_mask && m == mask;
+                one_side = one_side && T == side;
+                one_value = one_value && packed == value;
+            }
+            if (m == 0) break;
+        }
+        ms.nils_set = TRICKS_NOT_COMPUTED;
+        ms.nils_set_mask = nil_set_mask(roles);
+        ms.nil_tricks = TRICKS_NOT_COMPUTED;
+        ms.nil_side_tricks = TRICKS_NOT_COMPUTED;
+        ms.opponent_tricks = TRICKS_NOT_COMPUTED;
+        ms.is_best = false;
+        if (!any || !one_count) {
+            ms.known = ROW_NOTHING;
+            return;
+        }
+        ms.nils_set = count + nil_set_count(roles);
+        if (one_mask) ms.nils_set_mask |= mask;
+        if (one_side) {
+            ms.nil_side_tricks = side;
+            ms.opponent_tricks = stop_tricks - side;
+        }
+        ms.known = one_value ? ROW_VALUE : ROW_OUTCOME;
+        if (one_value) ms.value = value;
+    };
+    // The stopped call's answer.  Every row is listed, in canonical order, each
+    // with what it had proven; the position's own fields only when every row's
+    // value was (the stop came during the line walk), since only then is the
+    // best row known.  Returns true: running out of budget is not an error,
+    // and Solution::complete is what tells the caller.
+    auto finish_stopped = [&](bool values_known) -> bool {
+        std::vector<MoveScore> rows;
+        if (values_known) {
+            // Stopped in the walk: rows before `stop_walked` are complete,
+            // the rest have exact values and no line.
+            for (std::size_t i = stop_walked; i < moves_out.size(); ++i) {
+                MoveScore& ms = moves_out[i];
+                const int v = ms.value;
+                decode_range(ms, v, v);
+                ms.is_best = v == best_value;
+                for (int s = 0; s < 4; ++s) ms.seat_tricks[s] = TRICKS_NOT_COMPUTED;
+            }
+            rows = moves_out;
+        } else {
+            for (int row = 0; row < n_rows; ++row) {
+                const CardId card = row_cards[row];
+                MoveScore ms;
+                ms.card = card;
+                ms.equals = opts.collapse_equivalents ? equivalent_moves(card, legal, relevant)
+                                                      : card_bit(card);
+                const MoveScore* done = nullptr;
+                for (const MoveScore& m : moves_out) {
+                    if (m.card == card) done = &m;
+                }
+                if (done) {
+                    decode_range(ms, done->value, done->value);
+                } else if (card == stop_card) {
+                    decode_range(ms, stop_lo, stop_hi);
+                } else {
+                    decode_range(ms, WINDOW_MAX, WINDOW_MIN);  // an empty range: nothing
+                }
+                rows.push_back(ms);
+            }
+            std::sort(rows.begin(), rows.end(),
+                      [](const MoveScore& a, const MoveScore& b) { return a.card < b.card; });
+        }
+        const unsigned declared = nil_set_mask(roles);
+        for (MoveScore& ms : rows) {
+            fill_seat_status(ms, roles);
+            // A live bid the row has not pinned: the count is unknown, or the
+            // mask is short of it.
+            const bool pinned = ms.nils_set >= 0 && count_cards(static_cast<Hand>(
+                                                         ms.nils_set_mask)) == ms.nils_set;
+            if (pinned) continue;
+            for (int s = 0; s < 4; ++s) {
+                if (roles.is_nil(s) && !((declared >> s) & 1u)) ms.seat_status[s] = SEAT_UNKNOWN;
+            }
+        }
+        moves_out = rows;
+        out.complete = false;
+        out.pv.clear();
+        out.value = values_known ? best_value : 0;
+        out.nils_set = TRICKS_NOT_COMPUTED;
+        out.nils_set_mask = 0;
+        out.nils_set_mask_determined = false;
+        out.nil_tricks = TRICKS_NOT_COMPUTED;
+        out.nil_side_tricks = TRICKS_NOT_COMPUTED;
+        out.opponent_tricks = TRICKS_NOT_COMPUTED;
+        if (values_known) {
+            for (const MoveScore& ms : moves_out) {
+                if (!ms.is_best) continue;
+                out.nils_set = ms.nils_set;
+                out.nils_set_mask = ms.nils_set_mask;
+                out.nils_set_mask_determined =
+                    count_cards(static_cast<Hand>(ms.nils_set_mask)) == ms.nils_set &&
+                    mask_determined(roles, ms.nils_set, ms.nils_set_mask);
+                out.nil_tricks = ms.nil_tricks;
+                out.nil_side_tricks = ms.nil_side_tricks;
+                out.opponent_tricks = ms.opponent_tricks;
+                break;
+            }
+        }
+        out.nodes = limits.used + limit_nodes_spent(ctx) + presolve_nodes;
+        const TTStats stats = ctx.tt ? ctx.tt->stats() : TTStats();
+        out.tt_probes = stats.probes;
+        out.tt_hits = stats.hits;
+        out.tt_partial = stats.partial;
+        out.tt_stores = stats.stores;
+        out.tt_evictions = stats.evictions;
+        return true;
+    };
+    if (stopped) return finish_stopped(false);  // the root search (NO_ROW_MTD)
+
     for (int row = 0; row < n_rows; ++row) {
         const CardId card = row_cards[row];
         MoveScore ms;
@@ -5439,7 +5777,13 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
                 // reached a node -- a trick that settles the window by itself
                 // returns without one.
                 ctx.canon_next = canonical_depth;
-                const int r = value_after(ctx, root, card, bound - 1, bound, nullptr);
+                int r = 0;
+                if (!unless_stopped(
+                        [&] { r = value_after(ctx, root, card, bound - 1, bound, nullptr); })) {
+                    stop_lo = lo;  // C0: what this row's probes had proven
+                    stop_hi = hi;
+                    break;
+                }
                 ctx.canon_next = 0;
                 if (r < bound) {
                     hi = r;  // at most r
@@ -5450,15 +5794,21 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
             }
             ms.value = lo;
         } else {
-            ms.value = value_after(ctx, root, card, alpha, beta, nullptr);
+            unless_stopped([&] { ms.value = value_after(ctx, root, card, alpha, beta, nullptr); });
             // Fail-high means this card is on the far side of the presolve's
             // threshold -- it loses the nil -- so the number above is a bound
             // and not this row's answer.  Re-search it against the sentinels.
             // The table is warm by now, and there is one of these per losing
             // card rather than one per card.
-            if (beta != WINDOW_MAX && ms.value >= beta) {
-                ms.value = value_after(ctx, root, card, WINDOW_MIN, WINDOW_MAX, nullptr);
+            if (!stopped && beta != WINDOW_MAX && ms.value >= beta) {
+                unless_stopped([&] {
+                    ms.value = value_after(ctx, root, card, WINDOW_MIN, WINDOW_MAX, nullptr);
+                });
             }
+        }
+        if (stopped) {
+            stop_card = card;
+            break;
         }
         if (!have_best || (maximizing ? ms.value > best_value : ms.value < best_value)) {
             have_best = true;
@@ -5466,6 +5816,7 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
         }
         moves_out.push_back(ms);
     }
+    if (stopped) return finish_stopped(false);
     // Canonical order again (Q4): suit-major, ascending rank, which is card id
     // order.  Everything after this line sees the list exactly as before.
     std::sort(moves_out.begin(), moves_out.end(),
@@ -5561,6 +5912,9 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
     };
 
     for (MoveScore& ms : moves_out) {
+        // C0: the rows before this one are finished, should a limit stop the
+        // walk below.
+        stop_walked = static_cast<std::size_t>(&ms - moves_out.data());
         ms.is_best = ms.value == best_value;
         if (fast) {
             ms.nils_set = ms.value > 0 ? 1 : 0;
@@ -5592,7 +5946,12 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
         if (!child.empty() && ctx.tight_pv && ctx.canonicalise) {
             // As in walk_pv(): the child's value is known and its move is about
             // to be re-derived canonically, so no search precedes that.
-            next_move = canonical_move_for(ctx, child, child_value, child_alpha, child_beta, 1);
+            if (!unless_stopped([&] {
+                    next_move =
+                        canonical_move_for(ctx, child, child_value, child_alpha, child_beta, 1);
+                })) {
+                break;
+            }
             if (next_move == NO_CARD) {
                 std::ostringstream os;
                 os << "internal inconsistency: no reply to " << card_to_string(ms.card)
@@ -5601,7 +5960,9 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
                 return false;
             }
         } else if (!child.empty()) {
-            const int cv = search(ctx, child, next_move, child_alpha, child_beta);
+            int cv = 0;
+            if (!unless_stopped([&] { cv = search(ctx, child, next_move, child_alpha, child_beta); }))
+                break;
             if (ctx.tight_pv && cv != child_value) {
                 std::ostringstream os;
                 os << "internal inconsistency: " << card_to_string(ms.card) << " scores "
@@ -5610,16 +5971,23 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
                 return false;
             }
             if (ctx.canonicalise) {
-                const CardId c = canonical_move_for(ctx, child, cv, child_alpha, child_beta);
+                CardId c = NO_CARD;
+                if (!unless_stopped(
+                        [&] { c = canonical_move_for(ctx, child, cv, child_alpha, child_beta); }))
+                    break;
                 if (c != NO_CARD) next_move = c;
             }
         }
 
         std::vector<Play> line;
         line.push_back(Play{seat, ms.card});
-        if (!child.empty() &&
-            !walk_pv(ctx, child, next_move, line, err, WINDOW_MIN, WINDOW_MAX, child_value))
-            return false;
+        bool walked = true;
+        if (!child.empty() && !unless_stopped([&] {
+                walked = walk_pv(ctx, child, next_move, line, err, WINDOW_MIN, WINDOW_MAX,
+                                 child_value);
+            }))
+            break;
+        if (!walked) return false;
 
         Tally tally;
         if (!replay_pv(pos, line, roles, tally, err)) {
@@ -5660,6 +6028,7 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
         // point the same principal variation, already replay-checked above.
         if (out.pv.empty() && ms.value == best_value && opts.row_lines) out.pv = line;
     }
+    if (stopped) return finish_stopped(true);
 
     // Each seat's outcome, read off the row's mask.  Done here rather than in
     // the three paths above so that every row gets it whichever path filled it.

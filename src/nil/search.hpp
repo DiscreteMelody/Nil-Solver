@@ -1033,6 +1033,18 @@ struct SearchOptions {
     // --no-killer-order (CLI and nil_bench).
     bool killer_order = true;
 
+    // C1 (Oct 2026 tail study): a live bid holding the trick is left there by
+    // the other side unless its partner, still to play, can overtake it by
+    // FOLLOWING SUIT.  A partner that can only overtake by ruffing no longer
+    // cancels the leave, so the opponents try their losing cards first and
+    // make the cover spend a trump to save its nil.  Rides on trick_order;
+    // MODE_FULL only.
+    // The size-weighted study and the measurements are at trick_order_moves
+    // in search.cpp.  Ordering only: same values, verdicts and principal
+    // variations.  Off with --no-ruff-overtake-leave (CLI and nil_bench; the
+    // ABI has no bit left for it).
+    bool ruff_overtake_leave = true;
+
     // In the MINIMISE direction (minimise_own_tricks), order every seat that
     // holds no live bid by the shed order instead of the trick order: the
     // losing card first, highest first, then the cheapest winner; on a void
@@ -1110,6 +1122,49 @@ struct SearchOptions {
     // same lines.  Off with --no-tt-two-bounds (CLI and nil_bench; no ABI
     // bit), which restores the single-bound table node for node.
     bool tt_two_bounds = true;
+
+    // PER-CALL LIMITS (C0, Oct 2026).  Read by solve_moves() alone -- the
+    // bot's call -- and inert everywhere else.  Zero and null are "no limit",
+    // which is what every caller that does not set them gets, so the default
+    // call is node for node the call it always was.
+    //
+    // WHY A LIMIT AND NOT ONLY A FASTER SEARCH.  The tail-latency investigation
+    // (Oct 2026, §4.4-4.5) found the slow calls are slow because of the whole
+    // layout: per-deal times correlate across seatings, static features of the
+    // deal predict almost nothing, and re-dealing the 39 unseen cards around a
+    // pathological hand never reproduced its time.  So a caller cannot know in
+    // advance which determinization will take 80 s, and with calls serialized
+    // one such call blocks every call queued behind it.  Nothing inside the
+    // search bounds that worst case; a budget does.  What replaces a call that
+    // ran out is the caller's decision, which is why the call hands back what
+    // it had PROVEN rather than a guess (see MoveScore::known).
+    //
+    // HOW IT STOPS.  search_core counts nodes as it always has; every
+    // LIMIT_CHECK_NODES of them (64K, about 9 ms at 13 cards) it adds what it
+    // spent to the call's total and tests the three limits.  When one has run
+    // out it throws, and solve_moves catches it.  Unwinding by exception is
+    // what makes "stop storing once it fires" free: every frame between the
+    // check and solve_moves is abandoned before it reaches its table store, so
+    // nothing half-searched is ever written, and the table entries already
+    // there are proven bounds like any other.  The double-dummy engine is
+    // never interrupted (the check is in search_core, which the engine does
+    // not call), so its table stays exactly as trustworthy.  Zero cost when
+    // nothing fires: one compare per node against a threshold that is the
+    // largest 64-bit number unless a limit is armed.
+    //
+    //   max_nodes  nodes, counted the way Solution::nodes counts them (engine
+    //              nodes included).  Deterministic under a fixed process
+    //              history, which makes it the one to test with.
+    //   max_ms     wall-clock milliseconds from the start of solve_moves.
+    //   cancel     a word another thread may set to non-zero; read at each
+    //              check.  The caller owns it and keeps it alive for the call.
+    //
+    // A limit fires at the first check past it, so a call may overrun by up to
+    // one check interval per search context (the main one and up to four
+    // handed-off single-nil searches): well under 50 ms at 13 cards.
+    std::uint64_t max_nodes = 0;
+    std::uint32_t max_ms = 0;
+    const volatile std::int32_t* cancel = nullptr;
 };
 
 // Who took what along a line.
@@ -1198,6 +1253,13 @@ struct Solution {
     // Which mode produced this, so a caller holding a Solution can tell what is
     // in it without having kept the SearchOptions around.
     SearchMode mode = MODE_FULL;
+    // False when solve_moves() stopped on one of SearchOptions' per-call
+    // limits (C0) before every row was finished.  The rows then say what each
+    // of them had proven (MoveScore::known), the position's own fields are
+    // filled only where every row's value was proven, `pv` is empty, and
+    // `nodes` is what the call spent before it stopped.  Always true from
+    // solve(), and from solve_moves() when no limit was set.
+    bool complete = true;
 
     // Transposition table behaviour for this solve.  `tt_hits` is the number of
     // nodes answered from the table; `tt_evictions` counts stores that threw
@@ -1275,6 +1337,36 @@ enum SeatStatus : int {
     SEAT_NIL_MAKES = 0,  // bid nil, and the nil survives
     SEAT_NIL_SET = 1,    // bid nil, and the nil is broken (or already was)
     SEAT_NO_NIL = 2,     // did not bid nil
+    // A live bid whose fate the row has not proven.  Only on a call stopped
+    // by a per-call limit (C0); see MoveScore::known.
+    SEAT_UNKNOWN = -1,
+};
+
+// HOW MUCH OF A ROW IS PROVEN (C0, Oct 2026).  Every row of a call that ran to
+// the end is ROW_ALL.  The other three appear only when solve_moves() stopped
+// on a per-call limit (SearchOptions::max_nodes and friends), and each says
+// which fields can be trusted; the rest read TRICKS_NOT_COMPUTED (or
+// SEAT_UNKNOWN, or a mask short of `nils_set` bits), never a guess.
+//
+//   ROW_ALL      every field, exactly as an unlimited call reports it.
+//   ROW_VALUE    the row's value was proven, so every field the value pins is
+//                filled -- exactly what values-only rows report (see
+//                SearchOptions::row_lines) -- but its line was not walked:
+//                nil_tricks and seat_tricks are not known, and on a pair that
+//                both bid with one of them down the mask cannot say which.
+//   ROW_OUTCOME  the row's MTD(f) bounds had already settled how many bids
+//                fall (and the mask, where the bounds pin it), but not the
+//                tricks: nil_side_tricks / opponent_tricks are unknown.
+//   ROW_NOTHING  nothing proven: nils_set is TRICKS_NOT_COMPUTED.
+//
+// The order is the order the per-card call proves things in -- each row's
+// bounds close in on its value, then the lines are walked -- so a row's state
+// only ever moves up this list as a call is given more budget.
+enum RowKnown : int {
+    ROW_ALL = 0,
+    ROW_VALUE = 1,
+    ROW_OUTCOME = 2,
+    ROW_NOTHING = 3,
 };
 
 struct MoveScore {
@@ -1342,6 +1434,10 @@ struct MoveScore {
     // differently-ordered search may move a trick between partners.
     int seat_tricks[4] = {TRICKS_NOT_COMPUTED, TRICKS_NOT_COMPUTED, TRICKS_NOT_COMPUTED,
                           TRICKS_NOT_COMPUTED};
+
+    // How much of this row is proven.  ROW_ALL unless the call stopped on a
+    // per-call limit; see RowKnown.
+    RowKnown known = ROW_ALL;
 };
 
 // Validates, then scores EVERY legal card at the root rather than just the best

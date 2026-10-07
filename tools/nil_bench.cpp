@@ -46,6 +46,7 @@
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iomanip>
@@ -390,6 +391,11 @@ void usage(const char* argv0) {
               << "  --check-pv        also require the recorded PV to match (see below)\n"
               << "  --check-moves     also score every legal card at each position and\n"
               << "                    require the list to agree with the position\n"
+              << "  --max-nodes <n>   arm the per-card call's node budget (C0); a budget\n"
+              << "                    the call never reaches must change nothing\n"
+              << "  --check-limits    with --check-moves: re-score each position under a\n"
+              << "                    ladder of smaller node budgets and require every\n"
+              << "                    stopped call to report only what is proven (C0)\n"
               << "  --csv <file>      write per-position rows for later comparison\n"
               << "  --baseline <file> compare against a csv written earlier\n"
               << "  --history <file>  APPEND a summary row to a running history csv\n"
@@ -461,6 +467,7 @@ void usage(const char* argv0) {
               << "                    rules, not by the trick-oriented score (also\n"
               << "                    turns off the next one)\n"
               << "  --no-killer-order no last-cutting-move-second at scored nodes\n"
+              << "  --no-ruff-overtake-leave  a ruffing cover cancels the leave (C1)\n"
               << "  --no-shed-order   minimise direction: trick order, not shed order\n"
               << "  --shed-single-attack  minimise direction: 6b first vs a single nil\n"
               << "  --no-tight-pv     re-derive lines under the caller's window\n"
@@ -565,6 +572,8 @@ std::string memo_label(const nil::SearchOptions& opts) {
     if (!opts.killer_order && opts.trick_order && opts.live_order &&
         opts.mode == nil::MODE_FULL)
         suffix += "+nokiller";
+    if (!opts.ruff_overtake_leave && opts.trick_order && opts.mode == nil::MODE_FULL)
+        suffix += "+noruffleave";
     if (!opts.tight_pv && opts.mode == nil::MODE_FULL) suffix += "+notightpv";
     if (!opts.tt_two_bounds) suffix += "+nottbounds";
     if (!opts.one_live_handoff && opts.mode == nil::MODE_FULL) suffix += "+noonelive";
@@ -588,6 +597,135 @@ std::string memo_label(const nil::SearchOptions& opts) {
     return std::to_string(mb) + "mb" + suffix;
 }
 
+// C0's corpus check (--check-limits).  Re-scores one position's cards under a
+// ladder of node budgets below what the finished call spent, and requires
+// every stopped call to report only what is true: each row's proven fields
+// equal the finished row's, and a field it has not proven reads unknown.  Then
+// scores it once more with no limit and requires the finished answer again --
+// a stopped call must leave nothing behind that changes the next one.
+// Returns the number of failures, each already printed.
+// What the ladders saw, for the summary line: stopped calls, and their rows by
+// nil::RowKnown.  A ladder whose budgets never stopped anything would pass
+// vacuously; the counts say it did not.
+std::uint64_t g_limit_stops = 0;
+std::uint64_t g_limit_rows[4] = {0, 0, 0, 0};
+
+int check_limit_ladder(const nil::Position& position, const nil::SeatRoles& roles,
+                       nil::SearchOptions opts, const nil::Solution& full,
+                       const std::vector<nil::MoveScore>& rows, const std::string& name,
+                       const std::string& repro) {
+    int failures = 0;
+    auto fail = [&](const std::string& what) {
+        std::cout << "FAIL " << name << ": " << what << "\n  " << repro << "\n";
+        ++failures;
+    };
+    std::string err;
+    std::vector<std::uint64_t> budgets = {1, full.nodes / 16, full.nodes / 4, full.nodes / 2,
+                                          full.nodes - full.nodes / 8};
+    for (const std::uint64_t budget : budgets) {
+        if (budget == 0 || budget >= full.nodes || failures) continue;
+        opts.max_nodes = budget;
+        nil::Solution sol;
+        std::vector<nil::MoveScore> part;
+        if (!nil::solve_moves(position, roles, opts, sol, part, err)) {
+            fail("limited solve_moves failed: " + err);
+            break;
+        }
+        const std::string at = " (budget " + std::to_string(budget) + ")";
+        if (part.size() != rows.size()) {
+            fail("a stopped call lists a different number of cards" + at);
+            break;
+        }
+        if (sol.complete) {
+            // Finished inside the budget (the engine's table is warmer than it
+            // was for the finished call): then it owes the finished answer.
+            for (std::size_t r = 0; r < rows.size(); ++r) {
+                const nil::MoveScore& a = part[r];
+                const nil::MoveScore& b = rows[r];
+                if (a.card != b.card || a.value != b.value || a.nils_set != b.nils_set ||
+                    a.nils_set_mask != b.nils_set_mask || a.nil_tricks != b.nil_tricks ||
+                    a.nil_side_tricks != b.nil_side_tricks || a.is_best != b.is_best ||
+                    a.known != nil::ROW_ALL) {
+                    fail("a call that finished inside its budget differs" + at);
+                    break;
+                }
+            }
+            continue;
+        }
+        ++g_limit_stops;
+        for (const nil::MoveScore& m : part) ++g_limit_rows[m.known];
+        if (sol.nodes < budget) fail("a stopped call spent less than its budget" + at);
+        if (!sol.pv.empty()) fail("a stopped call reports a line" + at);
+        for (std::size_t r = 0; r < rows.size() && !failures; ++r) {
+            const nil::MoveScore& a = part[r];
+            const nil::MoveScore& b = rows[r];
+            const std::string card = " on " + nil::card_to_string(a.card) + at;
+            if (a.card != b.card || a.equals != b.equals) {
+                fail("a stopped call lists different cards" + card);
+                break;
+            }
+            const bool mask_pinned =
+                a.nils_set >= 0 &&
+                nil::count_cards(static_cast<nil::Hand>(a.nils_set_mask)) == a.nils_set;
+            bool ok = true;
+            switch (a.known) {
+                case nil::ROW_ALL:
+                    ok = a.value == b.value && a.nils_set == b.nils_set &&
+                         a.nils_set_mask == b.nils_set_mask && a.nil_tricks == b.nil_tricks &&
+                         a.nil_side_tricks == b.nil_side_tricks &&
+                         a.opponent_tricks == b.opponent_tricks && a.is_best == b.is_best;
+                    for (int s = 0; s < 4; ++s) ok = ok && a.seat_tricks[s] == b.seat_tricks[s];
+                    break;
+                case nil::ROW_VALUE:
+                    ok = a.value == b.value && a.nils_set == b.nils_set &&
+                         a.nil_side_tricks == b.nil_side_tricks &&
+                         a.opponent_tricks == b.opponent_tricks &&
+                         a.nil_tricks == nil::TRICKS_NOT_COMPUTED &&
+                         (!a.is_best || b.is_best) && (!mask_pinned || a.nils_set_mask == b.nils_set_mask);
+                    break;
+                case nil::ROW_OUTCOME:
+                    ok = a.nils_set == b.nils_set && !a.is_best &&
+                         (!mask_pinned || a.nils_set_mask == b.nils_set_mask) &&
+                         (a.nil_side_tricks < 0 || a.nil_side_tricks == b.nil_side_tricks) &&
+                         a.nil_tricks == nil::TRICKS_NOT_COMPUTED;
+                    break;
+                case nil::ROW_NOTHING:
+                    ok = a.nils_set == nil::TRICKS_NOT_COMPUTED && !a.is_best &&
+                         a.nil_side_tricks == nil::TRICKS_NOT_COMPUTED;
+                    break;
+            }
+            // A seat the row reports a fate for has that fate.
+            for (int s = 0; s < 4; ++s) {
+                if (a.seat_status[s] != nil::SEAT_UNKNOWN && a.seat_status[s] != b.seat_status[s])
+                    ok = false;
+            }
+            if (!ok) fail("a stopped call reports something its finished row does not" + card);
+        }
+    }
+    // Nothing a stopped call left behind may change the next answer.
+    opts.max_nodes = 0;
+    nil::Solution again;
+    std::vector<nil::MoveScore> again_rows;
+    if (!nil::solve_moves(position, roles, opts, again, again_rows, err) ||
+        again_rows.size() != rows.size() ||
+        nil::format_pv_compact(again) != nil::format_pv_compact(full)) {
+        fail("the finished call after the stopped ones differs");
+    } else {
+        for (std::size_t r = 0; r < rows.size(); ++r) {
+            const nil::MoveScore& a = again_rows[r];
+            const nil::MoveScore& b = rows[r];
+            if (a.card != b.card || a.value != b.value || a.nils_set_mask != b.nils_set_mask ||
+                a.nil_tricks != b.nil_tricks || a.nil_side_tricks != b.nil_side_tricks ||
+                a.is_best != b.is_best) {
+                fail("the finished call after the stopped ones differs on " +
+                     nil::card_to_string(a.card));
+                break;
+            }
+        }
+    }
+    return failures;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -606,6 +744,7 @@ int main(int argc, char** argv) {
     bool quiet = false;
     bool check_pv = false;
     bool check_moves = false;
+    bool check_limits = false;
     bool tt_stats = false;
     bool rank_stats = false;
     bool nilset_stats = false;
@@ -770,6 +909,10 @@ int main(int argc, char** argv) {
             }
         } else if (arg == "--check-moves") {
             check_moves = true;
+        } else if (arg == "--check-limits") {
+            check_limits = true;
+        } else if (arg == "--max-nodes" && has_next) {
+            opts.max_nodes = std::strtoull(argv[++i], nullptr, 10);
         } else if (arg == "--check-pv") {
             check_pv = true;
         } else if (arg == "--no-dd-live-bounds") {
@@ -793,6 +936,8 @@ int main(int argc, char** argv) {
             opts.trick_order = false;
         } else if (arg == "--no-killer-order") {
             opts.killer_order = false;
+        } else if (arg == "--no-ruff-overtake-leave") {
+            opts.ruff_overtake_leave = false;
         } else if (arg == "--no-shed-order") {
             opts.shed_order = false;
         } else if (arg == "--shed-single-attack") {
@@ -1001,6 +1146,7 @@ int main(int argc, char** argv) {
     // real work would report a speedup that is nothing of the kind.
     int mode_checked = 0;
     int moves_checked = 0;
+    int limits_checked = 0;
     int mode_unsearched = 0;
     std::uint64_t cmp_full_nodes = 0;
     std::uint64_t cmp_fast_nodes = 0;
@@ -1243,6 +1389,11 @@ int main(int argc, char** argv) {
                               << item.repro << "\n";
                     ++failures;
                 }
+                if (check_limits && msol.complete && opts.mode == nil::MODE_FULL) {
+                    failures += check_limit_ladder(item.position, item.roles, move_opts, msol,
+                                                   scored, item.name, item.repro);
+                    ++limits_checked;
+                }
             }
         }
 
@@ -1334,6 +1485,15 @@ int main(int argc, char** argv) {
         std::cout << "\n  move list: " << moves_checked
                   << " position(s) scored card by card, each list agreeing with the "
                      "position it came from\n";
+    }
+    if (limits_checked) {
+        std::cout << "  limits: " << limits_checked
+                  << " position(s) re-scored under smaller node budgets, every stopped call "
+                     "reporting only what its finished rows say\n"
+                  << "          " << g_limit_stops << " stopped call(s); their rows: "
+                  << g_limit_rows[nil::ROW_ALL] << " finished, " << g_limit_rows[nil::ROW_VALUE]
+                  << " value, " << g_limit_rows[nil::ROW_OUTCOME] << " outcome, "
+                  << g_limit_rows[nil::ROW_NOTHING] << " nothing\n";
     }
     if (cross_check_modes) {
         std::cout << "\n  mode check: " << mode_checked << " position(s) solved both ways, "

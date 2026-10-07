@@ -328,6 +328,24 @@ if(NIL_SOLVER_BUILD_TESTS)
                      --slowest 0)
     set_tests_properties(corpus_moves_fast PROPERTIES TIMEOUT 900)
 
+    # C0, the per-call limits (SearchOptions::max_nodes and friends).  Two
+    # arms.  _unfired arms a budget no row reaches, so every check corpus_moves
+    # makes must still pass -- the limit, armed, changes nothing.  _ladder
+    # re-scores every position under budgets of 1, 1/16, 1/4, 1/2 and 7/8 of
+    # what its finished call spent and holds each stopped call's rows against
+    # the finished ones: what a row reports as proven must be true, and what it
+    # has not proven must read unknown.  The same ladder runs on the twin,
+    # three-nil and opposed corpora below, whose handed-off single-nil
+    # searches count their nodes on counters of their own.
+    add_test(NAME corpus_moves_limits_unfired
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --check-moves --check-pv
+                     --max-nodes 1000000000000000 --quiet --slowest 0)
+    set_tests_properties(corpus_moves_limits_unfired PROPERTIES TIMEOUT 900)
+    add_test(NAME corpus_moves_limits_ladder
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --check-moves --check-limits --quiet
+                     --slowest 0)
+    set_tests_properties(corpus_moves_limits_ladder PROPERTIES TIMEOUT 900)
+
     add_test(NAME corpus_ordering
              COMMAND nil_bench --corpus "${NIL_CORPUS}" --mode fast --no-ordering --quiet
                      --slowest 0)
@@ -458,6 +476,14 @@ if(NIL_SOLVER_BUILD_TESTS)
              COMMAND nil_bench --corpus "${NIL_CORPUS}" --check-moves --check-pv
                      --no-killer-order --quiet --slowest 0)
     set_tests_properties(corpus_no_killer_order PROPERTIES TIMEOUT 900)
+    # C1 (Oct 2026): the opponents leave a winning nil there unless its
+    # partner can overtake by following; the control arm lets a ruffing
+    # partner cancel the leave again.  Full mode only, like the killer; the
+    # corpus default runs are the ON arm.
+    add_test(NAME corpus_no_ruff_overtake_leave
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --check-moves --check-pv
+                     --no-ruff-overtake-leave --quiet --slowest 0)
+    set_tests_properties(corpus_no_ruff_overtake_leave PROPERTIES TIMEOUT 900)
     # The control arms for the shed order (the Oct 2026 minimise-direction
     # study; see shed_order_moves in search.cpp).  It reaches only the corpus
     # rows that ask for the minimise direction -- 271 of them here -- and
@@ -616,6 +642,12 @@ if(NIL_SOLVER_BUILD_TESTS)
              COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-moves --check-pv
                      --quiet --slowest 0)
     set_tests_properties(corpus_multinil_moves PROPERTIES TIMEOUT 900)
+    # C0's ladder (see corpus_moves_limits_ladder): the twin rows whose value
+    # cannot say which bid fell are the ones that report a short mask.
+    add_test(NAME corpus_multinil_moves_limits_ladder
+             COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-moves --check-limits
+                     --quiet --slowest 0)
+    set_tests_properties(corpus_multinil_moves_limits_ladder PROPERTIES TIMEOUT 900)
     add_test(NAME corpus_multinil_moves_no_row_mtd
              COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-moves --check-pv
                      --no-row-mtd --quiet --slowest 0)
@@ -632,6 +664,10 @@ if(NIL_SOLVER_BUILD_TESTS)
              COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-moves --check-pv
                      --no-trick-order --quiet --slowest 0)
     set_tests_properties(corpus_multinil_no_trick_order PROPERTIES TIMEOUT 900)
+    add_test(NAME corpus_multinil_no_ruff_overtake_leave
+             COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-moves --check-pv
+                     --no-ruff-overtake-leave --quiet --slowest 0)
+    set_tests_properties(corpus_multinil_no_ruff_overtake_leave PROPERTIES TIMEOUT 900)
     add_test(NAME corpus_multinil_no_shed_order
              COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-moves --check-pv
                      --no-shed-order --quiet --slowest 0)
@@ -717,6 +753,16 @@ if(NIL_SOLVER_BUILD_TESTS)
              COMMAND nil_bench --corpus "${NIL_THREENIL_CORPUS}" --check-moves --values-only
                      --quiet --slowest 0)
     set_tests_properties(corpus_threenil_values_only PROPERTIES TIMEOUT 600)
+    add_test(NAME corpus_threenil_no_ruff_overtake_leave
+             COMMAND nil_bench --corpus "${NIL_THREENIL_CORPUS}" --check-moves --check-pv
+                     --no-ruff-overtake-leave --quiet --slowest 0)
+    set_tests_properties(corpus_threenil_no_ruff_overtake_leave PROPERTIES TIMEOUT 600)
+    # C0's ladder (see corpus_moves_limits_ladder), on the shape whose
+    # handed-off searches carry most of its nodes.
+    add_test(NAME corpus_threenil_moves_limits_ladder
+             COMMAND nil_bench --corpus "${NIL_THREENIL_CORPUS}" --check-moves --check-limits
+                     --quiet --slowest 0)
+    set_tests_properties(corpus_threenil_moves_limits_ladder PROPERTIES TIMEOUT 600)
 
     # THE CONTROL ARMS for every opposed-shape optimisation three bids now
     # reach.  Each one reads the outcome rank through the table and had only
@@ -812,6 +858,15 @@ if(NIL_SOLVER_BUILD_TESTS)
              COMMAND nil_bench --corpus "${NIL_OPPOSED_CORPUS}" --check-moves --values-only
                      --quiet --slowest 0)
     set_tests_properties(corpus_opposed_values_only PROPERTIES TIMEOUT 600)
+    add_test(NAME corpus_opposed_no_ruff_overtake_leave
+             COMMAND nil_bench --corpus "${NIL_OPPOSED_CORPUS}" --check-moves --check-pv
+                     --no-ruff-overtake-leave --quiet --slowest 0)
+    set_tests_properties(corpus_opposed_no_ruff_overtake_leave PROPERTIES TIMEOUT 600)
+    # C0's ladder (see corpus_moves_limits_ladder), one bid per side.
+    add_test(NAME corpus_opposed_moves_limits_ladder
+             COMMAND nil_bench --corpus "${NIL_OPPOSED_CORPUS}" --check-moves --check-limits
+                     --quiet --slowest 0)
+    set_tests_properties(corpus_opposed_moves_limits_ladder PROPERTIES TIMEOUT 600)
 
     # Item 100's control arms.  The handoff fires at every depth, so the
     # default runs above take it and corpus_opposed_no_one_live_handoff does

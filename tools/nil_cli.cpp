@@ -103,6 +103,9 @@ void usage(const char* argv0) {
         << "                          answer and PV, more nodes)\n"
         << "  --no-killer-order       do not try the last cutting move at the same\n"
         << "                          depth second (same answer and PV, more nodes)\n"
+        << "  --no-ruff-overtake-leave  let a nil's partner that can only ruff still\n"
+        << "                          cancel the opponents' leave (C1; same answer\n"
+        << "                          and PV, more nodes)\n"
         << "  --no-shed-order         --secondary min: order seats with no live bid\n"
         << "                          by the trick order, not the shed order (same\n"
         << "                          answer and PV, more nodes)\n"
@@ -187,6 +190,10 @@ void usage(const char* argv0) {
         << "                          one line per card giving each seat's\n"
         << "                          outcome (0 nil makes, 1 nil set, 2 no nil)\n"
         << "                          and tricks, plus the pair totals\n"
+        << "  --max-nodes <n>         --moves: stop after about n nodes and report\n"
+        << "                          what each card had proven (C0; 0 = no limit)\n"
+        << "  --max-ms <n>            --moves: the same, for n milliseconds of wall\n"
+        << "                          time\n"
         << "  --conjunction <seat>    with a bid on each side, answer only whether\n"
         << "                          the side holding <seat> can force ITS bid to\n"
         << "                          survive while the other's dies.  Implies fast\n"
@@ -276,6 +283,7 @@ int main(int argc, char** argv) {
     bool pinned_tricks = false;
     bool list_moves = false;
     bool tt_stats = false;
+    bool limited = false;  // --max-nodes / --max-ms (C0)
     nil::SearchOptions opts;
 
     for (int i = 1; i < argc; ++i) {
@@ -422,6 +430,8 @@ int main(int argc, char** argv) {
             opts.trick_order = false;
         } else if (arg == "--no-killer-order") {
             opts.killer_order = false;
+        } else if (arg == "--no-ruff-overtake-leave") {
+            opts.ruff_overtake_leave = false;
         } else if (arg == "--no-shed-order") {
             opts.shed_order = false;
         } else if (arg == "--shed-single-attack") {
@@ -495,6 +505,20 @@ int main(int argc, char** argv) {
             tt_stats = true;
         } else if (arg == "--moves") {
             list_moves = true;
+        } else if (arg == "--max-nodes" || arg == "--max-ms") {
+            std::string n;
+            if (!need_value(argc, argv, i, arg.c_str(), n)) return 2;
+            const long long value = std::atoll(n.c_str());
+            if (value < 0) {
+                std::cerr << "error: " << arg << " cannot be negative\n";
+                return 2;
+            }
+            if (arg == "--max-nodes") {
+                opts.max_nodes = static_cast<std::uint64_t>(value);
+            } else {
+                opts.max_ms = static_cast<std::uint32_t>(value);
+            }
+            limited = true;
         } else if (arg == "--compact") {
             compact = true;
         } else {
@@ -504,6 +528,10 @@ int main(int argc, char** argv) {
         }
     }
 
+    if (limited && !list_moves) {
+        std::cerr << "error: --max-nodes and --max-ms limit the per-card call; add --moves\n";
+        return 2;
+    }
     if (pbn.empty()) {
         std::cerr << "error: --pbn is required\n";
         usage(argv[0]);
@@ -780,6 +808,16 @@ int main(int argc, char** argv) {
             }
             std::cout << "\n";
         }
+        // C0, and only when a limit was asked for: whether the call finished,
+        // and per card how much of its row is proven (0 all, 1 value,
+        // 2 outcome, 3 nothing; see nil::RowKnown).
+        if (limited) {
+            std::cout << "complete=" << (sol.complete ? 1 : 0) << "\n";
+            for (const nil::MoveScore& m : scored) {
+                std::cout << "move_known=" << nil::card_to_string(m.card) << ':'
+                          << static_cast<int>(m.known) << "\n";
+            }
+        }
         if (tt_stats) {
             std::cout << "tt_probes=" << sol.tt_probes << "\n"
                       << "tt_hits=" << sol.tt_hits << "\n"
@@ -788,7 +826,13 @@ int main(int argc, char** argv) {
                       << "tt_evictions=" << sol.tt_evictions << "\n";
         }
     } else {
-        std::cout << nil::format_solution(pos, sol, opts) << "\n";
+        if (sol.complete) {
+            std::cout << nil::format_solution(pos, sol, opts) << "\n";
+        } else {
+            // C0: no position answer to format -- the best row is not known.
+            std::cout << "INCOMPLETE: stopped on a limit after " << sol.nodes
+                      << " nodes.  Each card shows what it had proven (? = not proven).\n";
+        }
         if (list_moves) {
             // One row per card: each seat's outcome and tricks as STATUS/TRICKS
             // (status 0 = nil makes, 1 = nil set, 2 = no nil), then the pair
@@ -797,6 +841,8 @@ int main(int argc, char** argv) {
             const int ref = sol.nil_seat() < 0 ? 0 : sol.nil_seat();
             const bool ns_is_side = (ref & 1) == 0;
             auto tricks_text = [](int t) { return t < 0 ? std::string("?") : std::to_string(t); };
+            const char* known_text[] = {"", "  [value, no line]", "  [outcome only]",
+                                        "  [nothing proven]"};
             std::cout << "Legal cards for " << nil::SEAT_CHARS[(pos.leader + pos.trick_len) & 3]
                       << ":\n"
                       << "        N      E      S      W      NS  EW\n";
@@ -804,8 +850,8 @@ int main(int argc, char** argv) {
                 std::cout << "  " << (m.is_best ? '*' : ' ') << ' '
                           << nil::card_to_string(m.card) << "  ";
                 for (int seat = 0; seat < 4; ++seat) {
-                    std::string cell =
-                        std::to_string(m.seat_status[seat]) + "/" + tricks_text(m.seat_tricks[seat]);
+                    std::string cell = tricks_text(m.seat_status[seat]) + "/" +
+                                       tricks_text(m.seat_tricks[seat]);
                     cell.resize(7, ' ');
                     std::cout << cell;
                 }
@@ -821,7 +867,7 @@ int main(int argc, char** argv) {
                     std::cout << (first ? "   = " : ",") << nil::card_to_string(c);
                     first = false;
                 }
-                std::cout << "\n";
+                std::cout << known_text[m.known] << "\n";
             }
             std::cout << "  (each seat is STATUS/TRICKS: status 0 = nil makes, 1 = nil set,\n"
                          "   2 = no nil; tricks include the trick the card completes, ? where\n"

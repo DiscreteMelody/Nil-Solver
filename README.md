@@ -361,6 +361,45 @@ the C# wrapper does that for you: `NilSolution.AllMoves` and `.BestMoves` are on
 entry per legal card, the analogues of DDS's `DDSSolution.AllMoves` and
 `.BestMoves`.
 
+### A budget per call
+
+`nil_solve_moves_limited` is `nil_solve_moves` with a `nil_limits` struct: a
+wall-clock budget in milliseconds, a node budget, and an optional cancel word
+another thread may set. `NULL` limits, or all zero, are the plain call, node for
+node. When a limit runs out the call returns `NIL_INCOMPLETE` (positive: not an
+error) and still lists every legal card, each with only what it had proven --
+the values-only fields for a row whose value was proven, the nil outcome for a
+row whose bounds had already settled it, `-1` for anything unproven, and
+`NIL_SEAT_STATUS_UNKNOWN` for a live bidder whose fate a row has not proven.
+The limits are tested every 65,536 nodes (about 9 ms at 13 cards), and a stop
+unwinds without storing anything half-searched, so the next call on the thread
+answers exactly as it would have. The header has the full contract; ROADMAP
+item 102 has the measurements, including what a stopped 13-card call usually
+has to show (little, before the first row is finished: rows are proven one at
+a time, the predicted best card first).
+
+```
+$ nil_cli --pbn 'N:AKJT8.2.AKQJT.KJ 72.AQ63.98765.A4 63.KT874.42.T976 Q954.J95.3.Q8532' \
+          --leader S --seats 3 0 3 0 --moves --max-nodes 1500000
+INCOMPLETE: stopped on a limit after 1517117 nodes.  Each card shows what it had proven (? = not proven).
+Legal cards for S:
+        N      E      S      W      NS  EW
+    H4  2/?    ?/?    2/?    ?/?    ?   ?  [nothing proven]
+    H7  2/?    ?/?    2/?    ?/?    ?   ?   = H8  [nothing proven]
+    HT  2/?    ?/?    2/?    ?/?    ?   ?  [nothing proven]
+    HK  2/?    ?/?    2/?    ?/?    ?   ?  [nothing proven]
+    D2  2/?    1/?    2/?    1/?    ?   ?  [outcome only]
+  ...
+```
+
+The finished call takes 7.0M nodes; by 1.5M it had proven that D2 (the card it
+scores first) sets both twins, and nothing yet about any other card.
+
+`nil_cli --moves --max-nodes N` / `--max-ms N` and `nil_bench --max-nodes N`
+arm the same limits from the command line; `--compact` adds `complete=` and one
+`move_known=CARD:STATE` line per card (0 everything, 1 the value, 2 the outcome,
+3 nothing).
+
 **What it costs**, because the number is better than the shape of the question
 suggests: the position is solved first and every card is then scored against the
 same transposition table, so the per-card searches spend most of their time
@@ -428,6 +467,8 @@ ctest --test-dir build --output-on-failure
 | `invariants` | transformed copies of each position that must give the same answer | Python |
 | `crosscheck` | live differential test against the oracle on freshly generated positions | Python + `nil_oracle.py` |
 | `corpus_large` | the 7-card rows of `tests/corpus/large.txt`; **off by default** | nothing |
+| `corpus_moves_limits_ladder` (and `corpus_multinil_/threenil_/opposed_moves_limits_ladder`) | every position re-scored under node budgets of 1, 1/16, 1/4, 1/2 and 7/8 of its finished call: what a stopped call reports as proven must equal the finished rows, and the next unlimited call must answer as before | nothing |
+| `corpus_moves_limits_unfired` | a node budget no row reaches changes nothing | nothing |
 
 Run one at a time with `ctest -R corpus_quick`, or invoke the binaries directly:
 
@@ -776,6 +817,16 @@ The Oct 2026 three-nil pass (ROADMAP item 101) added three, with no
   `corpus_row_canonical_depth_0`, `corpus_multinil_row_canonical_depth_0`,
   `corpus_threenil_row_canonical_depth_0` (and `_deep`, 24 plies),
   `corpus_opposed_row_canonical_depth_0`.
+
+The Oct 2026 tail-latency study (ROADMAP item 103) added one more ordering arm,
+full mode only, on all four corpora (`--check-moves --check-pv`):
+
+- `--no-ruff-overtake-leave`: an opponent of a live nil that is winning the
+  trick no longer leaves it there when the nil's partner, still to play, could
+  overtake only by ruffing -- the partner's ruff cancels the leave again, as
+  before the study (same answers and lines; more nodes on the tail).
+  `corpus_no_ruff_overtake_leave`, `corpus_multinil_no_ruff_overtake_leave`,
+  `corpus_threenil_no_ruff_overtake_leave`, `corpus_opposed_no_ruff_overtake_leave`.
 
 `--no-narrow` is the control arm for window narrowing (roadmap item 22), and it
 is the one with the most riding on it. Full mode narrows its window as a node's

@@ -5766,6 +5766,154 @@ direction at 13 cards (correct on the corpora, crosschecks and differential,
 not timed); seeds other than 1 and 3; several solver threads sharing the
 machine; PGO; other CPUs.
 
+### 102. A budget per call: `nil_solve_moves_limited` — ⭐⭐⭐⭐⭐ — **done, Oct 2026 (C0 of the tail-latency plan)**
+
+**Why.** The Oct 2026 tail-latency investigation (project doc
+`tail-latency-investigation-oct-2026.md`) found the slow 13-card calls are slow
+because of the whole layout: per-deal times correlate across seatings, no
+static feature predicts them, and re-dealing the 39 unseen cards around a
+pathological hand never reproduced its time. A caller cannot see an 80 s call
+coming, and with calls serialized one of them holds up every call behind it.
+No search change bounds that worst case; a budget does. What replaces a call
+that ran out is the caller's decision, so the call hands back what it had
+proven and nothing it had not.
+
+**What.** `nil_solve_moves_limited(..., const nil_limits* limits, ...)`:
+`struct_size`, `max_ms`, `max_nodes` and an optional `cancel` word another
+thread may set. `NULL` or all-zero limits are `nil_solve_moves` node for node.
+A stopped call returns `NIL_INCOMPLETE` (1, positive: callers testing `rc < 0`
+read the rows, callers testing `rc != NIL_OK` treat the call as not done) and
+lists every card with what it had proven (`nil::RowKnown`): the values-only
+fields of a row whose value was proven, the outcome of a row whose MTD(f)
+bounds had settled it, `-1` for anything else, `NIL_SEAT_STATUS_UNKNOWN` for a
+live bidder whose fate is not proven. The C# binding (`NilLimits`,
+`nil_solve_moves_limited`, `NilStatus.Incomplete`, `NilSeatStatus.Unknown`) is
+in `NilSolverNative.cs`; the pool, deadlines and what replaces a stopped call
+are the application's.
+
+**How it stops.** `search_core` compares its node count with a threshold that
+is the largest 64-bit number unless a limit is armed; armed, every 65,536 nodes
+(about 9 ms at 13 cards) a context reports what it spent and tests the three
+limits, and throws if one has run out. `solve_moves` catches it around each of
+its own searches, where the context -- and what the call had proven -- is still
+alive. Unwinding by exception is what makes "store nothing after it fires"
+free: every frame between the check and `solve_moves` is abandoned before its
+table store, so the main table holds only bounds that were proven, and the
+double-dummy engine, which never calls `search_core`, is never interrupted.
+The handed-off single-nil searches (item 100) keep their own counters; each
+context reports only its own nodes (the rollup into its parent advances the
+parent's mark past them), so the call's total is counted once.
+
+**Measured (2-vCPU Xeon, GCC 13 Release; isolated protocol).**
+
+* Not fired: node counts and row hashes identical on all 67 calls of the tail
+  corpus; wall time on 18 C/D/B calls interleaved against HEAD, min of 2 reps:
+  +1.0% unarmed, -0.6% armed with an unreachable `max_ms` -- noise (single
+  calls moved +/-10-20% between reps).
+* Stopping is prompt: at 2, 5 and 10 s budgets on the 43 calls of groups A and
+  B the longest call took 2.06, 5.17 and 10.03 s.
+* What a stopped call has to show is little before its first row is finished,
+  because rows are proven one at a time (the predicted best card first). On
+  those 43 calls: at 2 s, 14 calls had at least one row's outcome and 3 a
+  row's exact value (21 of 364 rows proven); at 5 s, 34 and 20 (54 rows); at
+  10 s, 40 and 36 (131 rows).
+* What each budget would cut, on this machine: 2 s cuts 62 of the 67 corpus
+  calls, 5 s 58, 10 s 50, 30 s 13 (all of group A and 2 of B). On the
+  investigation's 2,000-call random sweep (reference machine, contended), 7.3%
+  of calls ran past 5 s and 2.6% past 10 s, holding 31% and 19% of all solver
+  time beyond the budget; on its plausible-nil sweep 10.4% and 4.2%.
+
+**Checks.** `corpus_moves_limits_ladder` and its multinil, threenil and opposed
+twins re-score every position under node budgets of 1, 1/16, 1/4, 1/2 and 7/8
+of its finished call (4,408 stopped calls; rows 1,048 finished, 3,543 value,
+1,028 outcome, 5,574 nothing) and require every proven field to equal the
+finished row and the next unlimited call to answer as before;
+`corpus_moves_limits_unfired` arms a budget no row reaches. `nil_tests` pins
+the ABI: NULL and zero limits are the plain call to the byte, an unset
+`struct_size` is refused, a cancel word already set and a 1 ms budget each
+stop a 13-card twin deal at the first check. A 13-card differential through
+`nil_cli` (9 corpus deals, 36 stopped calls) agreed everywhere.
+
+**Not measured:** MSVC (the throw is table-based on x64 there too, so no cost
+until it fires); several solver threads cancelled at once; MODE_FAST, which
+ignores the limits.
+
+### 103. Size-weighted ordering on the tail: a ruffing cover does not cancel the leave — ⭐⭐⭐ — **done, Oct 2026 (C1 of the tail-latency plan)**
+
+**Why.** The tail-latency investigation measured that 54-93% of a slow call's
+nodes lie inside FAILED first tries of some cut node above them, nearly all
+with 7+ tricks left, and that an oracle ordering (the move that cut in an
+identical earlier run, tried first) removes 33-77% of the nodes -- while the
+count-weighted first-move cut rates the Sept 2026 study tuned against read
+91-97%. So the study had to weight each cut node by what its failed tries
+cost.
+
+**Method.** An instrumented build (out of the branch) dumped every cut node
+with 7+ tricks left and 1,000+ nodes under its move loop: the position, the
+window, the moves tried in order and each one's subtree, and the exclusive
+waste (nodes counted once, at the outermost cut node whose failed try holds
+them). Eleven 2-16 s corpus calls of every seating, 813k labelled nodes,
+302M nodes of exclusive waste. Classes were ranked by waste, then split by
+the trick situation (position in the trick, who holds it, whether a live bid
+has played, follow or void) and by whether the cutting card won or lost the
+trick against the one tried first. Every hypothesis was then put to the
+solver on the same eleven calls (one binary, a rule bitmask), because a
+static rate is not the tree.
+
+**What came out.** One clean rule. An opponent of a live nil that is winning
+the trick, with the nil's partner still to play: the trick order left the nil
+there unless the partner could overtake it, and tried a winner first when it
+could. Split by HOW the partner could overtake: where it could only ruff,
+leaving the nil there was what cut, so the partner has to spend a trump to
+save its nil; where it could follow with a higher card, the winner cut, as
+before. `SearchOptions::ruff_overtake_leave` (default on, MODE_FULL,
+`--no-ruff-overtake-leave`; no ABI bit is left for it).
+
+**Measured** (same rows, lines and hashes everywhere; 2-vCPU Xeon, GCC 13):
+
+* The eleven development calls: nodes -6.5%, largest loss +0.3%; seed-4 #55
+  `0 3 2 3` -39%, seed-1 #39 `3 0 3 0` -12%, seed-1 #69 `0 0 3 0` -9%. Against
+  the oracle on the same calls (plain 649M, oracle 282M) that closes about 12%
+  of the gap -- 51% of it on seed-4 #55, nothing on most of the others.
+* The 67-call tail corpus, isolated protocol, min of 2 reps: group A
+  561.7 -> 552.7 s (-1.6%), nodes -2.3%; B 636.6 -> 614.0 s (-3.6%), nodes
+  -1.3%; C 76.5 -> 63.7 s (-16.7%), nodes -10.7%; D 3.4 -> 3.2 s, nodes +0.2%;
+  E -1.3%, nodes -0.2%. The largest call, plausible-nil #45 `3 0 3 0`,
+  84.7 -> 72.8 s (nodes -14%); seed-4 #55 `0 3 2 3` 10.6 -> 6.1 s. The worst,
+  +8% (seed-4 #95 `0 3 2 0`), has unchanged nodes: timing noise.
+* Seed-1 800-call sweep (HEAD and patch side by side, pool protocol): nodes
+  -0.7%, time -2.7%; 24 calls faster by 2%+ in nodes and 49 slower, the worst
+  +18.6% on a 0.29 s call; the slowest ten -10.7% to +2.0% in time.
+  Plausible-nil 240: nodes -1.9%, time -5.3% (`3 0 3 0` -4.2% / -10.7%);
+  14 better, 6 worse (worst +32% on a 0.37 s call).
+
+**Tried and rejected on the same eleven calls** (rule on top of the previous
+best; nodes):
+
+| rule | total | the spread |
+|---|---|---|
+| leave a winning nil there however its partner can overtake (void seats) | -4.8% | -39% .. +5.0% |
+| ...only where the window needs the nil broken | -2.8% | -35% .. +5.0% |
+| ...void seats only, ruffing partner (this rule's narrower half) | -5.7% | -39% .. +0.3% |
+| 6b's attacking lead against TWO live bids (twins) first | -1.1% | -8.6% .. +2.3% |
+| ...with neither twin counted as covering the other | -1.4% | -8.6% .. +10.7% |
+| second hand void, partner can beat: discard first | +11.6% | -5.8% .. +43% |
+| the nil's partner, last to play and void, opponent winning: discard first | +18.9% | up to +119% |
+| no top-card cash on lead while the window needs the nil broken | -0.6% | -13% .. +14% |
+| second hand void with a live bid third: let the trick ride | +1.1% | -9.8% .. +32% |
+| ...and partner can beat | +1.2% | -9.1% .. +30% |
+| ...and partner holds no live bid | +1.5% | -9.1% .. +29% |
+
+The pattern held throughout: classes that look lopsided by count or even by
+waste turn out mixed in the tree, and the rule that survived is the one with
+a mechanism (a trump spent to save the nil) that the data split cleanly.
+
+**Not done.** The remaining waste on the development calls is still 279M
+nodes, led by opponents' leads against twins after the lone bid of three is
+down (13%), the nil side's mid-trick plays (11%), opponents' mid-trick plays
+against one live bid (9%) and the canonical first-trick plies of item 101 in
+the bid-each-side shapes (7%). MODE_FAST is unchanged (not measured).
+
 ## Suggested sequence
 
 ```

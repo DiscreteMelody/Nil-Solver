@@ -21,6 +21,10 @@
 //     five int32 and one uint64, which is 32 bytes with four bytes of padding
 //     before Nodes on both x86 and x64.  Reordering the fields to look tidier
 //     silently reads the wrong numbers.
+//
+//   * NilLimits likewise: two uint32, one uint64 and a pointer, 24 bytes on
+//     both x86 (four bytes of tail padding) and x64, and StructSize must say
+//     so -- set it from Marshal.SizeOf<NilLimits>(), never a literal.
 
 using System;
 using System.Runtime.InteropServices;
@@ -458,7 +462,43 @@ namespace NilSolver
         /// The call asked for something this build cannot produce: a principal
         /// variation in fast mode, or a roles array with more than one nil in it.
         /// </summary>
-        Unsupported = -6
+        Unsupported = -6,
+
+        /// <summary>
+        /// NIL_INCOMPLETE. Not a failure: <c>nil_solve_moves_limited</c> ran out
+        /// of its budget (or was cancelled) and the rows report what each card
+        /// had proven, -1 wherever nothing was. Positive, so a test for
+        /// <c>&lt; 0</c> still reads only errors.
+        /// </summary>
+        Incomplete = 1
+    }
+
+    /// <summary>
+    /// Mirrors the C <c>nil_limits</c> struct (C0, Oct 2026): the per-call budget
+    /// for <see cref="NilSolverNative.nil_solve_moves_limited"/>. Set
+    /// <see cref="StructSize"/> to <c>Marshal.SizeOf&lt;NilLimits&gt;()</c>; zero
+    /// in any limit means none.
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct NilLimits
+    {
+        /// <summary>sizeof(nil_limits). A call with this unset is refused.</summary>
+        public uint StructSize;
+
+        /// <summary>Wall-clock budget in milliseconds from the start of the call.</summary>
+        public uint MaxMs;
+
+        /// <summary>Node budget, counted as <see cref="NilResult.Nodes"/> counts them.</summary>
+        public ulong MaxNodes;
+
+        /// <summary>
+        /// Optional pointer to a 32-bit word the library reads during the
+        /// search; the call stops once it is non-zero. Unmanaged memory the
+        /// caller owns (for example <c>Marshal.AllocHGlobal(4)</c>, set with
+        /// <c>Marshal.WriteInt32</c> from another thread) and keeps alive until
+        /// the call returns. <see cref="IntPtr.Zero"/> for none.
+        /// </summary>
+        public IntPtr Cancel;
     }
 
     /// <summary>
@@ -657,6 +697,26 @@ namespace NilSolver
             [MarshalAs(UnmanagedType.LPStr)] string currentTrick,
             [In] int[] seats,
             uint flags,
+            out NilResult result,
+            [Out] NilMove[] moves,
+            int movesCap,
+            out int movesLen,
+            StringBuilder errBuf,
+            int errLen);
+
+        /// <summary>
+        /// <see cref="nil_solve_moves"/> with a budget (C0). Returns
+        /// <see cref="NilStatus.Incomplete"/> when a limit ran out; see the C
+        /// header for what each row then reports.
+        /// </summary>
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+        public static extern int nil_solve_moves_limited(
+            [MarshalAs(UnmanagedType.LPStr)] string pbn,
+            int leader,
+            [MarshalAs(UnmanagedType.LPStr)] string currentTrick,
+            [In] int[] seats,
+            uint flags,
+            ref NilLimits limits,
             out NilResult result,
             [Out] NilMove[] moves,
             int movesCap,

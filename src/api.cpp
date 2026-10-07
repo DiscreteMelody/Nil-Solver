@@ -205,7 +205,8 @@ std::int32_t solve_impl(const char* pbn, std::int32_t leader, const char* curren
 
 static_assert(nil::SEAT_NIL_MAKES == NIL_SEAT_STATUS_NIL_MAKES &&
                   nil::SEAT_NIL_SET == NIL_SEAT_STATUS_NIL_SET &&
-                  nil::SEAT_NO_NIL == NIL_SEAT_STATUS_NO_NIL,
+                  nil::SEAT_NO_NIL == NIL_SEAT_STATUS_NO_NIL &&
+                  nil::SEAT_UNKNOWN == NIL_SEAT_STATUS_UNKNOWN,
               "nil_move::seat_status is copied straight from MoveScore::seat_status");
 static_assert(nil::TRICKS_NOT_COMPUTED == NIL_TRICKS_UNKNOWN,
               "the C ABI's unknown-trick sentinel must match the core's");
@@ -280,6 +281,14 @@ NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve_moves(
     const char* pbn, std::int32_t leader, const char* current_trick, const std::int32_t* seats,
     std::uint32_t flags, nil_result* out, nil_move* moves, std::int32_t moves_cap,
     std::int32_t* moves_len, char* err_buf, std::int32_t err_len) {
+    return nil_solve_moves_limited(pbn, leader, current_trick, seats, flags, nullptr, out, moves,
+                                   moves_cap, moves_len, err_buf, err_len);
+}
+
+NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve_moves_limited(
+    const char* pbn, std::int32_t leader, const char* current_trick, const std::int32_t* seats,
+    std::uint32_t flags, const nil_limits* limits, nil_result* out, nil_move* moves,
+    std::int32_t moves_cap, std::int32_t* moves_len, char* err_buf, std::int32_t err_len) {
     if (!pbn || !out || !moves || !moves_len) {
         copy_err(err_buf, err_len, "null argument");
         return NIL_ERR_NULL_ARG;
@@ -292,6 +301,23 @@ NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve_moves(
     const std::int32_t rc =
         prepare(pbn, leader, current_trick, seats, flags, pos, roles, opts, err_buf, err_len);
     if (rc != NIL_OK) return rc;
+
+    // C0: the per-call limits.  `struct_size` says which fields the caller's
+    // struct has, so a caller built against a header with fewer of them is
+    // read correctly and one that never set the size is told so rather than
+    // handed a call with no budget it believes it has.
+    if (limits) {
+        if (limits->struct_size < offsetof(nil_limits, max_nodes)) {
+            copy_err(err_buf, err_len,
+                     "nil_limits.struct_size is not set; it must be sizeof(nil_limits)");
+            return NIL_ERR_NULL_ARG;
+        }
+        opts.max_ms = limits->max_ms;
+        if (limits->struct_size >= offsetof(nil_limits, cancel)) {
+            opts.max_nodes = limits->max_nodes;
+        }
+        if (limits->struct_size >= sizeof(nil_limits)) opts.cancel = limits->cancel;
+    }
 
     // FAST_LINE on the per-card call means VALUES-ONLY ROWS (Q3, Sept 2026):
     // each row's counts are decoded from its exact value rather than read off
@@ -349,7 +375,7 @@ NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve_moves(
             dst.seat_tricks[seat] = src.seat_tricks[seat];
         }
     }
-    return NIL_OK;
+    return sol.complete ? NIL_OK : NIL_INCOMPLETE;
 }
 
 NIL_SOLVER_API void NIL_SOLVER_CALL nil_set_table_size(std::uint32_t megabytes) {
