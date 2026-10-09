@@ -352,6 +352,12 @@ struct Ctx {
     bool one_live_flip[4] = {false, false, false, false};
     bool one_live_shift[4] = {false, false, false, false};
     bool has_one_live = false;  // any of one_live[] set: one test on the hot path
+    // PHASE 3: the outcome question's handoff (SearchOptions::outcome_handoff).
+    // The handed-off search is a single-nil MODE_FAST one, asked [0, 1], and
+    // its verdict maps back as `one_live_delta[L] * [L breaks]` -- exact, so no
+    // window has to be mapped.  See one_live_handoff.
+    bool one_live_fast = false;
+    int one_live_delta[4] = {0, 0, 0, 0};
     // This context IS one of those handed-off searches; see the table block in
     // search_core for what that changes.
     bool one_live_child = false;
@@ -416,6 +422,66 @@ std::uint64_t limit_nodes_spent(const Ctx& ctx) {
         if (sub) spent += limit_nodes_spent(*sub);
     }
     return spent;
+}
+
+// ---- PHASE 3 (Oct 2026): THE SAME LIMITS, FOR EVERY CALL THAT TAKES THEM ----
+//
+// C0 armed the limits inside solve_moves() alone.  The bot's fallback after a
+// stopped per-card call is a run of fast searches -- one per live bid, or the
+// outcome questions below -- and a fallback that cannot itself be bounded only
+// moves the stall: measured on the slow-hands list, the per-seat questions took
+// up to 11.9 s on one hand.  So the arming is factored out here and every entry
+// point that takes limits builds them the same way, checks them at the same
+// rhythm (search_core, every LIMIT_CHECK_NODES), and unwinds the same way.
+
+// Fill `lim` from the options; false when the caller set no limit, in which
+// case nothing is armed and the call is node for node the unlimited one.
+bool make_call_limits(const SearchOptions& opts, std::chrono::steady_clock::time_point start,
+                      CallLimits& lim) {
+    if (opts.max_nodes == 0 && opts.max_ms == 0 && opts.cancel == nullptr) return false;
+    lim.max_nodes = opts.max_nodes;
+    lim.interval = opts.max_nodes != 0 && opts.max_nodes < LIMIT_CHECK_NODES ? opts.max_nodes
+                                                                            : LIMIT_CHECK_NODES;
+    lim.has_deadline = opts.max_ms != 0;
+    lim.deadline = start + std::chrono::milliseconds(opts.max_ms);
+    lim.cancel = opts.cancel;
+    return true;
+}
+
+// The same three tests check_limits() makes, without throwing and without a
+// context: asked BETWEEN the searches of a multi-search call, so a budget spent
+// by one question is not handed a fresh 64K-node interval by the next.  The
+// overrun bound stays one interval per context, not one per question.
+bool call_limits_spent(const CallLimits& lim) {
+    return (lim.max_nodes != 0 && lim.used >= lim.max_nodes) ||
+           (lim.cancel != nullptr && *lim.cancel != 0) ||
+           (lim.has_deadline && std::chrono::steady_clock::now() >= lim.deadline);
+}
+
+// A context is finished with: hand what it spent since its last check to the
+// call's total, so the next context starts from the right count.  Without this
+// a call that runs several contexts in turn would under-count every one of
+// them by up to an interval.
+void retire_limits(Ctx& ctx) {
+    if (!ctx.limits) return;
+    ctx.limits->used += limit_nodes_spent(ctx);
+    ctx.limit_mark = ctx.nodes;
+    for (const auto& sub : ctx.one_live) {
+        if (sub) sub->limit_mark = sub->nodes;
+    }
+}
+
+// A nested presolve inherits its caller's options, and those may now carry
+// limits.  The presolves predate them and were never budgeted -- a failed or
+// skipped presolve is not a failed solve, and nothing above them could read a
+// half-finished one -- so they keep running unbudgeted, exactly as before.
+// Without this a limited fast call would arm its probes with a deadline of
+// their own, measured from THEIR start.
+SearchOptions without_limits(SearchOptions o) {
+    o.max_nodes = 0;
+    o.max_ms = 0;
+    o.cancel = nullptr;
+    return o;
 }
 
 // Roadmap item 32's population count.  Split out so the expression at the call
@@ -2289,6 +2355,44 @@ int search_core(Ctx& ctx, const State& st, CardId& best_move, int alpha, int bet
 int one_live_handoff(Ctx& ctx, const State& st, int L, CardId& best_move, int alpha, int beta,
                      bool want_move) {
     Ctx& sub = *ctx.one_live[L];
+    // PHASE 3: THE BOOLEAN FORM, for the outcome question (solve_outcome).
+    //
+    // With no trick term the value from a one-live boundary is D * [L breaks]
+    // and nothing else, D the step L's break moves the count or the rank.  So
+    // the single-nil verdict IS the answer: one fast search over [0, 1], whose
+    // bound settles [L breaks] exactly -- at most 0 is "L stays clean", at
+    // least 1 is "L takes a trick" -- and the value returned is exact, which
+    // every window accepts.  Nothing to map: no flip, no shift, no bound to
+    // carry across.  What the single-nil search brings is everything a pair or
+    // a rank search gives up -- nil_cannot_be_forced, nil_must_take_a_trick,
+    // duck-or-cover and the forcing leads as VALUES, its own ordering, and a
+    // table that sees positions as single-nil positions -- which is where the
+    // "can they set BOTH?" question spends its time once the first one falls.
+    if (ctx.one_live_fast) {
+        // THE WINDOW FIRST.  The value is 0 or D and nothing else, so when the
+        // window already holds both or neither there is nothing to ask: return
+        // the bound on the side it falls.  This is item 79's reach bound for
+        // this one region, and it is not optional -- the handoff sits at the
+        // top of search_core, ahead of the reach bound, so without it every
+        // one-live boundary would pay a single-nil search the arithmetic had
+        // already made moot.  Measured on the 18 three-bid deals of the
+        // slow-hands list before this test existed: the handoff made the
+        // outcome question 1.9x slower in total.
+        const int lo = ctx.one_live_delta[L] < 0 ? ctx.one_live_delta[L] : 0;
+        const int hi = ctx.one_live_delta[L] > 0 ? ctx.one_live_delta[L] : 0;
+        if (hi <= alpha || lo >= beta) {
+            best_move = first_legal_move(st);
+            return hi <= alpha ? hi : lo;
+        }
+        const std::uint64_t before = sub.nodes;
+        sub.want_move = want_move;
+        CardId move = NO_CARD;
+        const int r = search_impl<false>(sub, st, move, 0, 1, nullptr);
+        ctx.nodes += sub.nodes - before;
+        ctx.limit_mark += sub.nodes - before;  // C0: the sub-context reports these
+        best_move = move;
+        return r >= 1 ? ctx.one_live_delta[L] : 0;
+    }
     const int shift =
         ctx.one_live_shift[L] ? ctx.secondary_weight * count_cards(st.hands[st.leader]) : 0;
     const bool flip = ctx.one_live_flip[L];
@@ -3934,8 +4038,17 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
     // `weights.tertiary == 0` was a third conjunct.  Under the fold the test is
     // `primary == 1`, and nothing reaches 1 by a route this used to exclude:
     // a (0, *, 1) weight set never existed, and live/max at k = 1 folds to 2.
-    ctx.value_is_nil_tricks =
-        !ctx.conjunction && weights.primary == 1 && weights.secondary == 0;
+    // ...AND NOT UNDER THE OUTCOME QUESTION (phase 3), whose weights are (1, 0)
+    // on a pair or a rank ladder: the value counts BIDS down, or rank steps,
+    // not one seat's tricks.  The single-nil proofs are switched off for those
+    // shapes anyway (disable_single_nil_machinery), but what this flag gates is
+    // wider than the proofs -- M4, the pair proofs and the doom charge all read
+    // `!value_is_nil_tricks` as "this is not plain MODE_FAST" -- and each of
+    // them is sound on a count or a rank with no trick term.  Excluded by
+    // shape, as the conjunction is, so no weight set that existed before
+    // reads differently.
+    ctx.value_is_nil_tricks = !ctx.conjunction && !ctx.multi_nil && !ctx.opposing &&
+                              weights.primary == 1 && weights.secondary == 0;
     ctx.static_bounds = opts.use_static_bounds;
     ctx.full_static_bounds = opts.full_static_bounds;
     ctx.adversarial_safe = opts.adversarial_safe;
@@ -4184,6 +4297,51 @@ void configure(Ctx& ctx, const SeatRoles& roles, const SearchOptions& opts,
     //     keeps the general search;
     //   * no rank tracking (TRACK) and no item-79 sweep, which measure THIS
     //     context's tree and would otherwise count the handoff's nodes as none.
+    // PHASE 3: THE SAME HANDOFF FOR THE OUTCOME QUESTION (outcome_handoff).
+    //
+    // MODE_FAST on a pair or three bids is solve_outcome's search: weights
+    // (1, 0), value a count or a rank.  At a boundary where one bid L is left
+    // live, every other bid's fate is banked and the rest of the hand is the
+    // single-nil question for L, worth D = v(dead | L) - v(dead) if L falls and
+    // nothing if it does not.  The argument is item 100's with the trick term
+    // gone, which makes it simpler: the map is D * [L breaks], exact.  L's own
+    // side must dislike the break -- checked as item 100 checks it -- or the
+    // single-nil objective is not this one.
+    //
+    // No engine needed: item 100 required it because its handed-off searches
+    // must never key a position past their own bid's break, and a MODE_FAST
+    // single-nil search never reaches one -- the trick that breaks L carries the
+    // value to 1 = beta, and value_after returns there.
+    //
+    // MEASURED on the slow-hands list (26 twin deals, unlimited, one thread,
+    // probes on): see solve_outcome for the table.
+    if (opts.outcome_handoff && opts.mode == MODE_FAST && (ctx.multi_nil || ctx.opposing) &&
+        !ctx.conjunction && ctx.primary_weight > 0 && !ctx.track_ranks && !ctx.opposed_stats) {
+        for (int L = 0; L < 4; ++L) {
+            if (!((ctx.nil_mask >> L) & 1)) continue;
+            const unsigned dead = ctx.nil_mask & ~(1u << L);
+            const int delta = ctx.opposing
+                                  ? weights.primary *
+                                        (ctx.rank_of[dead | (1u << L)] - ctx.rank_of[dead])
+                                  : weights.primary;
+            const bool owner_far = ctx.opposing && ((L ^ ctx.nil_seat) & 1) != 0;
+            if (owner_far ? delta >= 0 : delta <= 0) continue;
+            SearchOptions sub_opts = opts;
+            sub_opts.mode = MODE_FAST;
+            ObjectiveWeights sub_weights;
+            sub_weights.primary = 1;
+            sub_weights.secondary = 0;
+            auto sub = std::make_unique<Ctx>();
+            configure(*sub, seat_roles_from_nil(L, false), sub_opts, sub_weights, false);
+            sub->tt = ctx.tt;
+            sub->tt_tag = TAG_ONE_LIVE;
+            sub->one_live_child = true;
+            ctx.one_live_delta[L] = delta;
+            ctx.one_live[L] = std::move(sub);
+            ctx.has_one_live = true;
+            ctx.one_live_fast = true;
+        }
+    }
     if (opts.one_live_handoff && ctx.opposing && !ctx.conjunction && ctx.dd_engine &&
         !ctx.track_ranks && !ctx.opposed_stats) {
         for (int L = 0; L < 4; ++L) {
@@ -4478,6 +4636,19 @@ ObjectiveWeights objective_weights(int tricks_remaining, const SeatRoles& roles,
         // Three bids too: the ladder has six rungs rather than four, but one
         // rung is still K*K and the trick term still tops out at K*t.
         const SeatShape shape = seat_shape(copy, ignored);
+        // THE OUTCOME QUESTION (phase 3, Oct 2026; solve_outcome): the same
+        // rank, one step apiece, and no trick term at all.  The value then
+        // takes one integer per reachable outcome, which is what lets null
+        // windows bisect it.  Nothing else reaches MODE_FAST on these shapes --
+        // solve() and solve_moves() refuse it, and the conjunction probe
+        // returned above -- so no existing search sees these weights.
+        if (opts.mode == MODE_FAST &&
+            (shape == SHAPE_OPPOSING_NILS || shape == SHAPE_THREE_NILS)) {
+            ObjectiveWeights w;
+            w.primary = 1;
+            w.secondary = 0;
+            return w;
+        }
         if (shape == SHAPE_OPPOSING_NILS || shape == SHAPE_THREE_NILS) {
             const int k = tricks_remaining + 1;
             ObjectiveWeights w;
@@ -4487,6 +4658,15 @@ ObjectiveWeights objective_weights(int tricks_remaining, const SeatRoles& roles,
         }
     }
 
+    if (nil_count(roles) > 1 && opts.mode == MODE_FAST) {
+        // A pair that both bid, asked the outcome question (phase 3,
+        // solve_outcome): the count of bids down and nothing below it.  Zero
+        // with every bid already down, as below.
+        ObjectiveWeights w;
+        w.primary = live_nil_mask(roles) ? 1 : 0;
+        w.secondary = 0;
+        return w;
+    }
     if (nil_count(roles) > 1) {
         const int k = tricks_remaining + 1;
         ObjectiveWeights w;
@@ -4627,6 +4807,9 @@ void opposed_rank_band(int rank, int rank0, int tricks_remaining, const Objectiv
 
 bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opts,
            Solution& out, std::string& err) {
+    // Phase 3: a wall-clock limit on a fast solve runs from here, as C0's does
+    // from the top of solve_moves().
+    const auto call_start = std::chrono::steady_clock::now();
     if (!validate_seat_roles(roles, err)) return false;
     if (!validate(pos, err)) return false;
 
@@ -4841,6 +5024,14 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
 
         Ctx fast_ctx;
         configure(fast_ctx, roles, opts, weights);
+        // PHASE 3: THE LIMITS, when the caller set any (nil_count_set_limited).
+        // The same arming, rhythm and unwinding as C0's -- the check is in
+        // search_core, which this search runs through like any other -- and the
+        // same guarantee about the table: the throw abandons every frame before
+        // its store, so nothing half-searched is written.  Unarmed, the try
+        // below costs nothing and the search is node for node what it was.
+        CallLimits limits;
+        if (make_call_limits(opts, call_start, limits)) arm_limits(fast_ctx, &limits);
         State root = state_of(pos);
         CardId root_move = NO_CARD;
         // The whole question is "is the nil bidder's trick count at least one",
@@ -4849,7 +5040,26 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
         // integers strictly inside a window of width one, so the root always
         // fails one way or the other and never comes back exact.  That is the
         // expected shape of a boolean search, not a loss of information.
-        const int fast_value = search(fast_ctx, root, root_move, 0, 1);
+        int fast_value = 0;
+        try {
+            fast_value = search(fast_ctx, root, root_move, 0, 1);
+        } catch (const SearchStopped&) {
+            // A boolean has no partial state: either the root settled or it did
+            // not.  Report the stop, and what the caller declared, and nothing
+            // else.  Not an error -- Solution::complete is what says so.
+            const TTStats stopped_stats = fast_ctx.tt ? fast_ctx.tt->stats() : TTStats();
+            out.complete = false;
+            out.nils_set = TRICKS_NOT_COMPUTED;
+            out.nils_set_mask = nil_set_mask(roles);
+            out.nils_set_mask_determined = false;
+            out.nodes = limits.used + limit_nodes_spent(fast_ctx);
+            out.tt_probes = stopped_stats.probes;
+            out.tt_hits = stopped_stats.hits;
+            out.tt_partial = stopped_stats.partial;
+            out.tt_stores = stopped_stats.stores;
+            out.tt_evictions = stopped_stats.evictions;
+            return true;
+        }
         const TTStats fast_stats = fast_ctx.tt ? fast_ctx.tt->stats() : TTStats();
 
         // No principal variation means no replay, so these two are what is left
@@ -4911,7 +5121,7 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
     const bool presolve_eligible = opts.presolve_window && !roles.nil_already_set() &&
                                    pos.tricks_remaining() >= PRESOLVE_MIN_TRICKS;
     if (presolve_eligible && nil_count(roles) == 1) {
-        SearchOptions probe_opts = opts;
+        SearchOptions probe_opts = without_limits(opts);
         probe_opts.mode = MODE_FAST;
         // The nested solve inherits the parent's size, which is what
         // `probe_opts = opts` already does now that TT_AUTO is one number for
@@ -4980,7 +5190,7 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
             }
         }
 
-        SearchOptions probe_opts = opts;
+        SearchOptions probe_opts = without_limits(opts);
         probe_opts.mode = MODE_FAST;
 
         int rank_lo = 0;
@@ -5067,7 +5277,7 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
         // left as it was, which costs the tightening and nothing else.
         if (opts.conjunction_presolve && near_answered && far_answered &&
             near_safe != far_safe) {
-            SearchOptions conj_opts = opts;
+            SearchOptions conj_opts = without_limits(opts);
             conj_opts.mode = MODE_FAST;
             conj_opts.conjunction_seat = near_safe ? near_seat : far_seat;
             Solution conj;
@@ -5372,25 +5582,19 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
     Ctx ctx;
     configure(ctx, roles, opts, weights);
 
-    // C0: THE PER-CALL LIMITS, armed only when the caller set one.  Full mode
-    // only: fast mode is the boolean and cheap, and its rows have no partial
-    // state worth reporting.  `stopped` is set by the searches below that a
-    // limit interrupted; each of them then leaves its loop, and
-    // finish_stopped() -- defined below, before the rows are scored -- reports
-    // what the call had proven.
+    // C0: THE PER-CALL LIMITS, armed only when the caller set one.  `stopped` is
+    // set by the searches below that a limit interrupted; each of them then
+    // leaves its loop, and finish_stopped() -- defined below, before the rows
+    // are scored -- reports what the call had proven.
+    //
+    // BOTH MODES SINCE PHASE 3 (Oct 2026).  C0 left fast mode out on the
+    // grounds that it is the boolean and cheap.  Cheap it is not, per card: on
+    // the slow-hands list the per-card fast call took up to 46 s summed over a
+    // hand's seats, and a call that cannot be bounded is the stall the limits
+    // exist to prevent.  Its rows do have a partial state after all -- the
+    // verdicts searched before the stop -- and finish_stopped_fast() reports it.
     CallLimits limits;
-    const bool limited =
-        !fast && (opts.max_nodes != 0 || opts.max_ms != 0 || opts.cancel != nullptr);
-    if (limited) {
-        limits.max_nodes = opts.max_nodes;
-        limits.interval = opts.max_nodes != 0 && opts.max_nodes < LIMIT_CHECK_NODES
-                              ? opts.max_nodes
-                              : LIMIT_CHECK_NODES;
-        limits.has_deadline = opts.max_ms != 0;
-        limits.deadline = call_start + std::chrono::milliseconds(opts.max_ms);
-        limits.cancel = opts.cancel;
-        arm_limits(ctx, &limits);
-    }
+    if (make_call_limits(opts, call_start, limits)) arm_limits(ctx, &limits);
     bool stopped = false;
     // Run one of this function's searches; a limit's SearchStopped becomes
     // `stopped` here, where `ctx` -- and with it what the call has proven --
@@ -5430,7 +5634,7 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
     int tight_beta = beta;
     if (!fast && !ctx.moves_aspiration && opts.presolve_window && !roles.nil_already_set() &&
         nil_count(roles) == 1 && pos.tricks_remaining() >= PRESOLVE_MIN_TRICKS) {
-        SearchOptions probe_opts = opts;
+        SearchOptions probe_opts = without_limits(opts);
         probe_opts.mode = MODE_FAST;
         // The nested solve inherits the parent's size, which is what
         // `probe_opts = opts` already does now that TT_AUTO is one number for
@@ -5729,7 +5933,80 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
         out.tt_evictions = stats.evictions;
         return true;
     };
-    if (stopped) return finish_stopped(false);  // the root search (NO_ROW_MTD)
+    // PHASE 3: the stopped call's answer in MODE_FAST.  decode_range above is
+    // the wrong tool here -- a fast row's value is a fail-soft BOUND on the nil
+    // bidder's trick count (0, or anything from 1 up), not a packed value -- and
+    // the right one is simpler: a row whose search finished has its verdict,
+    // exactly as a finished call reports it (ROW_ALL: a fast row never has more
+    // than the verdict), and a row that did not has nothing.  The position's
+    // own verdict is the root search's, which fast mode runs FIRST, so it is
+    // known whenever the stop came after it.  is_best is left 0 throughout, as
+    // on a stopped full call: it compares rows, and not every row is in.
+    auto finish_stopped_fast = [&](bool root_done) -> bool {
+        const unsigned declared = nil_set_mask(roles);
+        std::vector<MoveScore> rows;
+        for (int row = 0; row < n_rows; ++row) {
+            const CardId card = row_cards[row];
+            MoveScore ms;
+            ms.card = card;
+            ms.equals = opts.collapse_equivalents ? equivalent_moves(card, legal, relevant)
+                                                  : card_bit(card);
+            const MoveScore* done = nullptr;
+            for (const MoveScore& m : moves_out) {
+                if (m.card == card) done = &m;
+            }
+            ms.is_best = false;
+            if (done) {
+                ms.value = done->value;
+                ms.nils_set = done->value > 0 ? 1 : 0;
+                ms.nils_set_mask = ms.nils_set ? (1u << roles.nil_seat()) : 0u;
+                ms.known = ROW_ALL;
+            } else {
+                ms.nils_set = TRICKS_NOT_COMPUTED;
+                ms.nils_set_mask = declared;
+                ms.known = ROW_NOTHING;
+            }
+            fill_seat_status(ms, roles);
+            if (!done) {
+                for (int s = 0; s < 4; ++s) {
+                    if (roles.is_nil(s) && !((declared >> s) & 1u)) ms.seat_status[s] = SEAT_UNKNOWN;
+                }
+            }
+            rows.push_back(ms);
+        }
+        std::sort(rows.begin(), rows.end(),
+                  [](const MoveScore& a, const MoveScore& b) { return a.card < b.card; });
+        moves_out = rows;
+        out.complete = false;
+        out.pv.clear();
+        out.nil_tricks = TRICKS_NOT_COMPUTED;
+        out.nil_side_tricks = TRICKS_NOT_COMPUTED;
+        out.opponent_tricks = TRICKS_NOT_COMPUTED;
+        if (root_done) {
+            out.value = root_value;
+            out.nils_set = root_value > 0 ? 1 : 0;
+            out.nils_set_mask = out.nils_set ? (1u << roles.nil_seat()) : 0u;
+            out.nils_set_mask_determined =
+                mask_determined(roles, out.nils_set, out.nils_set_mask);
+        } else {
+            out.value = 0;
+            out.nils_set = TRICKS_NOT_COMPUTED;
+            out.nils_set_mask = 0;
+            out.nils_set_mask_determined = false;
+        }
+        out.nodes = limits.used + limit_nodes_spent(ctx) + presolve_nodes;
+        const TTStats stats = ctx.tt ? ctx.tt->stats() : TTStats();
+        out.tt_probes = stats.probes;
+        out.tt_hits = stats.hits;
+        out.tt_partial = stats.partial;
+        out.tt_stores = stats.stores;
+        out.tt_evictions = stats.evictions;
+        return true;
+    };
+    if (stopped) {
+        // The root search (MODE_FAST always, MODE_FULL under NO_ROW_MTD).
+        return fast ? finish_stopped_fast(false) : finish_stopped(false);
+    }
 
     for (int row = 0; row < n_rows; ++row) {
         const CardId card = row_cards[row];
@@ -5816,7 +6093,7 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
         }
         moves_out.push_back(ms);
     }
-    if (stopped) return finish_stopped(false);
+    if (stopped) return fast ? finish_stopped_fast(true) : finish_stopped(false);
     // Canonical order again (Q4): suit-major, ascending rank, which is card id
     // order.  Everything after this line sees the list exactly as before.
     std::sort(moves_out.begin(), moves_out.end(),
@@ -6063,6 +6340,325 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
     out.tt_evictions = stats.evictions;
     return true;
 }
+
+// ---- PHASE 3 (Oct 2026): THE OUTCOME QUESTION -------------------------------
+//
+// See OutcomeSolution in search.hpp for what is asked and why.  This is the how.
+//
+// ONE OBJECTIVE LEVEL, SEARCHED BY NULL WINDOWS.  objective_weights gives a fast
+// search on these shapes weights (1, 0): one per bid down for a pair, one per
+// step of outcome rank for three bids, and no trick term.  Every line's value is
+// then v(final mask) -- a function of which bids fell and nothing else -- so the
+// value set is a handful of integers known before a card is read: 0..2 for a
+// pair, the six rungs of the ladder for three bids.  The minimax value is one of
+// them, and a null-window question "is it at least b?" is the same AND-OR search
+// MODE_FAST is, with the same fail-soft bounds and the same table.  Bisecting
+// the value set takes two questions at most for a pair and three for three bids.
+//
+// WHY THIS IS THE FULL SOLVE'S ANSWER, not an approximation of it.  The full
+// objective packs this same level above a trick term too small to outweigh one
+// step of it (K*K against K*t), so its minimax value lies in the band of this
+// level's minimax value, and the band is what its nils_set (and, where the
+// objective pins it, its mask) is read from.  Dropping the levels below cannot
+// move the level above -- the argument that makes MODE_FAST agree with
+// MODE_FULL on one nil, unchanged.  The corpus tests check it on every build.
+//
+// WHAT IS SPENT, AND WHAT IS NOT.  Everything the full search spends on these
+// shapes that is a statement about the bids rather than the tricks: the doom
+// charge, M4 and the pair proofs (band bounds that are exact here, since the
+// band IS the value), patch 66's trapezoid for a pair, item 79's reachable-rank
+// bound and item 101's live-set proofs for three bids.  Not the double-dummy
+// engine and nothing built on it -- it counts tricks, which this objective has
+// none of.  Item 100's one-live handoff comes back in its boolean form
+// (SearchOptions::outcome_handoff): see configure() and one_live_handoff.
+//
+// WHAT IT COSTS, measured on the slow-hands list (Oct 2026: one thread, the
+// table warm, the C ABI call, unlimited; the plain full solve for comparison):
+//
+//                       deals   outcome total   median    max     full solve total
+//   a pair that both bid  26        61.2 s       0.49 s   31.6 s      482 s
+//   three bids            18        99.9 s       2.2 s    31.3 s      558 s
+//
+// (the full solve is nil_solve, not the per-card call, run two at a time on
+// the same machine -- roughly 1.1x what it costs alone).
+//
+// Every answer equal to the full solve's count, every proven mask consistent
+// with its line.  The slowest of both is the same deal (s1-04), where both
+// twins are breakable alone and not together: proving "not both" is the whole
+// cost, and no cheap fact certifies it.
+namespace {
+
+// One search on a configured context, catching a limit's stop.  False when
+// stopped; `value` is then untouched.
+bool bounded_search(Ctx& ctx, const State& st, int alpha, int beta, int& value) {
+    CardId ignored = NO_CARD;
+    try {
+        value = search(ctx, st, ignored, alpha, beta);
+        return true;
+    } catch (const SearchStopped&) {
+        return false;
+    }
+}
+
+// THE PER-SEAT QUESTION, as a building block: can `seat` be forced to take a
+// trick, its partner covering and both opponents unconstrained?  Exactly what
+// nil_count_set asks of the roles seat_roles_from_nil builds, so a GUARANTEE
+// that holds whatever the other seats' own bids are -- which is what lets it
+// bound a pair's count below.  False when the limits stopped it.
+bool single_nil_verdict(const Position& pos, int seat, const SearchOptions& inner,
+                        CallLimits* lim, bool& breakable, std::uint64_t& nodes) {
+    const SeatRoles r = seat_roles_from_nil(seat, false);
+    const ObjectiveWeights w = objective_weights(pos.tricks_remaining(), r, inner);
+    Ctx c;
+    configure(c, r, inner, w);
+    if (lim) arm_limits(c, lim);
+    const State root = state_of(pos);
+    int v = 0;
+    const bool ok = bounded_search(c, root, 0, 1, v);
+    nodes += c.nodes;
+    if (lim) retire_limits(c);
+    if (ok) breakable = v > 0;
+    return ok;
+}
+
+}  // namespace
+
+bool solve_outcome(const Position& pos, const SeatRoles& roles, const SearchOptions& opts_in,
+                   OutcomeSolution& out, std::string& err) {
+    const auto call_start = std::chrono::steady_clock::now();
+    out = OutcomeSolution();
+    if (!validate_seat_roles(roles, err)) return false;
+    if (!validate(pos, err)) return false;
+
+    const SeatShape shape = seat_shape_of(roles);
+    if (shape != SHAPE_SINGLE_NIL && shape != SHAPE_PARTNER_NILS && shape != SHAPE_THREE_NILS) {
+        err = "the outcome question takes one nil, a pair that both bid, or three bids; " +
+              describe_seat_roles(roles) +
+              " is one bid per side -- ask each bid with nil_count_set_limited, or the full "
+              "solve, whose presolve answers it from three fast probes";
+        return false;
+    }
+
+    SearchOptions opts = opts_in;
+    opts.mode = MODE_FAST;
+    opts.conjunction_seat = -1;
+    // The limits are armed ONCE for the whole call and handed to each context
+    // explicitly; the options every context is configured from carry none, so
+    // nothing below can arm a budget of its own.
+    CallLimits limits;
+    const bool limited = make_call_limits(opts, call_start, limits);
+    CallLimits* lim = limited ? &limits : nullptr;
+    const SearchOptions inner = without_limits(opts);
+
+    const unsigned declared = nil_set_mask(roles);
+    const unsigned live = live_nil_mask(roles);
+    const int declared_count = nil_set_count(roles);
+    const State root = state_of(pos);
+
+    // THE ANSWER IS A SET OF CANDIDATE OUTCOMES, narrowed as questions come
+    // back: every subset of the live bids whose value lies in [vlo, vhi].  What
+    // is reported is what every candidate agrees on -- a bid in all of them is
+    // proven down, a bid in none proven to make, the count's range is theirs --
+    // so a stopped call and a finished one are reported by the same code, and a
+    // finished one whose value names several masks (a pair with one down) says
+    // exactly as much as the objective pins and no more.
+    //
+    // `value_of` is v(final mask) for the objective searched.
+    int value_of[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    auto report = [&](int vlo, int vhi, bool complete) -> bool {
+        unsigned all = live;
+        unsigned any = 0;
+        int cmin = 99, cmax = -1;
+        bool found = false;
+        for (unsigned m = live;; m = (m - 1) & live) {
+            if (value_of[m] >= vlo && value_of[m] <= vhi) {
+                found = true;
+                all &= m;
+                any |= m;
+                const int c = count_cards(static_cast<Hand>(m));
+                if (c < cmin) cmin = c;
+                if (c > cmax) cmax = c;
+            }
+            if (m == 0) break;
+        }
+        if (!found) {
+            std::ostringstream os;
+            os << "internal inconsistency: the outcome search narrowed its value to [" << vlo
+               << ", " << vhi << "], which no outcome reaches";
+            err = os.str();
+            return false;
+        }
+        // A finished call always pins the count: the value pins it on every
+        // shape taken here (a count for a pair; the lone bid's fate and HOW MANY
+        // twins for three bids).  Checked rather than assumed.
+        if (complete && cmin != cmax) {
+            err = "internal inconsistency: a finished outcome search left the count open";
+            return false;
+        }
+        out.complete = complete;
+        out.value_lo = vlo;
+        out.value_hi = vhi;
+        out.set_mask = declared | all;
+        out.made_mask = live & ~any;
+        out.nils_set_min = declared_count + cmin;
+        out.nils_set_max = declared_count + cmax;
+        out.nils_set = complete ? declared_count + cmin : TRICKS_NOT_COMPUTED;
+        return true;
+    };
+
+    // Nothing live: every bid was declared down.
+    if (live == 0) return report(0, 0, true);
+
+    // ONE LIVE BID -- a single nil, or a pair with one twin declared down, whose
+    // partner then plays exactly as a cover does (its tricks count for the pair
+    // and it has nothing left to lose).  The per-seat question IS the answer.
+    if (!(live & (live - 1))) {
+        const int seat = lowest_card(static_cast<Hand>(live));
+        value_of[live] = 1;
+        bool breakable = false;
+        ++out.questions;
+        if (!single_nil_verdict(pos, seat, inner, lim, breakable, out.nodes)) {
+            return report(0, 1, false);
+        }
+        return report(breakable ? 1 : 0, breakable ? 1 : 0, true);
+    }
+
+    int vlo = 0;
+    int vhi = 0;
+
+    // ---- a pair that both bid, both live -----------------------------------
+    //
+    // THE PROBES (SearchOptions::outcome_probes; PARKED, off by default -- see
+    // the option for the measurement).  Each twin asked as a single nil, the
+    // other twin covering, is a guarantee about that twin alone, and a
+    // guarantee survives being asked inside the pair's game:
+    //
+    //   X breakable alone   the opponents can force X down whatever the pair
+    //                       does, so at least one bid goes down:  count >= 1
+    //   X safe alone        the pair can keep X clean, its partner free to take
+    //                       anything -- at the cost of at most the partner's own
+    //                       bid:                                   count <= 1
+    //
+    // One of each pins the count at 1 with no pair search at all; two the same
+    // way leave one question, "can the opponents force any trick on the pair?"
+    // (both safe) or "both?" (both breakable).  The trouble is the second case:
+    // both twins are breakable alone on most deals, the pair search runs
+    // anyway, and the probes are pure cost -- often MORE than the pair's own
+    // "any trick at all?" question, which the doom charge and the forcing-lead
+    // proofs usually settle near the root.
+    if (shape == SHAPE_PARTNER_NILS) {
+        for (unsigned m = live;; m = (m - 1) & live) {
+            value_of[m] = count_cards(static_cast<Hand>(m));
+            if (m == 0) break;
+        }
+        vlo = 0;
+        vhi = count_cards(static_cast<Hand>(live));
+        if (opts.outcome_probes) {
+            for (unsigned rest = live; rest; rest &= rest - 1) {
+                const int seat = lowest_card(static_cast<Hand>(rest));
+                if (lim && call_limits_spent(limits)) return report(vlo, vhi, false);
+                bool breakable = false;
+                ++out.questions;
+                ++out.probes;
+                if (!single_nil_verdict(pos, seat, inner, lim, breakable, out.nodes)) {
+                    return report(vlo, vhi, false);
+                }
+                if (breakable) {
+                    if (vlo < 1) vlo = 1;
+                } else if (vhi > 1) {
+                    vhi = 1;
+                }
+            }
+            if (vlo == vhi) return report(vlo, vhi, true);
+        }
+    }
+
+    // ---- the search: the shape's own objective, bisected ---------------------
+    const ObjectiveWeights weights = objective_weights(pos.tricks_remaining(), roles, inner);
+    Ctx ctx;
+    configure(ctx, roles, inner, weights);
+    if (lim) arm_limits(ctx, lim);
+    if (shape == SHAPE_THREE_NILS) {
+        // The rank from the side the search writes its value for, as a delta
+        // from nothing broken: exactly what score_trick telescopes to.
+        vlo = WINDOW_MAX;
+        vhi = WINDOW_MIN;
+        for (unsigned m = live;; m = (m - 1) & live) {
+            value_of[m] = weights.primary * (ctx.rank_of[m & 15u] - ctx.rank_of[0]);
+            if (value_of[m] < vlo) vlo = value_of[m];
+            if (value_of[m] > vhi) vhi = value_of[m];
+            if (m == 0) break;
+        }
+    }
+    // The distinct values still open, ascending.  At most eight.
+    int values[16];
+    int n_values = 0;
+    for (unsigned m = live;; m = (m - 1) & live) {
+        const int v = value_of[m];
+        if (v >= vlo && v <= vhi) {
+            bool seen = false;
+            for (int i = 0; i < n_values; ++i) seen = seen || values[i] == v;
+            if (!seen) values[n_values++] = v;
+        }
+        if (m == 0) break;
+    }
+    std::sort(values, values + n_values);
+    int lo_i = 0;
+    int hi_i = n_values - 1;
+    // A stopped call's nodes come from the limit accounting, not from
+    // ctx.nodes: a stop inside a handed-off search unwinds past the rollup
+    // that would have added its nodes here (one_live_handoff), and the
+    // accounting -- every retired context in `used`, this one's and its
+    // handoffs' remainders on top -- is the count the budget was tested
+    // against.  Every earlier context was retired into `used`, so it replaces
+    // the running total rather than adding to it.
+    auto stopped_nodes = [&]() { return limits.used + limit_nodes_spent(ctx); };
+    while (lo_i < hi_i) {
+        if (lim && call_limits_spent(limits)) {
+            out.nodes = stopped_nodes();
+            return report(values[lo_i], values[hi_i], false);
+        }
+        // Ask "at least values[mid]?", mid the upper middle of what is open.
+        // For a pair with nothing probed that is "can the opponents force any
+        // trick on the pair at all?", then "both?" only if it can.
+        const int mid = (lo_i + hi_i + 1) / 2;
+        const int bound = values[mid];
+        int r = 0;
+        ++out.questions;
+        if (!bounded_search(ctx, root, bound - 1, bound, r)) {
+            out.nodes = stopped_nodes();
+            return report(values[lo_i], values[hi_i], false);
+        }
+        if (r >= bound) {
+            // At least r: the first open value at or above it.
+            int i = lo_i;
+            while (i <= hi_i && values[i] < r) ++i;
+            if (i > hi_i) {
+                std::ostringstream os;
+                os << "internal inconsistency: the outcome search proved its value at least "
+                   << r << ", above every open outcome";
+                err = os.str();
+                return false;
+            }
+            lo_i = i;
+        } else {
+            // At most r: the last open value at or below it.
+            int i = hi_i;
+            while (i >= lo_i && values[i] > r) --i;
+            if (i < lo_i) {
+                std::ostringstream os;
+                os << "internal inconsistency: the outcome search proved its value at most "
+                   << r << ", below every open outcome";
+                err = os.str();
+                return false;
+            }
+            hi_i = i;
+        }
+    }
+    out.nodes += ctx.nodes;
+    return report(values[lo_i], values[hi_i], true);
+}
+
 bool replay_pv(const Position& pos, const std::vector<Play>& pv, const SeatRoles& roles,
                Tally& tally_out, std::string& err) {
     unsigned broken_seats = 0;

@@ -25,6 +25,10 @@
 //   * NilLimits likewise: two uint32, one uint64 and a pointer, 24 bytes on
 //     both x86 (four bytes of tail padding) and x64, and StructSize must say
 //     so -- set it from Marshal.SizeOf<NilLimits>(), never a literal.
+//
+//   * NilOutcome (0.2.0) too: two uint32, ten int32, one uint64 -- 56 bytes,
+//     the uint64 already 8-aligned at offset 48, so no padding anywhere on
+//     either platform.  StructSize from Marshal.SizeOf<NilOutcome>().
 
 using System;
 using System.Runtime.InteropServices;
@@ -465,10 +469,13 @@ namespace NilSolver
         Unsupported = -6,
 
         /// <summary>
-        /// NIL_INCOMPLETE. Not a failure: <c>nil_solve_moves_limited</c> ran out
-        /// of its budget (or was cancelled) and the rows report what each card
-        /// had proven, -1 wherever nothing was. Positive, so a test for
-        /// <c>&lt; 0</c> still reads only errors.
+        /// NIL_INCOMPLETE. Not a failure: a limited call ran out of its budget
+        /// (or was cancelled) and reports what it had proven, -1 wherever
+        /// nothing was. Returned by <c>nil_solve_moves_limited</c>,
+        /// <c>nil_count_set_limited</c> and <c>nil_solve_outcome_limited</c>
+        /// only. Positive, so a test for <c>&lt; 0</c> still reads only errors.
+        /// Not to be confused with <c>nil_count_set</c>'s return value 1 ("can
+        /// be set"), which is a different function's answer.
         /// </summary>
         Incomplete = 1
     }
@@ -499,6 +506,73 @@ namespace NilSolver
         /// the call returns. <see cref="IntPtr.Zero"/> for none.
         /// </summary>
         public IntPtr Cancel;
+    }
+
+    /// <summary>NIL_OUTCOME_* values for <see cref="NilOutcome.Options"/>.</summary>
+    [Flags]
+    public enum NilOutcomeOptions : uint
+    {
+        None = 0x0u,
+
+        /// <summary>
+        /// On a pair that both bid, ask each twin's single-nil question before
+        /// the pair search. Same answer; opt-in, measured slower in total.
+        /// </summary>
+        Probes = 0x1u,
+
+        /// <summary>
+        /// Keep searching a position with one bid live in the shape's own
+        /// search instead of the single-nil one. Same answer; a control arm.
+        /// </summary>
+        NoHandoff = 0x2u
+    }
+
+    /// <summary>
+    /// Mirrors the C <c>nil_outcome</c> struct (0.2.0): what
+    /// <see cref="NilSolverNative.nil_solve_outcome_limited"/> reports. Set
+    /// <see cref="StructSize"/> to <c>Marshal.SizeOf&lt;NilOutcome&gt;()</c> and
+    /// <see cref="Options"/> before the call; the library fills the rest on
+    /// every return path.
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct NilOutcome
+    {
+        /// <summary>IN: sizeof(nil_outcome). A call with this unset is refused.</summary>
+        public uint StructSize;
+
+        /// <summary>IN: <see cref="NilOutcomeOptions"/>.</summary>
+        public uint Options;
+
+        /// <summary>
+        /// How many bids are down under best play, declared ones included; the
+        /// full solve's nils_set. -1 when the call stopped before it was pinned.
+        /// </summary>
+        public int NilsSet;
+
+        /// <summary>Proven range of the count; both equal NilsSet on Ok.</summary>
+        public int NilsSetMin;
+        public int NilsSetMax;
+
+        /// <summary>Bids PROVEN down, as a seat bitmask (bit 0 North .. 3 West).</summary>
+        public int SetMask;
+
+        /// <summary>Bids PROVEN to make.</summary>
+        public int MadeMask;
+
+        /// <summary>
+        /// <see cref="NilSeatStatus"/> per absolute seat. Unknown on a finished
+        /// call means the objective does not name WHICH bid (a pair, or the
+        /// twins of three bids, with exactly one of the two down).
+        /// </summary>
+        public int SeatStatusNorth;
+        public int SeatStatusEast;
+        public int SeatStatusSouth;
+        public int SeatStatusWest;
+
+        /// <summary>Boolean searches run, per-twin probes included.</summary>
+        public int Questions;
+
+        public ulong Nodes;
     }
 
     /// <summary>
@@ -733,6 +807,40 @@ namespace NilSolver
             uint flags);
 
         /// <summary>
+        /// <see cref="nil_count_set"/> with a budget (0.2.0). Returns
+        /// <see cref="NilStatus.Ok"/> with <paramref name="canSet"/> 1 or 0,
+        /// <see cref="NilStatus.Incomplete"/> with it -1, or a negative error
+        /// with it -1. One nil only, as nil_count_set.
+        /// </summary>
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+        public static extern int nil_count_set_limited(
+            [MarshalAs(UnmanagedType.LPStr)] string pbn,
+            int leader,
+            [MarshalAs(UnmanagedType.LPStr)] string currentTrick,
+            [In] int[] seats,
+            uint flags,
+            ref NilLimits limits,
+            out int canSet);
+
+        /// <summary>
+        /// Which bids go down under best play, bounded (0.2.0): one nil, a pair
+        /// that both bid, or three bids. Returns <see cref="NilStatus.Ok"/>,
+        /// <see cref="NilStatus.Incomplete"/> (the proven range is in
+        /// NilsSetMin/Max), or a negative error; see the C header.
+        /// </summary>
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+        public static extern int nil_solve_outcome_limited(
+            [MarshalAs(UnmanagedType.LPStr)] string pbn,
+            int leader,
+            [MarshalAs(UnmanagedType.LPStr)] string currentTrick,
+            [In] int[] seats,
+            uint flags,
+            ref NilLimits limits,
+            ref NilOutcome outcome,
+            StringBuilder errBuf,
+            int errLen);
+
+        /// <summary>
         /// Transposition table size in mebibytes, for subsequent solves ON THE
         /// CALLING THREAD. The table is per-thread and so is this setting, which
         /// is the fact that decides how a server should schedule solves -- see
@@ -750,7 +858,7 @@ namespace NilSolver
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr nil_solver_version();
 
-        /// <summary>Version of the loaded native library, e.g. "0.1.0".</summary>
+        /// <summary>Version of the loaded native library, e.g. "0.2.0".</summary>
         public static string Version()
         {
             return Marshal.PtrToStringAnsi(nil_solver_version()) ?? string.Empty;

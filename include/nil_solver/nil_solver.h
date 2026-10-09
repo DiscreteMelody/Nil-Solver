@@ -628,11 +628,17 @@ extern "C" {
  * in fast mode, fast mode with more than one nil, or a `seats` array this build
  * does not take (see "WHAT IS ACCEPTED TODAY" above). */
 #define NIL_ERR_UNSUPPORTED (-6)
-/* NOT A FAILURE: nil_solve_moves_limited ran out of the budget it was given (or
- * was cancelled) before every card was scored, and handed back what it had
- * proven.  Positive on purpose, so a caller that tests `rc < 0` for errors
- * reads the partial rows, and one that tests `rc != NIL_OK` treats the call as
- * not done -- both safe readings.  Never returned by any other entry point. */
+/* NOT A FAILURE: a limited call ran out of the budget it was given (or was
+ * cancelled) before it finished, and handed back what it had proven.  Positive
+ * on purpose, so a caller that tests `rc < 0` for errors reads the partial
+ * answer, and one that tests `rc != NIL_OK` treats the call as not done -- both
+ * safe readings.  Returned only by the three entry points that take a
+ * nil_limits: nil_solve_moves_limited, nil_count_set_limited and
+ * nil_solve_outcome_limited.
+ *
+ * NOT TO BE CONFUSED WITH nil_count_set's return value 1, which means "can be
+ * set" and is a different function's answer.  nil_count_set_limited returns
+ * its answer through an out-parameter for exactly that reason. */
 #define NIL_INCOMPLETE 1
 
 typedef struct nil_result {
@@ -927,8 +933,16 @@ NIL_SOLVER_API int32_t NIL_SOLVER_CALL nil_solve_moves(const char* pbn, int32_t 
  *
  * Limits are tested every 65,536 nodes (about 9 ms on a 13-card hand), so a
  * call can run past its budget by up to one interval per internal search
- * context -- tens of milliseconds at worst.  Nothing is checked in fast mode
- * (NIL_FLAG_FAST_MODE), which ignores the limits. */
+ * context -- tens of milliseconds at worst.
+ *
+ * FAST MODE HONOURS THEM TOO, since 0.2.0 (phase 3, Oct 2026).  Before that,
+ * nil_solve_moves_limited with NIL_FLAG_FAST_MODE ignored every limit; it now
+ * stops like full mode does, at the same rhythm, and reports the rows whose
+ * verdict it had reached (see nil_solve_moves_limited).  The same struct, read
+ * the same way, bounds nil_count_set_limited and nil_solve_outcome_limited
+ * below.  A multi-search call (the outcome question asks up to four) also tests
+ * the limits between its searches, so a budget spent by one is not handed a
+ * fresh interval by the next. */
 typedef struct nil_limits {
     uint32_t struct_size;
     uint32_t max_ms;
@@ -965,6 +979,15 @@ typedef struct nil_limits {
  * proven, in which case it is the best row's, as above -- and out->nodes is
  * the nodes the call spent.
  *
+ * IN FAST MODE (NIL_FLAG_FAST_MODE; honoured since 0.2.0) a row has only its
+ * verdict to prove, so a stopped call has two kinds of row: a card whose
+ * verdict was reached keeps it (nils_set 0 or 1, the mask, seat_status) exactly
+ * as a finished call reports it, and a card whose verdict was not reads
+ * nils_set = -1 with NIL_SEAT_STATUS_UNKNOWN on the live bidder.  The position
+ * is searched first in fast mode, so `out` carries its verdict (nils_set and
+ * the mask) whenever the stop came after that search, and -1 otherwise.
+ * is_best is 0 on every row of a stopped call, as in full mode.
+ *
  * What a stopped call leaves behind is safe: nothing half-searched is stored,
  * and the next call on the thread answers exactly as it would have.  Errors are
  * nil_solve_moves's, with the same codes; a NULL `limits` is not one, and a
@@ -973,6 +996,183 @@ NIL_SOLVER_API int32_t NIL_SOLVER_CALL nil_solve_moves_limited(
     const char* pbn, int32_t leader, const char* current_trick, const int32_t* seats,
     uint32_t flags, const nil_limits* limits, nil_result* out, nil_move* moves,
     int32_t moves_cap, int32_t* moves_len, char* err_buf, int32_t err_len);
+
+/* ---- PHASE 3 (Oct 2026, 0.2.0): BOUNDED FALLBACK QUESTIONS ----------------
+ *
+ * Two entry points for a caller whose per-card call came back NIL_INCOMPLETE
+ * and needs a TRUE answer it can afford, inside a budget.  Both take the same
+ * nil_limits as nil_solve_moves_limited, read it the same way (struct_size,
+ * max_ms from the start of the call, max_nodes, the cancel word), test it at
+ * the same rhythm, and leave the thread's tables just as safe when they stop.
+ * A NULL `limits`, or every limit zero, is an unbounded call.
+ */
+
+/* THE PER-SEAT QUESTION, BOUNDED: nil_count_set with a budget.
+ *
+ * Asks exactly what nil_count_set asks -- with perfect play from here, can the
+ * nil bidder be forced to take a trick? -- in fast mode, and accepts exactly
+ * the `seats` it accepts: ONE nil bid, its partner covering (or, for the
+ * per-seat fallback on a multi-bid deal, the caller's own recasting of one
+ * bidder as the nil and its partner as the cover, the other two opponents).
+ * A NIL_ROLE_NIL_SET bidder answers 1 without searching.  Flags are
+ * nil_count_set's; NIL_FLAG_FAST_MODE is implied.
+ *
+ * Returns:
+ *   NIL_OK              finished.  *can_set = 1 (the nil can be forced to take
+ *                       a trick) or 0 (it cannot).  Identical to what
+ *                       nil_count_set returns for the same arguments.
+ *   NIL_INCOMPLETE      a limit ran out first.  *can_set = -1.  A boolean has
+ *                       no partial state, so nothing else is known.
+ *   NIL_ERR_*           negative, as nil_count_set's; *can_set = -1.
+ *                       NIL_ERR_UNSUPPORTED for more than one bid -- recast the
+ *                       roles per seat, or ask nil_solve_outcome_limited.
+ *   NIL_ERR_NULL_ARG    also for a NULL `can_set`, and for a `limits` whose
+ *                       struct_size does not cover its first two fields.
+ *
+ * The answer comes back through `can_set` rather than the return value because
+ * the return value 1 already means "can be set" in nil_count_set and
+ * NIL_INCOMPLETE is also 1. */
+NIL_SOLVER_API int32_t NIL_SOLVER_CALL nil_count_set_limited(
+    const char* pbn, int32_t leader, const char* current_trick, const int32_t* seats,
+    uint32_t flags, const nil_limits* limits, int32_t* can_set);
+
+/* Options for nil_outcome::options.  The flag word is full, so the outcome
+ * question's own control arms live here. */
+#define NIL_OUTCOME_NONE 0x0u
+/* On a pair that both bid: ask each twin's single-nil question before the pair
+ * search -- a twin breakable alone means at least one goes down, a twin safe
+ * alone means at most one does.  OPT-IN: same answer, and measured slower in
+ * total (+49% on the 26 twin deals of the slow-hands list) because both twins
+ * are breakable alone on most deals; it wins only where one is safe alone.
+ * nil_cli --outcome-probes. */
+#define NIL_OUTCOME_PROBES 0x1u
+/* Where one bid alone is still live, keep searching in the pair's (or the
+ * three bids') own search instead of handing the position to the single-nil
+ * one.  Same answer; a control arm (nil_cli --no-outcome-handoff). */
+#define NIL_OUTCOME_NO_HANDOFF 0x2u
+
+/* What nil_solve_outcome_limited reports.  The caller sets struct_size (and
+ * options) and the library fills the rest -- every field its struct_size
+ * covers, whatever the return code, so a stale value is never left behind.
+ *
+ *   struct_size    IN.  sizeof(nil_outcome).  Lets the struct grow: the library
+ *                  reads and writes only the fields this size covers, and
+ *                  refuses a size too small to hold `nils_set_max` with
+ *                  NIL_ERR_NULL_ARG.
+ *   options        IN.  NIL_OUTCOME_*.
+ *   nils_set       How many bids are down under best play, those the caller
+ *                  declared down included: 0..3.  -1 when the call stopped
+ *                  before the count was pinned.  Equal, on every shape this
+ *                  takes, to the nils_set a full solve of the same position
+ *                  reports.
+ *   nils_set_min   What was PROVEN about that count: it lies in [min, max].
+ *   nils_set_max   Equal to nils_set at both ends on NIL_OK.  On
+ *                  NIL_INCOMPLETE, the range the questions answered so far
+ *                  left open -- e.g. min 1 max 2 for a pair once "at least one
+ *                  goes down" was proven and "both?" was not.
+ *   set_mask       Bids PROVEN down, as a seat bitmask (bit NIL_SEAT_*), the
+ *                  caller's NIL_ROLE_NIL_SET bids included.
+ *   made_mask      Bids PROVEN to make.
+ *   seat_status    Per absolute seat (NIL_SEAT_*): NIL_SEAT_STATUS_NIL_SET,
+ *                  _NIL_MAKES, _NO_NIL, or _UNKNOWN for a bid in neither mask.
+ *                  On NIL_OK, UNKNOWN means the objective does not say WHICH:
+ *                  a pair with exactly one of the two down, or the twins of a
+ *                  three-bid deal with exactly one twin down.  The count is
+ *                  still exact; it is the name that is not pinned (see
+ *                  nil_result::nils_set_mask_determined -- the same rule).
+ *   nodes          Nodes spent, probes included.
+ *   questions      How many searches the call ran (each a boolean search),
+ *                  the per-twin probes included.
+ *
+ * On NIL_OK and NIL_INCOMPLETE: set_mask and made_mask are disjoint, and
+ * popcount(set_mask) <= nils_set_min <= nils_set_max <= popcount(set_mask) +
+ * (live bids in neither mask).  On NIL_OK nils_set_min == nils_set ==
+ * nils_set_max.
+ */
+typedef struct nil_outcome {
+    uint32_t struct_size;
+    uint32_t options;
+    int32_t nils_set;
+    int32_t nils_set_min;
+    int32_t nils_set_max;
+    int32_t set_mask;
+    int32_t made_mask;
+    int32_t seat_status[4];
+    int32_t questions;
+    uint64_t nodes;
+} nil_outcome;
+
+/* THE OUTCOME QUESTION, BOUNDED: which bids go down under best play, and
+ * nothing about tricks.
+ *
+ * The primary level of the full objective on its own -- the full solve's
+ * nils_set and, where the objective pins it, its mask -- searched the way fast
+ * mode searches one nil: a handful of boolean questions, each an AND-OR search
+ * that stops at the first answer either way.  Built for the multi-bid deals the
+ * per-seat question gets wrong, chiefly a PAIR THAT BOTH BID, where each twin
+ * can be breakable alone and the two not breakable together.
+ *
+ * WHICH `seats` IT TAKES.
+ *   one nil      { 0 3 2 3 }, the bidder possibly NIL_ROLE_NIL_SET.  The same
+ *                question as nil_count_set_limited; here for uniformity.
+ *   a pair       { 0 3 0 3 }, either or both NIL_ROLE_NIL_SET.  The answer the
+ *                bot asked for: 0, 1 or 2 down.  With one twin declared down,
+ *                the other's fate is the single-nil question with the
+ *                declared twin as its cover, which is what it is.
+ *   three bids   { 0 0 3 0 }, { 0 0 2 0 }: the lone bid's fate (pinned: it is in
+ *                set_mask or made_mask) and how many twins go down (pinned as a
+ *                count; which twin, only when it is none or both).  All three
+ *                live, as the full solve requires.
+ * One bid per side is refused with NIL_ERR_UNSUPPORTED: ask each bidder with
+ * nil_count_set_limited (on that shape the two per-seat guarantees and the full
+ * answer agreed on every deal measured), or ask the full solve.
+ *
+ * HOW.  The full objective's top level searched alone, by boolean questions.
+ * A pair asks "can the opponents force a trick on EITHER twin?" -- usually
+ * settled near the root -- and, only if so, "on BOTH?".  Three bids bisect the
+ * six rungs of the outcome ladder: two or three questions.  Wherever one bid
+ * alone is left live the position is handed to the single-nil search, whose
+ * verdict is exact there (NIL_OUTCOME_NO_HANDOFF turns that off).
+ *
+ * WHAT IT COSTS, measured Oct 2026 on the 66-position slow-hands list (Linux,
+ * one thread, table warm, unlimited; MSVC builds run slower):
+ *
+ *   a pair (26 deals)    median 0.49 s, 61 s in all, slowest 31.6 s
+ *                        (the plain full solve of the same 26: 482 s)
+ *   three bids (18)      median 2.2 s, 100 s in all, slowest 31.3 s
+ *                        (the plain full solve of the same 18: 558 s)
+ *
+ *   with max_ms = 2000:  pairs finish on 18 of 26, and all 8 that stop have
+ *                        already proven "at least one goes down" (min 1, max
+ *                        2); three bids finish on 9 of 18.  Worst overrun 8 ms.
+ *
+ * The slow deals are the ones where both twins are breakable alone and not
+ * both together -- exactly the deals the per-seat question gets wrong -- and
+ * proving "not both" is the whole cost.  Every finished answer equalled the
+ * full solve's, and every stopped one's range held it.
+ *
+ * Flags: NIL_FLAG_SPADES_BROKEN and the diagnostic NO_ flags as elsewhere
+ * (NIL_FLAG_NO_MEMO, NO_COLLAPSE, NO_STATIC_BOUNDS, NO_ORDERING,
+ * NO_ADVERSARIAL_PROOFS, ...).  NIL_FLAG_FAST_MODE is implied;
+ * NIL_FLAG_MINIMISE_OWN_TRICKS is inert (there is no trick level to point at).
+ *
+ * Returns:
+ *   NIL_OK              finished: nils_set exact, the masks as above.
+ *   NIL_INCOMPLETE      a limit ran out first: nils_set = -1, the proven range
+ *                       in nils_set_min/max, and the masks hold only what was
+ *                       proven (the declared bids, at least).
+ *   NIL_ERR_*           negative: NIL_ERR_NULL_ARG (pbn, seats or out NULL; a
+ *                       struct_size too small), NIL_ERR_PARSE,
+ *                       NIL_ERR_ILLEGAL_POSITION, NIL_ERR_UNSUPPORTED (one bid
+ *                       per side; same-lean; four nils), NIL_ERR_INTERNAL.  On
+ *                       an error `out` reads -1 in the three counts, 0 in the
+ *                       masks and NIL_SEAT_STATUS_UNKNOWN for every seat,
+ *                       whatever the shape.
+ */
+NIL_SOLVER_API int32_t NIL_SOLVER_CALL nil_solve_outcome_limited(
+    const char* pbn, int32_t leader, const char* current_trick, const int32_t* seats,
+    uint32_t flags, const nil_limits* limits, nil_outcome* out, char* err_buf,
+    int32_t err_len);
 
 /* Set the transposition table size, in mebibytes, for subsequent calls on the
  * calling thread.  The table is per-thread, and so is this setting.  Rounded DOWN to a power-of-two bucket count, so the table actually
@@ -994,7 +1194,11 @@ NIL_SOLVER_API void NIL_SOLVER_CALL nil_set_table_size(uint32_t megabytes);
  * from a thread that is done solving, or before unloading the library. */
 NIL_SOLVER_API void NIL_SOLVER_CALL nil_release_table(void);
 
-/* Static version string, e.g. "0.1.0". */
+/* Static version string, e.g. "0.2.0".
+ *
+ *   0.1.0   through the C0 limits (Oct 2026).
+ *   0.2.0   phase 3: fast mode honours nil_limits; nil_count_set_limited and
+ *           nil_solve_outcome_limited.  No existing export changed shape. */
 NIL_SOLVER_API const char* NIL_SOLVER_CALL nil_solver_version(void);
 
 #ifdef __cplusplus

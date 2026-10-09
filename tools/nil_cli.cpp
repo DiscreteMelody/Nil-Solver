@@ -190,10 +190,21 @@ void usage(const char* argv0) {
         << "                          one line per card giving each seat's\n"
         << "                          outcome (0 nil makes, 1 nil set, 2 no nil)\n"
         << "                          and tricks, plus the pair totals\n"
-        << "  --max-nodes <n>         --moves: stop after about n nodes and report\n"
-        << "                          what each card had proven (C0; 0 = no limit)\n"
-        << "  --max-ms <n>            --moves: the same, for n milliseconds of wall\n"
-        << "                          time\n"
+        << "  --max-nodes <n>         stop after about n nodes and report what had\n"
+        << "                          been proven (0 = no limit).  Limits --moves\n"
+        << "                          (C0), --mode fast and --outcome (phase 3);\n"
+        << "                          a full-mode solve without --moves takes none\n"
+        << "  --max-ms <n>            the same, for n milliseconds of wall time\n"
+        << "  --outcome               which bids go down under best play and nothing\n"
+        << "                          else: one nil, a pair that both bid, or three\n"
+        << "                          bids.  Prints the count, the proven range, and\n"
+        << "                          the bids proven down and proven to make\n"
+        << "  --outcome-probes        --outcome on a pair: ask each twin's single-\n"
+        << "                          nil question before the pair search (same\n"
+        << "                          answer; parked: slower in total)\n"
+        << "  --no-outcome-handoff    --outcome: keep searching a boundary with one\n"
+        << "                          bid live in the pair or three-bid search, not\n"
+        << "                          the single-nil one (same answer; a control arm)\n"
         << "  --conjunction <seat>    with a bid on each side, answer only whether\n"
         << "                          the side holding <seat> can force ITS bid to\n"
         << "                          survive while the other's dies.  Implies fast\n"
@@ -284,6 +295,7 @@ int main(int argc, char** argv) {
     bool list_moves = false;
     bool tt_stats = false;
     bool limited = false;  // --max-nodes / --max-ms (C0)
+    bool outcome = false;  // --outcome (phase 3)
     nil::SearchOptions opts;
 
     for (int i = 1; i < argc; ++i) {
@@ -519,6 +531,12 @@ int main(int argc, char** argv) {
                 opts.max_ms = static_cast<std::uint32_t>(value);
             }
             limited = true;
+        } else if (arg == "--outcome") {
+            outcome = true;
+        } else if (arg == "--outcome-probes") {
+            opts.outcome_probes = true;
+        } else if (arg == "--no-outcome-handoff") {
+            opts.outcome_handoff = false;
         } else if (arg == "--compact") {
             compact = true;
         } else {
@@ -528,8 +546,15 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (limited && !list_moves) {
-        std::cerr << "error: --max-nodes and --max-ms limit the per-card call; add --moves\n";
+    // A full-mode solve of the position alone takes no limits -- no limited entry
+    // point reaches it -- so asking for one is refused rather than ignored.
+    if (limited && !list_moves && !outcome && opts.mode != nil::MODE_FAST) {
+        std::cerr << "error: --max-nodes and --max-ms limit --moves, --mode fast and "
+                     "--outcome; a full solve without --moves takes no limit\n";
+        return 2;
+    }
+    if (outcome && (list_moves || !conjunction_text.empty())) {
+        std::cerr << "error: --outcome is a question of its own; drop --moves / --conjunction\n";
         return 2;
     }
     if (pbn.empty()) {
@@ -720,6 +745,51 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    if (outcome) {
+        // Phase 3: the outcome question.  Standalone, as the probes above are:
+        // it calls neither solve() nor solve_moves().
+        nil::OutcomeSolution oc;
+        if (!nil::solve_outcome(pos, roles, opts, oc, err)) {
+            std::cerr << "error: " << err << "\n";
+            return 3;
+        }
+        auto seats_of = [](unsigned mask) {
+            std::string text;
+            for (int s = 0; s < 4; ++s) {
+                if (mask & (1u << s)) text += nil::SEAT_CHARS[s];
+            }
+            return text.empty() ? std::string("-") : text;
+        };
+        if (compact) {
+            std::cout << "outcome=1\n"
+                      << "complete=" << (oc.complete ? 1 : 0) << "\n"
+                      << "nils_set=" << oc.nils_set << "\n"
+                      << "nils_set_min=" << oc.nils_set_min << "\n"
+                      << "nils_set_max=" << oc.nils_set_max << "\n"
+                      << "set_mask=" << oc.set_mask << "\n"
+                      << "made_mask=" << oc.made_mask << "\n"
+                      << "value_lo=" << oc.value_lo << "\n"
+                      << "value_hi=" << oc.value_hi << "\n"
+                      << "questions=" << oc.questions << "\n"
+                      << "probes=" << oc.probes << "\n"
+                      << "nodes=" << oc.nodes << "\n";
+        } else {
+            std::cout << "Bids down       ";
+            if (oc.complete) {
+                std::cout << oc.nils_set << "\n";
+            } else {
+                std::cout << "INCOMPLETE: between " << oc.nils_set_min << " and "
+                          << oc.nils_set_max << "\n";
+            }
+            std::cout << "Proven down     " << seats_of(oc.set_mask) << "\n"
+                      << "Proven to make  " << seats_of(oc.made_mask) << "\n"
+                      << "Questions       " << oc.questions << " (" << oc.probes
+                      << " single-nil probes)\n"
+                      << "Nodes           " << oc.nodes << "\n";
+        }
+        return 0;
+    }
+
     nil::Solution sol;
     std::vector<nil::MoveScore> scored;
     if (list_moves) {
@@ -830,8 +900,10 @@ int main(int argc, char** argv) {
             std::cout << nil::format_solution(pos, sol, opts) << "\n";
         } else {
             // C0: no position answer to format -- the best row is not known.
-            std::cout << "INCOMPLETE: stopped on a limit after " << sol.nodes
-                      << " nodes.  Each card shows what it had proven (? = not proven).\n";
+            std::cout << "INCOMPLETE: stopped on a limit after " << sol.nodes << " nodes."
+                      << (list_moves ? "  Each card shows what it had proven (? = not proven)."
+                                     : "  Nothing was proven.")
+                      << "\n";
         }
         if (list_moves) {
             // One row per card: each seat's outcome and tricks as STATUS/TRICKS

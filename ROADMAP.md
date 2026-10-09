@@ -5914,6 +5914,91 @@ down (13%), the nil side's mid-trick plays (11%), opponents' mid-trick plays
 against one live bid (9%) and the canonical first-trick plies of item 101 in
 the bid-each-side shapes (7%). MODE_FAST is unchanged (not measured).
 
+### 104. Bounded fallback questions: fast mode under the limits, the per-seat question, the outcome question — ⭐⭐⭐⭐ — **done, Oct 2026 (phase 3; 0.2.0)**
+
+**Why.** Since 2026-10-08 the bot calls `nil_solve_moves_limited(FAST_LINE,
+max_ms 5000)` and, on `NIL_INCOMPLETE`, asks `nil_count_set` of each live bid
+recast as a single nil. Two problems with that fallback, both measured on the
+slow-hands list: it was unbounded (fast mode ignored `nil_limits`; one hand's
+seats took 11.9 s), and it is the wrong question where two bids interact -- a
+pair that both bid can be breakable one at a time and not both at once, and
+three bids can trade the lone bid for the twins. Summing the per-seat answers
+gave the full solve's count on 57 of 66 hands.
+
+**What.**
+
+* *Fast mode honours the limits* -- `solve()` in MODE_FAST and `solve_moves()`
+  in MODE_FAST, at C0's rhythm and with C0's unwinding. The arming is factored
+  out (`make_call_limits`), nested presolves are stripped of limits
+  (`without_limits`) so nothing is budgeted twice, and a multi-search call
+  tests the limits between its searches (`call_limits_spent`) and retires each
+  context into the call's count (`retire_limits`). A stopped fast per-card call
+  keeps the verdicts it reached (ROW_ALL), the rest ROW_NOTHING, and the
+  position's verdict when the root search -- which fast mode runs first -- had
+  finished. **The one deliberate change to an existing export**:
+  `nil_solve_moves_limited` with `NIL_FLAG_FAST_MODE` used to ignore its limits.
+* *`nil_count_set_limited`* -- `nil_count_set` with a budget; answer through an
+  out-parameter (1/0, -1 when incomplete), because the return value 1 is taken.
+* *`nil_solve_outcome_limited` and `nil::solve_outcome`* -- the full objective's
+  top level searched alone: weights (1, 0) on the count (pair) or the rank
+  (three bids), so the value takes one integer per reachable outcome and is
+  bisected by null windows, each an AND-OR search like MODE_FAST's. A pair asks
+  "any?" then "both?"; three bids take two or three questions. The answer is a
+  set of candidate masks narrowed by each question; what every candidate agrees
+  on is reported (`set_mask`, `made_mask`, the count's range), so stopped and
+  finished calls share one reporting path and a finished pair with one twin down
+  names neither. One bid per side is refused (the full solve's presolve already
+  answers it from three probes, and the per-seat guarantees matched the full
+  answer on all 28 such seats measured).
+* *The boolean one-live handoff* (`outcome_handoff`; `--no-outcome-handoff`,
+  `NIL_OUTCOME_NO_HANDOFF`): item 100 with the trick term gone. At a boundary
+  with one bid L live the value is `D * [L breaks]`, so a single-nil fast search
+  over [0, 1] gives it exactly -- after the window test, which is not optional:
+  without it the handoff, sitting ahead of item 79's reach bound, made three
+  bids 1.9x slower. With it: pairs 64.9 -> 61.2 s (best of two, interleaved;
+  24 of 26 faster by 2%+, none slower), three bids 102.3 -> 99.9 s.
+* *Parked: the per-twin probes* (`outcome_probes`, opt-in, `--outcome-probes`,
+  `NIL_OUTCOME_PROBES`). Each twin's single-nil verdict bounds the pair's count
+  (breakable alone: at least one; safe alone: at most one). Sound, and +49% in
+  total: both twins are breakable alone on 20 of 26 deals, so the pair search
+  runs anyway. 8.0x on the one deal where a twin is safe alone.
+
+**Measured** (2-vCPU Xeon, GCC 13 Release, one thread, tables warm, the C ABI
+call; the 67-deal slow-hands list less one malformed row):
+
+| question | unlimited | `max_ms` 2000 |
+|---|---|---|
+| per seat (142 seat calls) | median 13 ms, max 11.7 s, 82 s in all | 16 stopped, worst overrun 8.8 ms |
+| pair (26 deals) | median 0.49 s, max 31.6 s, 61 s in all | 8 stopped, all with "at least one" proven |
+| three bids (18 deals) | median 2.2 s, max 31.3 s, 100 s in all (full solve: 558 s) | 9 stopped |
+
+Per seat at 1 s: 28 of 142 stopped (worst overrun 10.2 ms); at 5 s: 1 (6.0 ms).
+Every finished answer equalled the full solve's count (pairs 26/26 including
+the six the per-seat question gets wrong; three bids 18/18), every proven mask
+was consistent with the full solve's line, and every stopped range held the
+truth.
+
+**Checks.** `corpus_outcome`, `corpus_multinil_outcome`,
+`corpus_threenil_outcome` (against the full solve, laddered under node budgets
+like C0's), `corpus_multinil_outcome_no_handoff` and
+`corpus_threenil_outcome_no_handoff` (the control arm),
+`corpus_multinil_outcome_probes` (the parked arm), and
+`corpus_moves_fast_limits_ladder` (fast mode's ladder). Random differential
+outside the tree: 2,300 positions in five seatings at 5 and 8 cards, 7,532
+stopped calls laddered, no disagreement. Answer-neutral elsewhere: per-position
+nodes identical to HEAD on all four corpora in full, fast, per-card and
+values-only runs, and `nil_cli` output byte-identical on 40 13-card calls.
+`nil_tests` pins the ABI side.
+
+**Not measured:** MSVC (a MinGW-w64 cross-build compiles clean and exports all
+ten functions; `nil_outcome` is 56 bytes on both ABIs); several threads
+cancelled at once; the opposed shape under the outcome question (refused).
+
+**Not done.** The slowest pair and three-bid calls are the same deal (seed-1
+#4, both twins breakable alone, not both): proving "not both" is the whole 31 s,
+and no cheap fact certifies it. That is the next target if the fallback's tail
+matters.
+
 ## Suggested sequence
 
 ```

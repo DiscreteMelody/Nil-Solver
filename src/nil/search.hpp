@@ -1123,10 +1123,14 @@ struct SearchOptions {
     // bit), which restores the single-bound table node for node.
     bool tt_two_bounds = true;
 
-    // PER-CALL LIMITS (C0, Oct 2026).  Read by solve_moves() alone -- the
-    // bot's call -- and inert everywhere else.  Zero and null are "no limit",
-    // which is what every caller that does not set them gets, so the default
-    // call is node for node the call it always was.
+    // PER-CALL LIMITS (C0, Oct 2026).  Read by solve_moves() -- the bot's call
+    // -- in both modes, by solve() in MODE_FAST (phase 3, Oct 2026: the
+    // per-seat fallback, nil_count_set_limited), and by solve_outcome().  Inert
+    // in solve()'s MODE_FULL path, which no limited entry point reaches, and
+    // stripped from every nested presolve (see without_limits in search.cpp),
+    // so a probe a limited call spends is never budgeted twice.  Zero and null
+    // are "no limit", which is what every caller that does not set them gets,
+    // so the default call is node for node the call it always was.
     //
     // WHY A LIMIT AND NOT ONLY A FASTER SEARCH.  The tail-latency investigation
     // (Oct 2026, §4.4-4.5) found the slow calls are slow because of the whole
@@ -1165,6 +1169,28 @@ struct SearchOptions {
     std::uint64_t max_nodes = 0;
     std::uint32_t max_ms = 0;
     const volatile std::int32_t* cancel = nullptr;
+
+    // THE PAIR'S PROBES (phase 3, Oct 2026; solve_outcome only).  Before the
+    // pair search runs, ask each twin's single-nil question -- that twin as
+    // the nil, its partner as the cover -- and spend the two answers as bounds
+    // on how many of the pair go down.  See solve_outcome for the argument.
+    //
+    // PARKED, NOT SHIPPED: OFF by default, on with --outcome-probes (CLI) and
+    // NIL_OUTCOME_PROBES (C ABI).  Sound, and measured a loss: on the 26 twin
+    // deals of the slow-hands list it cost +49% in total (90.7 s against
+    // 61.0 s, the handoff on in both), because both twins are breakable alone
+    // on 20 of the 26 and the pair search then runs anyway.  It wins only where
+    // one twin is safe alone -- 8.0x on s1-04:3030@1 (0.30 s against 2.39 s) --
+    // and nothing cheap tells those deals apart in advance.
+    bool outcome_probes = false;
+
+    // THE OUTCOME QUESTION'S ONE-LIVE HANDOFF (phase 3; solve_outcome only).
+    // Where one bid alone is still live, the pair or three-bid search hands the
+    // position to a single-nil fast search, whose verdict is the exact answer
+    // there.  Item 100's idea with the trick term gone; see configure() for the
+    // argument.  Off with --no-outcome-handoff (CLI) and NIL_OUTCOME_NO_HANDOFF
+    // (C ABI), the control arm.
+    bool outcome_handoff = true;
 };
 
 // Who took what along a line.
@@ -1258,7 +1284,16 @@ struct Solution {
     // of them had proven (MoveScore::known), the position's own fields are
     // filled only where every row's value was proven, `pv` is empty, and
     // `nodes` is what the call spent before it stopped.  Always true from
-    // solve(), and from solve_moves() when no limit was set.
+    // solve() in MODE_FULL, and from either entry point when no limit was set.
+    //
+    // ALSO FALSE FROM solve() IN MODE_FAST (phase 3, Oct 2026) when a limit
+    // stopped the one boolean search: `nils_set` is then TRICKS_NOT_COMPUTED,
+    // the mask holds only the bids the caller declared down, and
+    // `nils_set_mask_determined` is false.  A boolean has no partial state, so
+    // that is all there is to report.  From solve_moves() in MODE_FAST the
+    // rows whose verdict was searched before the stop keep it (ROW_ALL), the
+    // rest are ROW_NOTHING, and the position's own verdict is filled when the
+    // root search -- which fast mode runs first -- had finished.
     bool complete = true;
 
     // Transposition table behaviour for this solve.  `tt_hits` is the number of
@@ -1455,6 +1490,62 @@ struct MoveScore {
 // place, so the extra work is the bookkeeping rather than the search.
 bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOptions& opts,
                  Solution& out, std::vector<MoveScore>& moves_out, std::string& err);
+
+// ---- THE OUTCOME QUESTION (phase 3, Oct 2026) -------------------------------
+//
+// WHAT IT ANSWERS.  Which bids go down under best play, and nothing about
+// tricks: the primary level of the full objective on its own, the way MODE_FAST
+// is that level for one nil.  It exists because the bot's fallback after a
+// stopped per-card call needs a TRUE answer it can afford, and the one it had --
+// each live bid asked as a single nil -- answers a different question wherever
+// two bids interact: a pair that both bid can be breakable one at a time and not
+// both at once, and the per-seat question cannot see that.
+//
+// HOW.  The search is the full objective's own search with its trick term
+// switched off -- weights (1, 0) on a count of bids down for a pair, on a step
+// of outcome rank for three bids -- so its value takes a handful of integers,
+// one per reachable outcome, and is found by null-window questions alone
+// (bisection over those integers, each question an AND-OR search like
+// MODE_FAST's).  Same objective level, so the same answer as the full solve's
+// nils_set by construction; the corpus tests check it on every build.
+//
+// WHICH SHAPES.  One nil (exactly MODE_FAST), a pair that both bid (either may
+// be ROLE_NIL_SET), and three bids.  One bid per side is refused: the full
+// solve's presolve already answers it from three fast probes (item 77/78c), and
+// a caller wanting it per seat has nil_count_set_limited.  Same-lean is refused
+// as everywhere else.
+//
+// BOUNDED.  SearchOptions' limits apply to the whole call, probes included, and
+// a stopped call reports the range it had narrowed the answer to.
+struct OutcomeSolution {
+    // False when a limit stopped the call before the outcome was pinned.
+    bool complete = true;
+    // How many bids are down, declared ones included: exact when complete,
+    // TRICKS_NOT_COMPUTED otherwise.
+    int nils_set = TRICKS_NOT_COMPUTED;
+    // What the call had PROVEN about that count: it lies in [min, max].  Equal
+    // to nils_set at both ends when complete; on a stopped call, the range the
+    // questions answered so far left open.
+    int nils_set_min = 0;
+    int nils_set_max = 0;
+    // Bids proven down and proven to make, as seat bitmasks.  A bid in neither
+    // is one the answer does not pin: on a stopped call, anything still open;
+    // on a finished one, a pair with exactly one of the two down (the objective
+    // counts bids, it does not name them) and the same for the twins of a
+    // three-bid deal.  Declared bids are in set_mask from the start.
+    unsigned set_mask = 0;
+    unsigned made_mask = 0;
+    // Which objective level was searched, for the diagnostics: the packed value
+    // the final question pinned (count, or rank step), or the range so far.
+    int value_lo = 0;
+    int value_hi = 0;
+    std::uint64_t nodes = 0;
+    int questions = 0;  // null-window searches run, probes included
+    int probes = 0;     // of which single-nil probes
+};
+
+bool solve_outcome(const Position& pos, const SeatRoles& roles, const SearchOptions& opts,
+                   OutcomeSolution& out, std::string& err);
 
 // Replays a PV, checking every play for legality and turn order, and reports
 // who took what.  Also useful for checking a PV produced elsewhere.

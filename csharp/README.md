@@ -189,6 +189,37 @@ a median that is fast and a tail that is not. Over twenty random thirteen-card
 deals the spread ran from 120 ms to 8.6 seconds, and one deal was 80% of the
 work in the run. Budget for the tail, not the median.
 
+## Bounded calls, and what to ask when one stops (0.2.0)
+
+Three exports take a `NilLimits` (`StructSize = Marshal.SizeOf<NilLimits>()`,
+`MaxMs` from the start of the call, `MaxNodes`, an optional `Cancel` word) and
+return `NilStatus.Incomplete` (`1`) with whatever they had proven when a limit
+runs out. They are in `NilSolverNative`; the high-level `Nil` class does not
+wrap them, because what replaces a stopped call is the application's policy.
+
+| call | answers | stopped call reports |
+| --- | --- | --- |
+| `nil_solve_moves_limited` | every card, full or fast mode | each row's proven fields, `-1` elsewhere |
+| `nil_count_set_limited` | one seat: can it be forced to take a trick? | `canSet = -1` |
+| `nil_solve_outcome_limited` | how many bids go down: one nil, a pair, three bids | the proven range `NilsSetMin..NilsSetMax` |
+
+`nil_count_set_limited` is `nil_count_set` with a budget. Its answer comes back
+through `out int canSet`, never the return value, because `nil_count_set`'s `1`
+("can be set") and `Incomplete` are the same number.
+
+`nil_solve_outcome_limited` is the answer the per-seat question cannot give on a
+pair that both bid: each twin can be breakable alone and the two not both
+together. It returns the full solve's `nils_set` (measured equal on every deal
+tested), with `SetMask`/`MadeMask` naming the bids the objective pins -- with
+exactly one twin of two down it does not say which, and the seat reads
+`NilSeatStatus.Unknown`. Set `StructSize = Marshal.SizeOf<NilOutcome>()` before
+the call. One bid per side is refused (`Unsupported`); ask each seat instead.
+
+On the 66-deal slow-hands list with `MaxMs = 2000`: the per-seat question
+stopped on 16 of 142 seat calls, the pair question on 8 of 26 pairs (each of
+those having already proven "at least one goes down"), the three-bid question
+on 9 of 18; no call ran more than 11 ms past its budget.
+
 ## Every card, not just the answer
 
 `ScoreMoves` returns the DDS-shaped answer: one row per legal card, with whether

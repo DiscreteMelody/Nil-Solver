@@ -395,7 +395,16 @@ void usage(const char* argv0) {
               << "                    the call never reaches must change nothing\n"
               << "  --check-limits    with --check-moves: re-score each position under a\n"
               << "                    ladder of smaller node budgets and require every\n"
-              << "                    stopped call to report only what is proven (C0)\n"
+              << "                    stopped call to report only what is proven (C0;\n"
+              << "                    both modes since phase 3).  With --check-outcome,\n"
+              << "                    ladder the outcome question the same way\n"
+              << "  --check-outcome   also ask each position the outcome question (one\n"
+              << "                    nil, a pair, three bids) and require the full\n"
+              << "                    solve's count and, where pinned, its mask (phase 3)\n"
+              << "  --outcome-probes  the outcome question with its parked per-twin\n"
+              << "                    single-nil probes (same answers)\n"
+              << "  --no-outcome-handoff  the outcome question without its one-live\n"
+              << "                    single-nil handoff (a control arm; same answers)\n"
               << "  --csv <file>      write per-position rows for later comparison\n"
               << "  --baseline <file> compare against a csv written earlier\n"
               << "  --history <file>  APPEND a summary row to a running history csv\n"
@@ -726,6 +735,188 @@ int check_limit_ladder(const nil::Position& position, const nil::SeatRoles& role
     return failures;
 }
 
+// PHASE 3 (Oct 2026): the same ladder for MODE_FAST, which honours the limits
+// since then.  Two calls are laddered: the per-card one, whose stopped rows must
+// each be either the finished row's verdict (ROW_ALL) or nothing (ROW_NOTHING,
+// nils_set -1, the live bidder UNKNOWN), and whose position verdict -- searched
+// first -- must be the finished one's or -1; and solve(), whose stopped answer
+// is -1 and nothing else.  Then both once more unlimited.
+int check_fast_limit_ladder(const nil::Position& position, const nil::SeatRoles& roles,
+                            nil::SearchOptions opts, const nil::Solution& fast_sol,
+                            const nil::Solution& moves_sol,
+                            const std::vector<nil::MoveScore>& rows, const std::string& name,
+                            const std::string& repro) {
+    int failures = 0;
+    auto fail = [&](const std::string& what) {
+        std::cout << "FAIL " << name << ": " << what << "\n  " << repro << "\n";
+        ++failures;
+    };
+    std::string err;
+    for (int which = 0; which < 2 && !failures; ++which) {
+        const std::uint64_t spent = which == 0 ? moves_sol.nodes : fast_sol.nodes;
+        const std::vector<std::uint64_t> budgets = {1, spent / 16, spent / 4, spent / 2,
+                                                    spent - spent / 8};
+        for (const std::uint64_t budget : budgets) {
+            if (budget == 0 || budget >= spent || failures) continue;
+            opts.max_nodes = budget;
+            const std::string at = " (fast, budget " + std::to_string(budget) + ")";
+            nil::Solution sol;
+            if (which == 1) {
+                if (!nil::solve(position, roles, opts, sol, err)) {
+                    fail("limited fast solve failed: " + err);
+                    break;
+                }
+                if (sol.complete) {
+                    if (sol.nils_set != fast_sol.nils_set) fail("a finished fast solve differs" + at);
+                    continue;
+                }
+                ++g_limit_stops;
+                if (sol.nils_set != nil::TRICKS_NOT_COMPUTED || sol.nils_set_mask_determined)
+                    fail("a stopped fast solve reports a verdict" + at);
+                if (sol.nodes < budget) fail("a stopped fast solve spent less than its budget" + at);
+                continue;
+            }
+            std::vector<nil::MoveScore> part;
+            if (!nil::solve_moves(position, roles, opts, sol, part, err)) {
+                fail("limited fast solve_moves failed: " + err);
+                break;
+            }
+            if (part.size() != rows.size()) {
+                fail("a stopped fast call lists a different number of cards" + at);
+                break;
+            }
+            if (sol.complete) {
+                for (std::size_t r = 0; r < rows.size(); ++r) {
+                    if (part[r].nils_set != rows[r].nils_set || part[r].card != rows[r].card)
+                        fail("a fast call that finished inside its budget differs" + at);
+                }
+                continue;
+            }
+            ++g_limit_stops;
+            if (sol.nils_set != nil::TRICKS_NOT_COMPUTED && sol.nils_set != moves_sol.nils_set)
+                fail("a stopped fast call reports a different position verdict" + at);
+            for (std::size_t r = 0; r < rows.size() && !failures; ++r) {
+                const nil::MoveScore& a = part[r];
+                const nil::MoveScore& b = rows[r];
+                ++g_limit_rows[a.known];
+                bool ok = a.card == b.card && a.equals == b.equals && !a.is_best;
+                if (a.known == nil::ROW_ALL) {
+                    ok = ok && a.nils_set == b.nils_set && a.nils_set_mask == b.nils_set_mask;
+                } else {
+                    ok = ok && a.known == nil::ROW_NOTHING &&
+                         a.nils_set == nil::TRICKS_NOT_COMPUTED;
+                }
+                for (int s = 0; s < 4; ++s) {
+                    if (a.seat_status[s] != nil::SEAT_UNKNOWN && a.seat_status[s] != b.seat_status[s])
+                        ok = false;
+                }
+                if (!ok)
+                    fail("a stopped fast call reports something its finished row does not on " +
+                         nil::card_to_string(a.card) + at);
+            }
+        }
+    }
+    opts.max_nodes = 0;
+    nil::Solution again;
+    std::vector<nil::MoveScore> again_rows;
+    if (!nil::solve_moves(position, roles, opts, again, again_rows, err) ||
+        again_rows.size() != rows.size() || again.nils_set != moves_sol.nils_set) {
+        fail("the finished fast call after the stopped ones differs");
+    } else {
+        for (std::size_t r = 0; r < rows.size(); ++r) {
+            if (again_rows[r].nils_set != rows[r].nils_set) {
+                fail("the finished fast call after the stopped ones differs on " +
+                     nil::card_to_string(rows[r].card));
+                break;
+            }
+        }
+    }
+    return failures;
+}
+
+// PHASE 3: THE OUTCOME QUESTION AGAINST THE FULL SOLVE (--check-outcome).
+// Every position whose shape solve_outcome takes is asked it, and the answer
+// must be the full solve's: the same count, every bid it proves down down in
+// the full solve's mask and every bid it proves made out of it, and -- where
+// the full solve's mask is pinned by the objective -- exactly that mask.  With
+// --check-limits the question is laddered too: a stopped call's range must
+// hold the true count, its masks must be subsets of the finished call's, and
+// the call after the stopped ones must give the finished answer again.
+std::uint64_t g_outcome_checked = 0;
+std::uint64_t g_outcome_stops = 0;
+
+int check_outcome(const nil::Position& position, const nil::SeatRoles& roles,
+                  nil::SearchOptions opts, const nil::Solution& full, bool ladder,
+                  const std::string& name, const std::string& repro) {
+    std::string shape_err;
+    const nil::SeatShape shape = nil::seat_shape(roles, shape_err);
+    if (shape != nil::SHAPE_SINGLE_NIL && shape != nil::SHAPE_PARTNER_NILS &&
+        shape != nil::SHAPE_THREE_NILS) {
+        return 0;
+    }
+    int failures = 0;
+    auto fail = [&](const std::string& what) {
+        std::cout << "FAIL " << name << ": " << what << "\n  " << repro << "\n";
+        ++failures;
+    };
+    opts.max_nodes = 0;
+    std::string err;
+    nil::OutcomeSolution oc;
+    if (!nil::solve_outcome(position, roles, opts, oc, err)) {
+        fail("solve_outcome failed: " + err);
+        return failures;
+    }
+    ++g_outcome_checked;
+    const unsigned mask = full.nils_set_mask;
+    if (!oc.complete || oc.nils_set != full.nils_set || oc.nils_set_min != full.nils_set ||
+        oc.nils_set_max != full.nils_set) {
+        fail("the outcome question says " + std::to_string(oc.nils_set) +
+             " bids down, the full solve " + std::to_string(full.nils_set));
+        return failures;
+    }
+    if ((oc.set_mask & ~mask) || (oc.made_mask & mask) || (oc.set_mask & oc.made_mask)) {
+        fail("the outcome question's masks contradict the full solve's line");
+        return failures;
+    }
+    if (full.nils_set_mask_determined &&
+        (oc.set_mask != mask || oc.made_mask != (nil::live_nil_mask(roles) & ~mask))) {
+        fail("the full solve's mask is pinned and the outcome question does not name it");
+        return failures;
+    }
+    if (!ladder) return failures;
+    const std::uint64_t spent = oc.nodes;
+    const std::vector<std::uint64_t> budgets = {1, spent / 16, spent / 4, spent / 2,
+                                                spent - spent / 8};
+    for (const std::uint64_t budget : budgets) {
+        if (budget == 0 || budget >= spent || failures) continue;
+        opts.max_nodes = budget;
+        nil::OutcomeSolution part;
+        if (!nil::solve_outcome(position, roles, opts, part, err)) {
+            fail("limited solve_outcome failed: " + err);
+            break;
+        }
+        const std::string at = " (outcome, budget " + std::to_string(budget) + ")";
+        if (part.complete) {
+            if (part.nils_set != oc.nils_set || part.set_mask != oc.set_mask ||
+                part.made_mask != oc.made_mask)
+                fail("an outcome call that finished inside its budget differs" + at);
+            continue;
+        }
+        ++g_outcome_stops;
+        if (part.nils_set != nil::TRICKS_NOT_COMPUTED || part.nils_set_min > oc.nils_set ||
+            part.nils_set_max < oc.nils_set || (part.set_mask & ~oc.set_mask) ||
+            (part.made_mask & ~oc.made_mask) || part.nodes < budget)
+            fail("a stopped outcome call reports something the finished one does not" + at);
+    }
+    opts.max_nodes = 0;
+    nil::OutcomeSolution again;
+    if (!nil::solve_outcome(position, roles, opts, again, err) || again.nils_set != oc.nils_set ||
+        again.set_mask != oc.set_mask || again.made_mask != oc.made_mask) {
+        fail("the finished outcome call after the stopped ones differs");
+    }
+    return failures;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -745,6 +936,7 @@ int main(int argc, char** argv) {
     bool check_pv = false;
     bool check_moves = false;
     bool check_limits = false;
+    bool check_outcome_q = false;  // --check-outcome (phase 3)
     bool tt_stats = false;
     bool rank_stats = false;
     bool nilset_stats = false;
@@ -911,6 +1103,12 @@ int main(int argc, char** argv) {
             check_moves = true;
         } else if (arg == "--check-limits") {
             check_limits = true;
+        } else if (arg == "--check-outcome") {
+            check_outcome_q = true;
+        } else if (arg == "--outcome-probes") {
+            opts.outcome_probes = true;
+        } else if (arg == "--no-outcome-handoff") {
+            opts.outcome_handoff = false;
         } else if (arg == "--max-nodes" && has_next) {
             opts.max_nodes = std::strtoull(argv[++i], nullptr, 10);
         } else if (arg == "--check-pv") {
@@ -1394,7 +1592,22 @@ int main(int argc, char** argv) {
                                                    scored, item.name, item.repro);
                     ++limits_checked;
                 }
+                if (check_limits && msol.complete && opts.mode == nil::MODE_FAST &&
+                    sol.complete) {
+                    failures += check_fast_limit_ladder(item.position, item.roles, move_opts,
+                                                        sol, msol, scored, item.name,
+                                                        item.repro);
+                    ++limits_checked;
+                }
             }
+        }
+
+        // Phase 3: the outcome question, held against the full solve.
+        if (check_outcome_q && solved && opts.mode == nil::MODE_FULL) {
+            nil::SearchOptions oc_opts = opts;
+            oc_opts.minimise_own_tricks = item.minimise_own;
+            failures += check_outcome(item.position, item.roles, oc_opts, sol, check_limits,
+                                      item.name, item.repro);
         }
 
         // THE RECORDED LINE IS A WITNESS ON A DEAD-NIL ROW, for the same reason
@@ -1494,6 +1707,13 @@ int main(int argc, char** argv) {
                   << g_limit_rows[nil::ROW_ALL] << " finished, " << g_limit_rows[nil::ROW_VALUE]
                   << " value, " << g_limit_rows[nil::ROW_OUTCOME] << " outcome, "
                   << g_limit_rows[nil::ROW_NOTHING] << " nothing\n";
+    }
+    if (check_outcome_q) {
+        std::cout << "  outcome: " << g_outcome_checked
+                  << " position(s) asked the outcome question, each agreeing with the full "
+                     "solve";
+        if (check_limits) std::cout << "; " << g_outcome_stops << " stopped call(s) laddered";
+        std::cout << "\n";
     }
     if (cross_check_modes) {
         std::cout << "\n  mode check: " << mode_checked << " position(s) solved both ways, "

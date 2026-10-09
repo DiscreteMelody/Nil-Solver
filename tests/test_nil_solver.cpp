@@ -6,6 +6,7 @@
 //
 // The end-to-end agreement testing lives in tools/crosscheck.py, which runs the
 // real oracle.
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -3333,7 +3334,7 @@ int main(int argc, char** argv) {
                                                &pair_res, err, sizeof(err))),
               static_cast<long long>(NIL_ERR_UNSUPPORTED));
 
-        check("version string", std::string(nil_solver_version()), std::string("0.1.0"));
+        check("version string", std::string(nil_solver_version()), std::string("0.2.0"));
     }
 
     // ---- the move list -----------------------------------------------------
@@ -3686,6 +3687,239 @@ int main(int argc, char** argv) {
             same = std::memcmp(&ma[i], &mb[i], sizeof(nil_move)) == 0;
         }
         check("the plain call after the stopped ones answers as before", same, true);
+    }
+
+    // ---- PHASE 3 (Oct 2026): bounded fast mode and the fallback questions ----
+    //
+    // The corpus tests (corpus_moves_fast_limits_ladder, corpus_*_outcome) hold
+    // every answer against the full solve and ladder the limits over hundreds of
+    // positions; this pins the ABI's side: return codes, the out-parameters on
+    // every path, struct_size, and that the three ways to stop all stop a fast
+    // search too.
+    {
+        std::cout << "\nC ABI: nil_count_set_limited\n";
+        nil_limits zero;
+        std::memset(&zero, 0, sizeof zero);
+        zero.struct_size = sizeof(nil_limits);
+        const std::int32_t single[4] = {NIL_ROLE_NIL, NIL_ROLE_OPPONENT, NIL_ROLE_COVER,
+                                        NIL_ROLE_OPPONENT};
+        const char* small[] = {"N:KJ.7.A3.Q6 .A.Q8.AKJ3 .T9863.74. AT764..T2.",
+                               "N:A... 2... 3... 4...", "N:2... A... 3... 4...",
+                               "N:.2.3.4 .A.K.Q .J.T.9 .8.7.6"};
+        bool agree = true;
+        for (const char* d : small) {
+            for (int leader = 0; leader < 4 && agree; ++leader) {
+                const std::int32_t plain = nil_count_set(d, leader, "", single, 0);
+                std::int32_t a = -9, b = -9;
+                const std::int32_t ra = nil_count_set_limited(d, leader, "", single, 0, nullptr, &a);
+                const std::int32_t rb = nil_count_set_limited(d, leader, "", single, 0, &zero, &b);
+                agree = plain >= 0 && ra == NIL_OK && rb == NIL_OK && a == plain && b == plain;
+            }
+        }
+        check("NULL and all-zero limits answer exactly as nil_count_set", agree, true);
+
+        std::int32_t can = 7;
+        check("a NULL can_set is refused",
+              static_cast<long long>(nil_count_set_limited(small[0], 0, "", single, 0, nullptr,
+                                                           nullptr)),
+              static_cast<long long>(NIL_ERR_NULL_ARG));
+        nil_limits unsized = zero;
+        unsized.struct_size = 0;
+        check("a struct_size never set is refused",
+              static_cast<long long>(
+                  nil_count_set_limited(small[0], 0, "", single, 0, &unsized, &can)),
+              static_cast<long long>(NIL_ERR_NULL_ARG));
+        check("and can_set reads -1 on an error", static_cast<long long>(can), -1LL);
+        const std::int32_t twins_rel[4] = {NIL_ROLE_NIL, NIL_ROLE_OPPONENT, NIL_ROLE_NIL,
+                                           NIL_ROLE_OPPONENT};
+        can = 7;
+        check("two bids are NIL_ERR_UNSUPPORTED, as nil_count_set says",
+              static_cast<long long>(
+                  nil_count_set_limited(small[0], 1, "", twins_rel, 0, nullptr, &can)),
+              static_cast<long long>(nil_count_set(small[0], 1, "", twins_rel, 0)));
+        check("with can_set -1", static_cast<long long>(can), -1LL);
+        const std::int32_t declared[4] = {NIL_ROLE_NIL_SET, NIL_ROLE_OPPONENT, NIL_ROLE_COVER,
+                                          NIL_ROLE_OPPONENT};
+        const std::int32_t rd = nil_count_set_limited(small[0], 1, "", declared, 0, &zero, &can);
+        check("a declared-down bid answers 1 without searching",
+              rd == NIL_OK && can == 1, true);
+
+        // A 13-card single nil whose fast search runs well past one check
+        // interval (seed-1 #30's West, about 25 ms here), so every limit has a
+        // check to fire at.
+        const char* big = "N:AKJT8.2.AKQJT.KJ 72.AQ63.98765.A4 63.KT874.42.T976 Q954.J95.3.Q8532";
+        const std::int32_t west[4] = {NIL_ROLE_OPPONENT, NIL_ROLE_COVER, NIL_ROLE_OPPONENT,
+                                      NIL_ROLE_NIL};
+        const std::int32_t truth = nil_count_set(big, NIL_SEAT_SOUTH, "", west, 0);
+        check("the 13-card verdict", static_cast<long long>(truth), 1LL);
+        nil_limits one = zero;
+        one.max_nodes = 1;
+        can = 7;
+        check("a one-node budget returns NIL_INCOMPLETE",
+              static_cast<long long>(
+                  nil_count_set_limited(big, NIL_SEAT_SOUTH, "", west, 0, &one, &can)),
+              static_cast<long long>(NIL_INCOMPLETE));
+        check("with can_set -1, not the return value's 1", static_cast<long long>(can), -1LL);
+        volatile std::int32_t cancel_word = 1;
+        nil_limits cancel = zero;
+        cancel.cancel = &cancel_word;
+        check("a cancel word already set stops a fast search",
+              static_cast<long long>(
+                  nil_count_set_limited(big, NIL_SEAT_SOUTH, "", west, 0, &cancel, &can)),
+              static_cast<long long>(NIL_INCOMPLETE));
+        nil_limits ms = zero;
+        ms.max_ms = 1;
+        const std::int32_t rms = nil_count_set_limited(big, NIL_SEAT_SOUTH, "", west, 0, &ms, &can);
+        // 1 ms may or may not outlast the search on a fast machine: either
+        // answer is legal, a wrong verdict is not.
+        check("a 1 ms budget stops it or answers correctly",
+              (rms == NIL_INCOMPLETE && can == -1) || (rms == NIL_OK && can == truth), true);
+        std::int32_t after = -9;
+        check("the call after the stopped ones answers as before",
+              nil_count_set_limited(big, NIL_SEAT_SOUTH, "", west, 0, nullptr, &after) == NIL_OK &&
+                  after == truth,
+              true);
+
+        // The per-card fast call honours the limits too (it ignored them before
+        // 0.2.0).  A one-node budget stops it in the position's own search,
+        // which fast mode runs first: nothing is known, every card is listed.
+        std::cout << "\nC ABI: nil_solve_moves_limited in fast mode\n";
+        nil_result full_r, part_r;
+        nil_move full_m[NIL_MAX_MOVES], part_m[NIL_MAX_MOVES];
+        std::int32_t full_n = 0, part_n = 0;
+        char err[256] = {0};
+        const std::int32_t rf = nil_solve_moves(big, NIL_SEAT_SOUTH, "", west, NIL_FLAG_FAST_MODE,
+                                                &full_r, full_m, NIL_MAX_MOVES, &full_n, err,
+                                                sizeof err);
+        const std::int32_t rp = nil_solve_moves_limited(big, NIL_SEAT_SOUTH, "", west,
+                                                        NIL_FLAG_FAST_MODE, &one, &part_r, part_m,
+                                                        NIL_MAX_MOVES, &part_n, err, sizeof err);
+        check("the unlimited fast call finishes", static_cast<long long>(rf), 0LL);
+        check("a one-node fast budget returns NIL_INCOMPLETE", static_cast<long long>(rp),
+              static_cast<long long>(NIL_INCOMPLETE));
+        bool rows_ok = part_n == full_n && part_r.nils_set == NIL_TRICKS_UNKNOWN;
+        for (std::int32_t i = 0; rows_ok && i < part_n; ++i) {
+            rows_ok = part_m[i].suit == full_m[i].suit && part_m[i].rank == full_m[i].rank &&
+                      part_m[i].is_best == 0 &&
+                      (part_m[i].nils_set == NIL_TRICKS_UNKNOWN
+                           ? part_m[i].seat_status[NIL_SEAT_WEST] == NIL_SEAT_STATUS_UNKNOWN
+                           : part_m[i].nils_set == full_m[i].nils_set);
+        }
+        check("every card listed, nothing unproven read as a verdict", rows_ok, true);
+
+        std::cout << "\nC ABI: nil_solve_outcome_limited\n";
+        auto fresh = [](std::uint32_t options) {
+            nil_outcome o;
+            std::memset(&o, 0x5A, sizeof o);  // garbage, so a field left unwritten shows
+            o.struct_size = sizeof(nil_outcome);
+            o.options = options;
+            return o;
+        };
+        auto popcount = [](std::int32_t m) {
+            int n = 0;
+            for (int i = 0; i < 4; ++i) n += (m >> i) & 1;
+            return n;
+        };
+        check("a NULL out is refused",
+              static_cast<long long>(nil_solve_outcome_limited(big, 0, "", west, 0, nullptr,
+                                                               nullptr, err, sizeof err)),
+              static_cast<long long>(NIL_ERR_NULL_ARG));
+        nil_outcome oc = fresh(0);
+        oc.struct_size = 0;
+        check("a struct_size never set is refused",
+              static_cast<long long>(
+                  nil_solve_outcome_limited(big, 0, "", west, 0, nullptr, &oc, err, sizeof err)),
+              static_cast<long long>(NIL_ERR_NULL_ARG));
+
+        // The pair, both small and 13-card, against the full solve -- with the
+        // control arm and the parked probes, which owe the same answer.
+        const char* deal = "N:KJ.7.A3.Q6 .A.Q8.AKJ3 .T9863.74. AT764..T2.";
+        nil_result fr;
+        const std::int32_t rfull =
+            nil_solve(deal, NIL_SEAT_EAST, "", twins_rel, 0, &fr, err, sizeof err);
+        bool pair_ok = rfull == NIL_OK;
+        for (std::uint32_t options : {0u, NIL_OUTCOME_PROBES, NIL_OUTCOME_NO_HANDOFF}) {
+            oc = fresh(options);
+            const std::int32_t r = nil_solve_outcome_limited(deal, NIL_SEAT_EAST, "", twins_rel, 0,
+                                                             nullptr, &oc, err, sizeof err);
+            pair_ok = pair_ok && r == NIL_OK && oc.nils_set == fr.nils_set &&
+                      oc.nils_set_min == fr.nils_set && oc.nils_set_max == fr.nils_set &&
+                      (oc.set_mask & ~fr.nils_set_mask) == 0 && (oc.made_mask & fr.nils_set_mask) == 0 &&
+                      oc.seat_status[NIL_SEAT_EAST] == NIL_SEAT_STATUS_NO_NIL &&
+                      oc.seat_status[NIL_SEAT_WEST] == NIL_SEAT_STATUS_NO_NIL &&
+                      oc.questions >= 1 && oc.nodes > 0;
+        }
+        check("a small pair: the full solve's count, in all three arms", pair_ok, true);
+
+        // seed-1 #30: the full solve says both twins go down (nil_cli, 0.8 s).
+        const std::int32_t twins_big[4] = {NIL_ROLE_OPPONENT, NIL_ROLE_NIL, NIL_ROLE_OPPONENT,
+                                           NIL_ROLE_NIL};
+        oc = fresh(0);
+        const std::int32_t rb = nil_solve_outcome_limited(big, NIL_SEAT_SOUTH, "", twins_big, 0,
+                                                          &zero, &oc, err, sizeof err);
+        check("a 13-card pair: both twins down", rb == NIL_OK && oc.nils_set == 2, true);
+        check("both proven down, by name",
+              oc.set_mask == ((1 << NIL_SEAT_EAST) | (1 << NIL_SEAT_WEST)) && oc.made_mask == 0 &&
+                  oc.seat_status[NIL_SEAT_EAST] == NIL_SEAT_STATUS_NIL_SET &&
+                  oc.seat_status[NIL_SEAT_WEST] == NIL_SEAT_STATUS_NIL_SET,
+              true);
+        oc = fresh(0);
+        const std::int32_t r1 = nil_solve_outcome_limited(big, NIL_SEAT_SOUTH, "", twins_big, 0,
+                                                          &one, &oc, err, sizeof err);
+        check("a one-node budget returns NIL_INCOMPLETE", static_cast<long long>(r1),
+              static_cast<long long>(NIL_INCOMPLETE));
+        check("with the count unknown and a range that holds the answer",
+              oc.nils_set == -1 && oc.nils_set_min <= 2 && oc.nils_set_max >= 2 &&
+                  popcount(oc.set_mask) <= oc.nils_set_min && (oc.set_mask & oc.made_mask) == 0,
+              true);
+        oc = fresh(0);
+        check("a cancel word already set stops it",
+              static_cast<long long>(nil_solve_outcome_limited(big, NIL_SEAT_SOUTH, "", twins_big,
+                                                               0, &cancel, &oc, err, sizeof err)),
+              static_cast<long long>(NIL_INCOMPLETE));
+
+        // Three bids against the full solve: the lone bid's fate by name, the
+        // twins' by count.
+        const std::int32_t three[4] = {NIL_ROLE_NIL, NIL_ROLE_NIL, NIL_ROLE_OPPONENT, NIL_ROLE_NIL};
+        const std::int32_t r3 = nil_solve(deal, NIL_SEAT_EAST, "", three, 0, &fr, err, sizeof err);
+        oc = fresh(0);
+        const std::int32_t o3 = nil_solve_outcome_limited(deal, NIL_SEAT_EAST, "", three, 0,
+                                                          nullptr, &oc, err, sizeof err);
+        const bool lone_down = (fr.nils_set_mask >> NIL_SEAT_NORTH) & 1;
+        check("three bids: the full solve's count", r3 == NIL_OK && o3 == NIL_OK &&
+                                                         oc.nils_set == fr.nils_set,
+              true);
+        check("and the lone bid named",
+              oc.seat_status[NIL_SEAT_NORTH] ==
+                  (lone_down ? NIL_SEAT_STATUS_NIL_SET : NIL_SEAT_STATUS_NIL_MAKES),
+              true);
+
+        // One bid per side is refused, and refusing writes the error state.
+        const std::int32_t opposed[4] = {NIL_ROLE_NIL, NIL_ROLE_COVER, NIL_ROLE_OPPONENT,
+                                         NIL_ROLE_NIL};
+        oc = fresh(0);
+        const std::int32_t ro = nil_solve_outcome_limited(deal, NIL_SEAT_EAST, "", opposed, 0,
+                                                          nullptr, &oc, err, sizeof err);
+        check("one bid per side is NIL_ERR_UNSUPPORTED", static_cast<long long>(ro),
+              static_cast<long long>(NIL_ERR_UNSUPPORTED));
+        bool error_state = oc.nils_set == -1 && oc.nils_set_min == -1 && oc.nils_set_max == -1 &&
+                           oc.set_mask == 0 && oc.made_mask == 0 && oc.questions == 0 &&
+                           oc.nodes == 0;
+        for (int s = 0; s < 4; ++s) error_state = error_state && oc.seat_status[s] == -1;
+        check("and leaves the error state, not garbage", error_state, true);
+
+        // struct_size: a caller built against a struct ending at nils_set_max
+        // gets those three fields and nothing past them is touched.
+        oc = fresh(0);
+        oc.struct_size = static_cast<std::uint32_t>(offsetof(nil_outcome, set_mask));
+        const std::int32_t rs = nil_solve_outcome_limited(deal, NIL_SEAT_EAST, "", twins_rel, 0,
+                                                          nullptr, &oc, err, sizeof err);
+        std::int32_t untouched;
+        std::memset(&untouched, 0x5A, sizeof untouched);
+        check("a short struct is filled as far as it goes",
+              rs == NIL_OK && oc.nils_set >= 0 && oc.set_mask == untouched &&
+                  oc.questions == untouched,
+              true);
     }
 
     // ---------------------------------------------------------------------

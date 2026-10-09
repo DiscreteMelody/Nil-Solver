@@ -149,6 +149,27 @@ std::int32_t prepare(const char* pbn, std::int32_t leader, const char* current_t
     return NIL_OK;
 }
 
+// THE LIMITS, READ ONE WAY FOR EVERY ENTRY POINT THAT TAKES THEM (C0; shared
+// since phase 3).  `struct_size` says which fields the caller's struct has, so
+// a caller built against a header with fewer of them is read correctly and one
+// that never set the size is told so rather than handed a call with no budget
+// it believes it has.  A NULL `limits` is no limit, not an error.
+std::int32_t read_limits(const nil_limits* limits, nil::SearchOptions& opts, char* err_buf,
+                         std::int32_t err_len) {
+    if (!limits) return NIL_OK;
+    if (limits->struct_size < offsetof(nil_limits, max_nodes)) {
+        copy_err(err_buf, err_len,
+                 "nil_limits.struct_size is not set; it must be sizeof(nil_limits)");
+        return NIL_ERR_NULL_ARG;
+    }
+    opts.max_ms = limits->max_ms;
+    if (limits->struct_size >= offsetof(nil_limits, cancel)) {
+        opts.max_nodes = limits->max_nodes;
+    }
+    if (limits->struct_size >= sizeof(nil_limits)) opts.cancel = limits->cancel;
+    return NIL_OK;
+}
+
 void fill_result(nil_result* out, const nil::Solution& sol, int tricks_remaining) {
     out->nils_set = sol.nils_set;
     // nil::TRICKS_NOT_COMPUTED and NIL_TRICKS_UNKNOWN are the same -1; the two
@@ -302,21 +323,10 @@ NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve_moves_limited(
         prepare(pbn, leader, current_trick, seats, flags, pos, roles, opts, err_buf, err_len);
     if (rc != NIL_OK) return rc;
 
-    // C0: the per-call limits.  `struct_size` says which fields the caller's
-    // struct has, so a caller built against a header with fewer of them is
-    // read correctly and one that never set the size is told so rather than
-    // handed a call with no budget it believes it has.
-    if (limits) {
-        if (limits->struct_size < offsetof(nil_limits, max_nodes)) {
-            copy_err(err_buf, err_len,
-                     "nil_limits.struct_size is not set; it must be sizeof(nil_limits)");
-            return NIL_ERR_NULL_ARG;
-        }
-        opts.max_ms = limits->max_ms;
-        if (limits->struct_size >= offsetof(nil_limits, cancel)) {
-            opts.max_nodes = limits->max_nodes;
-        }
-        if (limits->struct_size >= sizeof(nil_limits)) opts.cancel = limits->cancel;
+    // C0: the per-call limits; see read_limits.
+    {
+        const std::int32_t lrc = read_limits(limits, opts, err_buf, err_len);
+        if (lrc != NIL_OK) return lrc;
     }
 
     // FAST_LINE on the per-card call means VALUES-ONLY ROWS (Q3, Sept 2026):
@@ -378,6 +388,127 @@ NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve_moves_limited(
     return sol.complete ? NIL_OK : NIL_INCOMPLETE;
 }
 
+// ---- phase 3 (Oct 2026): the bounded fallback questions --------------------
+
+NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_count_set_limited(
+    const char* pbn, std::int32_t leader, const char* current_trick, const std::int32_t* seats,
+    std::uint32_t flags, const nil_limits* limits, std::int32_t* can_set) {
+    if (!can_set) return NIL_ERR_NULL_ARG;
+    // Written before anything can fail, so no return path leaves the caller
+    // reading what its variable held before the call.
+    *can_set = -1;
+    if (!pbn) return NIL_ERR_NULL_ARG;
+    nil::Position pos;
+    nil::SeatRoles roles;
+    nil::SearchOptions opts;
+    // Fast mode, as nil_count_set selects it: the boolean is the whole output.
+    // prepare() refuses more than one bid in fast mode with NIL_ERR_UNSUPPORTED,
+    // which is nil_count_set's answer to the same arguments.
+    std::int32_t rc = prepare(pbn, leader, current_trick, seats, flags | NIL_FLAG_FAST_MODE, pos,
+                              roles, opts, nullptr, 0);
+    if (rc != NIL_OK) return rc;
+    rc = read_limits(limits, opts, nullptr, 0);
+    if (rc != NIL_OK) return rc;
+
+    std::string err;
+    nil::Solution sol;
+    if (!nil::solve(pos, roles, opts, sol, err)) return NIL_ERR_INTERNAL;
+    if (!sol.complete) return NIL_INCOMPLETE;
+    *can_set = sol.nils_set;
+    return NIL_OK;
+}
+
+NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve_outcome_limited(
+    const char* pbn, std::int32_t leader, const char* current_trick, const std::int32_t* seats,
+    std::uint32_t flags, const nil_limits* limits, nil_outcome* out, char* err_buf,
+    std::int32_t err_len) {
+    if (!out) {
+        copy_err(err_buf, err_len, "null argument");
+        return NIL_ERR_NULL_ARG;
+    }
+    // struct_size: the library reads and writes only what the caller's struct
+    // holds.  The three counts are the least a caller can have asked for.
+    const std::size_t size = out->struct_size;
+    if (size < offsetof(nil_outcome, set_mask)) {
+        copy_err(err_buf, err_len,
+                 "nil_outcome.struct_size is not set; it must be sizeof(nil_outcome)");
+        return NIL_ERR_NULL_ARG;
+    }
+    auto covers = [size](std::size_t offset, std::size_t bytes) { return size >= offset + bytes; };
+    const std::uint32_t options = out->options;
+    // The error state first, over every field the struct holds, so that no
+    // return path below leaves a stale answer in it.
+    out->nils_set = -1;
+    out->nils_set_min = -1;
+    out->nils_set_max = -1;
+    if (covers(offsetof(nil_outcome, set_mask), sizeof(out->set_mask))) out->set_mask = 0;
+    if (covers(offsetof(nil_outcome, made_mask), sizeof(out->made_mask))) out->made_mask = 0;
+    if (covers(offsetof(nil_outcome, seat_status), sizeof(out->seat_status))) {
+        for (int s = 0; s < 4; ++s) out->seat_status[s] = NIL_SEAT_STATUS_UNKNOWN;
+    }
+    if (covers(offsetof(nil_outcome, questions), sizeof(out->questions))) out->questions = 0;
+    if (covers(offsetof(nil_outcome, nodes), sizeof(out->nodes))) out->nodes = 0;
+    if (!pbn) {
+        copy_err(err_buf, err_len, "null argument");
+        return NIL_ERR_NULL_ARG;
+    }
+
+    nil::Position pos;
+    nil::SeatRoles roles;
+    nil::SearchOptions opts;
+    // Fast mode is implied rather than requested: prepare() refuses the fast
+    // flag on more than one bid, which is the very shape this answers.
+    std::int32_t rc = prepare(pbn, leader, current_trick, seats, flags & ~NIL_FLAG_FAST_MODE, pos,
+                              roles, opts, err_buf, err_len);
+    if (rc != NIL_OK) return rc;
+    rc = read_limits(limits, opts, err_buf, err_len);
+    if (rc != NIL_OK) return rc;
+    opts.outcome_probes = (options & NIL_OUTCOME_PROBES) != 0;
+    opts.outcome_handoff = (options & NIL_OUTCOME_NO_HANDOFF) == 0;
+
+    {
+        std::string shape_err;
+        const nil::SeatShape shape = nil::seat_shape(roles, shape_err);
+        if (shape != nil::SHAPE_SINGLE_NIL && shape != nil::SHAPE_PARTNER_NILS &&
+            shape != nil::SHAPE_THREE_NILS) {
+            copy_err(err_buf, err_len,
+                     "the outcome question takes one nil, a pair that both bid, or three "
+                     "bids; ask one bid per side per seat with nil_count_set_limited");
+            return NIL_ERR_UNSUPPORTED;
+        }
+    }
+
+    std::string err;
+    nil::OutcomeSolution oc;
+    if (!nil::solve_outcome(pos, roles, opts, oc, err)) {
+        copy_err(err_buf, err_len, err);
+        return NIL_ERR_INTERNAL;
+    }
+    out->nils_set = oc.nils_set;
+    out->nils_set_min = oc.nils_set_min;
+    out->nils_set_max = oc.nils_set_max;
+    if (covers(offsetof(nil_outcome, set_mask), sizeof(out->set_mask))) {
+        out->set_mask = static_cast<std::int32_t>(oc.set_mask);
+    }
+    if (covers(offsetof(nil_outcome, made_mask), sizeof(out->made_mask))) {
+        out->made_mask = static_cast<std::int32_t>(oc.made_mask);
+    }
+    if (covers(offsetof(nil_outcome, seat_status), sizeof(out->seat_status))) {
+        for (int s = 0; s < 4; ++s) {
+            const unsigned bit = 1u << s;
+            out->seat_status[s] = !roles.is_nil(s)        ? NIL_SEAT_STATUS_NO_NIL
+                                  : (oc.set_mask & bit)   ? NIL_SEAT_STATUS_NIL_SET
+                                  : (oc.made_mask & bit)  ? NIL_SEAT_STATUS_NIL_MAKES
+                                                          : NIL_SEAT_STATUS_UNKNOWN;
+        }
+    }
+    if (covers(offsetof(nil_outcome, questions), sizeof(out->questions))) {
+        out->questions = oc.questions;
+    }
+    if (covers(offsetof(nil_outcome, nodes), sizeof(out->nodes))) out->nodes = oc.nodes;
+    return oc.complete ? NIL_OK : NIL_INCOMPLETE;
+}
+
 NIL_SOLVER_API void NIL_SOLVER_CALL nil_set_table_size(std::uint32_t megabytes) {
     g_table_megabytes = megabytes == NIL_TABLE_AUTO ? nil::TT_AUTO
                                                     : static_cast<std::size_t>(megabytes);
@@ -387,6 +518,6 @@ NIL_SOLVER_API void NIL_SOLVER_CALL nil_release_table(void) {
     nil::release_transposition_table();
 }
 
-NIL_SOLVER_API const char* NIL_SOLVER_CALL nil_solver_version(void) { return "0.1.0"; }
+NIL_SOLVER_API const char* NIL_SOLVER_CALL nil_solver_version(void) { return "0.2.0"; }
 
 }  // extern "C"

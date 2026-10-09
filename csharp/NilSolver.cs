@@ -39,8 +39,11 @@ namespace NilSolver
         /// <summary>Did not bid nil.</summary>
         NoNil = 2,
         /// <summary>
-        /// A live bid whose fate this row has not proven. Only in a row of a
-        /// call that returned <see cref="NilStatus.Incomplete"/>.
+        /// A live bid whose fate this row has not proven. In a move row, only in
+        /// a call that returned <see cref="NilStatus.Incomplete"/>. In a
+        /// <see cref="NilOutcome"/> (0.2.0) also on a finished call, for a bid
+        /// whose fate the objective does not name: a pair, or the twins of a
+        /// three-bid deal, with exactly one of the two down.
         /// </summary>
         Unknown = -1
     }

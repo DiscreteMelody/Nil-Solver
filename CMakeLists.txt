@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(NilSolver VERSION 0.1.0 LANGUAGES CXX)
+project(NilSolver VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -345,6 +345,20 @@ if(NIL_SOLVER_BUILD_TESTS)
              COMMAND nil_bench --corpus "${NIL_CORPUS}" --check-moves --check-limits --quiet
                      --slowest 0)
     set_tests_properties(corpus_moves_limits_ladder PROPERTIES TIMEOUT 900)
+    # PHASE 3 (Oct 2026): fast mode honours the same limits.  The same ladder,
+    # on the per-card fast call and on the fast solve: a stopped row is either
+    # its finished verdict or nothing, a stopped solve says nothing, and the
+    # call after the stopped ones answers as before.
+    add_test(NAME corpus_moves_fast_limits_ladder
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --mode fast --check-moves --check-limits
+                     --quiet --slowest 0)
+    set_tests_properties(corpus_moves_fast_limits_ladder PROPERTIES TIMEOUT 900)
+    # Phase 3: the outcome question (solve_outcome) on every single-nil row,
+    # held against the full solve's count and mask, and laddered.
+    add_test(NAME corpus_outcome
+             COMMAND nil_bench --corpus "${NIL_CORPUS}" --check-outcome --check-limits --quiet
+                     --slowest 0)
+    set_tests_properties(corpus_outcome PROPERTIES TIMEOUT 900)
 
     add_test(NAME corpus_ordering
              COMMAND nil_bench --corpus "${NIL_CORPUS}" --mode fast --no-ordering --quiet
@@ -648,6 +662,24 @@ if(NIL_SOLVER_BUILD_TESTS)
              COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-moves --check-limits
                      --quiet --slowest 0)
     set_tests_properties(corpus_multinil_moves_limits_ladder PROPERTIES TIMEOUT 900)
+    # PHASE 3: THE PAIR'S OUTCOME QUESTION -- how many of the two go down -- on
+    # every twin row, against the full solve, laddered.  These are the rows the
+    # per-seat fallback gets wrong when each twin is breakable alone and the two
+    # are not breakable together.  Then its two arms, which owe the same
+    # answers: the one-live handoff off (the control arm), and the parked
+    # per-twin probes on.
+    add_test(NAME corpus_multinil_outcome
+             COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-outcome --check-limits
+                     --quiet --slowest 0)
+    set_tests_properties(corpus_multinil_outcome PROPERTIES TIMEOUT 900)
+    add_test(NAME corpus_multinil_outcome_no_handoff
+             COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-outcome
+                     --no-outcome-handoff --quiet --slowest 0)
+    set_tests_properties(corpus_multinil_outcome_no_handoff PROPERTIES TIMEOUT 900)
+    add_test(NAME corpus_multinil_outcome_probes
+             COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-outcome
+                     --outcome-probes --check-limits --quiet --slowest 0)
+    set_tests_properties(corpus_multinil_outcome_probes PROPERTIES TIMEOUT 900)
     add_test(NAME corpus_multinil_moves_no_row_mtd
              COMMAND nil_bench --corpus "${NIL_MULTINIL_CORPUS}" --check-moves --check-pv
                      --no-row-mtd --quiet --slowest 0)
@@ -763,6 +795,16 @@ if(NIL_SOLVER_BUILD_TESTS)
              COMMAND nil_bench --corpus "${NIL_THREENIL_CORPUS}" --check-moves --check-limits
                      --quiet --slowest 0)
     set_tests_properties(corpus_threenil_moves_limits_ladder PROPERTIES TIMEOUT 600)
+    # Phase 3: the outcome question on three bids -- the lone bid's fate and
+    # how many twins fall -- against the full solve, laddered.
+    add_test(NAME corpus_threenil_outcome
+             COMMAND nil_bench --corpus "${NIL_THREENIL_CORPUS}" --check-outcome --check-limits
+                     --quiet --slowest 0)
+    set_tests_properties(corpus_threenil_outcome PROPERTIES TIMEOUT 600)
+    add_test(NAME corpus_threenil_outcome_no_handoff
+             COMMAND nil_bench --corpus "${NIL_THREENIL_CORPUS}" --check-outcome
+                     --no-outcome-handoff --quiet --slowest 0)
+    set_tests_properties(corpus_threenil_outcome_no_handoff PROPERTIES TIMEOUT 600)
 
     # THE CONTROL ARMS for every opposed-shape optimisation three bids now
     # reach.  Each one reads the outcome rank through the table and had only
