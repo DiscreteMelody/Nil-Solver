@@ -5862,7 +5862,13 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
                 const int v = ms.value;
                 decode_range(ms, v, v);
                 ms.is_best = v == best_value;
-                for (int s = 0; s < 4; ++s) ms.seat_tricks[s] = TRICKS_NOT_COMPUTED;
+                for (int s = 0; s < 4; ++s) {
+                    ms.seat_tricks[s] = TRICKS_NOT_COMPUTED;
+                    for (int suit = 0; suit < 4; ++suit) {
+                        ms.won[s][suit] = TRICKS_NOT_COMPUTED;
+                        ms.ruffed[s][suit] = TRICKS_NOT_COMPUTED;
+                    }
+                }
             }
             rows = moves_out;
         } else {
@@ -6297,7 +6303,13 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
         // Off the same replay as the counts, so a row's mask describes the very
         // line whose trick counts sit beside it.
         ms.nils_set_mask = tally.nils_set_mask;
-        for (int s = 0; s < 4; ++s) ms.seat_tricks[s] = tally.seat_tricks[s];
+        for (int s = 0; s < 4; ++s) {
+            ms.seat_tricks[s] = tally.seat_tricks[s];
+            for (int suit = 0; suit < 4; ++suit) {
+                ms.won[s][suit] = tally.won[s][suit];
+                ms.ruffed[s][suit] = tally.ruffed[s][suit];
+            }
+        }
 
         // The first best move in canonical order is the one solve() would have
         // picked -- it enumerates from the bottom and replaces the incumbent
@@ -6707,6 +6719,15 @@ bool replay_pv(const Position& pos, const std::vector<Play>& pv, const SeatRoles
         if (trick_len == 4) {
             const int winner = trick_winner(leader, trick, 4);
             ++tally_out.seat_tricks[winner & 3];
+            // A spade beating a non-spade lead is the only way the winning
+            // card's suit differs from the suit led.
+            const int led_suit = card_suit(trick[0]);
+            const CardId winning = trick[(winner - leader) & 3];
+            if (card_suit(winning) == led_suit) {
+                ++tally_out.won[winner & 3][led_suit];
+            } else {
+                ++tally_out.ruffed[winner & 3][led_suit];
+            }
             if (roles.is_nil(winner)) {
                 ++tally_out.nil_tricks;
                 // The COUNT of bids down, not the count of tricks: a seat that

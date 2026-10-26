@@ -3334,7 +3334,7 @@ int main(int argc, char** argv) {
                                                &pair_res, err, sizeof(err))),
               static_cast<long long>(NIL_ERR_UNSUPPORTED));
 
-        check("version string", std::string(nil_solver_version()), std::string("0.2.0"));
+        check("version string", std::string(nil_solver_version()), std::string("0.3.0"));
     }
 
     // ---- the move list -----------------------------------------------------
@@ -3687,6 +3687,269 @@ int main(int argc, char** argv) {
             same = std::memcmp(&ma[i], &mb[i], sizeof(nil_move)) == 0;
         }
         check("the plain call after the stopped ones answers as before", same, true);
+    }
+
+    // ---- 0.3.0 (Oct 2026): tricks by suit led (nil_solve_moves_suits) ----
+    //
+    // The split is counted on the same replayed line as seat_tricks, so the
+    // invariant that matters is that it adds back up to it, row by row and
+    // seat by seat; the rest pins the ABI: refusals, NULL suits, alignment,
+    // and the -1 cells of a stopped call.
+    {
+        std::cout << "\nC ABI: nil_solve_moves_suits\n";
+        char err[256] = {0};
+        // Row i adds back up to its own seat_tricks, a spade lead is never a
+        // ruff, and every cell is -1 exactly where seat_tricks is.
+        auto row_ok = [](const nil_move& m, const nil_move_suits& s) {
+            for (int seat = 0; seat < 4; ++seat) {
+                if (s.ruffed[seat][0] != 0 && m.seat_tricks[seat] != NIL_TRICKS_UNKNOWN) {
+                    return false;
+                }
+                int sum = 0;
+                for (int suit = 0; suit < 4; ++suit) {
+                    const bool unknown = m.seat_tricks[seat] == NIL_TRICKS_UNKNOWN;
+                    if (unknown != (s.won[seat][suit] == NIL_TRICKS_UNKNOWN)) return false;
+                    if (unknown != (s.ruffed[seat][suit] == NIL_TRICKS_UNKNOWN)) return false;
+                    sum += s.won[seat][suit] + s.ruffed[seat][suit];
+                }
+                if (m.seat_tricks[seat] != NIL_TRICKS_UNKNOWN && sum != m.seat_tricks[seat]) {
+                    return false;
+                }
+            }
+            return true;
+        };
+
+        // 1. The invariant on corpus positions (c4-0000/0120/0160/0240 from
+        // positions.txt, three with a trick in progress, one with a dead nil)
+        // and a 13-card deal: every row and seat sums to seat_tricks, and the
+        // seats together to the tricks left.
+        struct Case {
+            const char* pbn;
+            std::int32_t leader;
+            std::int32_t seats[4];
+            bool broken;
+            const char* trick;
+        };
+        const Case cases[] = {
+            {"N:A.AK.5. .8.A.T T.4..8 .JT..9", NIL_SEAT_EAST, {0, 3, 2, 3}, true, "DJ S5 H7"},
+            {"N:.6.98.Q KJ.3.. .K2..A 9...K42", NIL_SEAT_EAST, {3, 2, 3, 0}, true, "C5 C8"},
+            {"N:5.95..3 ...T85 ..KT.A 3.4.Q.", NIL_SEAT_EAST, {2, 3, 0, 3}, false, "H6 HK HJ"},
+            {"N:Q.3.K.A K2.J.5. 6..4.6 3..T.T", NIL_SEAT_SOUTH, {3, 2, 3, 0}, true, "SJ SA"},
+            {"N:J.3.975. 65..63.6 8.A72.2. Q7.T.T.7", NIL_SEAT_WEST, {3, 0, 3, 2}, true, ""},
+            {"N:KJ.7.A3.Q6 .A.Q8.AKJ3 .T9863.74. AT764..T2.", NIL_SEAT_EAST, {0, 3, 0, 3},
+             false, ""},
+            {"N:AKJT8.2.AKQJT.KJ 72.AQ63.98765.A4 63.KT874.42.T976 Q954.J95.3.Q8532",
+             NIL_SEAT_SOUTH, {3, 0, 3, 2}, false, ""},
+        };
+        bool all_ok = true;
+        bool tables = true;
+        int rows = 0;
+        for (const Case& c : cases) {
+            nil_result r;
+            nil_move m[NIL_MAX_MOVES];
+            nil_move_suits s[NIL_MAX_MOVES];
+            std::int32_t n = 0;
+            const std::uint32_t flags = c.broken ? NIL_FLAG_SPADES_BROKEN : 0u;
+            const std::int32_t rc = nil_solve_moves_suits(c.pbn, c.leader, c.trick, c.seats, flags,
+                                                          nullptr, &r, m, s, NIL_MAX_MOVES, &n, err,
+                                                          sizeof err);
+            if (rc != NIL_OK || n < 1) {
+                std::cout << "    " << c.pbn << ": rc " << rc << " " << err << "\n";
+                all_ok = false;
+                continue;
+            }
+            for (std::int32_t i = 0; i < n; ++i, ++rows) {
+                all_ok = all_ok && row_ok(m[i], s[i]);
+                int total = 0;
+                for (int seat = 0; seat < 4; ++seat) {
+                    tables = tables && m[i].seat_tricks[seat] >= 0;
+                    for (int suit = 0; suit < 4; ++suit) {
+                        total += s[i].won[seat][suit] + s[i].ruffed[seat][suit];
+                    }
+                }
+                tables = tables && total == r.tricks_remaining;
+            }
+        }
+        check("every row's split adds up to its seat_tricks", all_ok, true);
+        check("and the seats' together to the tricks left", tables, true);
+        check("rows checked", rows >= 20, true);
+
+        // 2. A certain ruff: West has only hearts, North only spades.  West
+        // leads a heart, North must ruff it, and wins the spade it then leads.
+        {
+            const char* ending = "N:32... ..K.3 ..Q.4 .J9..";
+            nil_result r;
+            nil_move m[NIL_MAX_MOVES];
+            nil_move_suits s[NIL_MAX_MOVES];
+            std::int32_t n = 0;
+            const std::int32_t rc = nil_solve_moves_suits(ending, NIL_SEAT_WEST, "", SEATS_NIL_E, 0,
+                                                          nullptr, &r, m, s, NIL_MAX_MOVES, &n,
+                                                          err, sizeof err);
+            check("the ruff ending solves", static_cast<long long>(rc), 0LL);
+            bool ruff = n >= 1;
+            for (std::int32_t i = 0; i < n; ++i) {
+                ruff = ruff && s[i].ruffed[NIL_SEAT_NORTH][1] == 1 &&
+                       s[i].won[NIL_SEAT_NORTH][1] == 0 && s[i].won[NIL_SEAT_NORTH][0] == 1 &&
+                       m[i].seat_tricks[NIL_SEAT_NORTH] == 2;
+            }
+            check("the heart ruff lands in ruffed[N][hearts], the spade in won[N][spades]", ruff,
+                  true);
+        }
+
+        // 3. Alignment, and 5. NULL suits: on a deal whose rows differ, the
+        // suits call's rows are byte for byte nil_solve_moves_limited's, each
+        // split adds up to ITS row, and NULL suits is that call exactly.
+        {
+            const char* deal = "N:KJ.7.A3.Q6 .A.Q8.AKJ3 .T9863.74. AT764..T2.";
+            const std::int32_t shape[4] = {NIL_ROLE_NIL, NIL_ROLE_OPPONENT, NIL_ROLE_COVER,
+                                           NIL_ROLE_OPPONENT};
+            for (int leader = 0; leader < 4; ++leader) {
+                // Zeroed first: nil_result has padding before `nodes`, which a
+                // byte compare would otherwise read as whatever the stack held.
+                nil_result ra, rb, rc, rd;
+                nil_move ma[NIL_MAX_MOVES], mb[NIL_MAX_MOVES], mc[NIL_MAX_MOVES],
+                    md[NIL_MAX_MOVES];
+                nil_move_suits sb[NIL_MAX_MOVES];
+                for (nil_result* r : {&ra, &rb, &rc, &rd}) std::memset(r, 0, sizeof *r);
+                std::int32_t na = 0, nb = 0, nc = 0, nd = 0;
+                // The first solve of a position on a thread spends a few more
+                // nodes than the ones after it (1156 then 1034 here, with or
+                // without suits), so one call warms up and the compared ones
+                // all follow it.
+                nil_solve_moves_limited(deal, leader, "", shape, 0, nullptr, &ra, ma, NIL_MAX_MOVES,
+                                        &na, err, sizeof err);
+                std::memset(&ra, 0, sizeof ra);
+                const std::int32_t ea = nil_solve_moves_limited(deal, leader, "", shape, 0, nullptr,
+                                                                &ra, ma, NIL_MAX_MOVES, &na, err,
+                                                                sizeof err);
+                const std::int32_t eb = nil_solve_moves_suits(deal, leader, "", shape, 0, nullptr,
+                                                              &rb, mb, sb, NIL_MAX_MOVES, &nb, err,
+                                                              sizeof err);
+                const std::int32_t ec = nil_solve_moves_suits(deal, leader, "", shape,
+                                                              NIL_FLAG_FAST_LINE, nullptr, &rc, mc,
+                                                              nullptr, NIL_MAX_MOVES, &nc, err,
+                                                              sizeof err);
+                const std::int32_t ed = nil_solve_moves_limited(deal, leader, "", shape,
+                                                                NIL_FLAG_FAST_LINE, nullptr, &rd,
+                                                                md, NIL_MAX_MOVES, &nd, err,
+                                                                sizeof err);
+                bool same = ea == NIL_OK && eb == NIL_OK && na == nb && ra.nodes == rb.nodes &&
+                            std::memcmp(&ra, &rb, sizeof ra) == 0;
+                bool aligned = same;
+                bool differ = false;
+                for (std::int32_t i = 0; same && i < na; ++i) {
+                    same = std::memcmp(&ma[i], &mb[i], sizeof(nil_move)) == 0;
+                    aligned = aligned && row_ok(mb[i], sb[i]);
+                    for (int seat = 0; seat < 4; ++seat) {
+                        differ = differ || mb[i].seat_tricks[seat] != mb[0].seat_tricks[seat];
+                    }
+                }
+                bool null_same = ec == ed && nc == nd && std::memcmp(&rc, &rd, sizeof rc) == 0;
+                for (std::int32_t i = 0; null_same && i < nc; ++i) {
+                    null_same = std::memcmp(&mc[i], &md[i], sizeof(nil_move)) == 0;
+                }
+                const std::string at = std::string(" (leader ") + SEAT_NAMES[leader] + ")";
+                check("the rows are nil_solve_moves_limited's, byte for byte" + at, same, true);
+                if (differ) {
+                    check("suits[i] adds up to moves[i] on rows that differ" + at, aligned,
+                          true);
+                }
+                check("NULL suits is nil_solve_moves_limited, FAST_LINE and all" + at, null_same,
+                      true);
+            }
+        }
+
+        // 4. FAST_LINE and FAST_MODE are refused before anything is written.
+        {
+            const char* deal = "N:KJ.7.A3.Q6 .A.Q8.AKJ3 .T9863.74. AT764..T2.";
+            const std::uint32_t refused[] = {NIL_FLAG_FAST_LINE, NIL_FLAG_FAST_MODE,
+                                             NIL_FLAG_FAST_LINE | NIL_FLAG_FAST_MODE};
+            for (std::uint32_t f : refused) {
+                nil_result r;
+                nil_move m[NIL_MAX_MOVES];
+                nil_move_suits s[NIL_MAX_MOVES];
+                std::memset(&r, 0xAB, sizeof r);
+                std::memset(m, 0xAB, sizeof m);
+                std::memset(s, 0xAB, sizeof s);
+                std::int32_t n = -7;
+                char e[256] = {0};
+                const std::int32_t rc = nil_solve_moves_suits(deal, NIL_SEAT_EAST, "", SEATS_NIL_N,
+                                                              f, nullptr, &r, m, s, NIL_MAX_MOVES,
+                                                              &n, e, sizeof e);
+                bool untouched = n == -7;
+                const unsigned char* bytes[] = {reinterpret_cast<const unsigned char*>(&r),
+                                                reinterpret_cast<const unsigned char*>(m),
+                                                reinterpret_cast<const unsigned char*>(s)};
+                const std::size_t sizes[] = {sizeof r, sizeof m, sizeof s};
+                for (int k = 0; k < 3; ++k) {
+                    for (std::size_t b = 0; untouched && b < sizes[k]; ++b) {
+                        untouched = bytes[k][b] == 0xAB;
+                    }
+                }
+                const std::string name = f == NIL_FLAG_FAST_LINE   ? "FAST_LINE"
+                                         : f == NIL_FLAG_FAST_MODE ? "FAST_MODE"
+                                                                   : "both fast flags";
+                check(name + " is NIL_ERR_UNSUPPORTED", static_cast<long long>(rc),
+                      static_cast<long long>(NIL_ERR_UNSUPPORTED));
+                check(name + " leaves every output untouched", untouched, true);
+                check(name + " says why", e[0] != '\0', true);
+            }
+        }
+
+        // 6. Stopped calls on a 13-card deal (seed-1 #30, twins; ~7M nodes,
+        // the last ~15% of them the line walk): a stop before any row is
+        // proven, and four late in the call.  Every row a stop left unwalked
+        // reads -1 in every cell, as its seat_tricks does, and every walked row
+        // still adds up.  The late rungs stop inside the line walk, so both
+        // kinds of row appear in one answer.
+        {
+            const char* big =
+                "N:AKJT8.2.AKQJT.KJ 72.AQ63.98765.A4 63.KT874.42.T976 Q954.J95.3.Q8532";
+            const std::int32_t twins[4] = {NIL_ROLE_OPPONENT, NIL_ROLE_NIL, NIL_ROLE_OPPONENT,
+                                           NIL_ROLE_NIL};
+            nil_limits lim;
+            std::memset(&lim, 0, sizeof lim);
+            lim.struct_size = sizeof(nil_limits);
+            nil_result full;
+            nil_move fm[NIL_MAX_MOVES];
+            nil_move_suits fs[NIL_MAX_MOVES];
+            std::int32_t fn = 0;
+            const std::int32_t frc = nil_solve_moves_suits(big, NIL_SEAT_SOUTH, "", twins, 0,
+                                                           nullptr, &full, fm, fs, NIL_MAX_MOVES,
+                                                           &fn, err, sizeof err);
+            check("the 13-card deal finishes unlimited", static_cast<long long>(frc), 0LL);
+            bool full_ok = frc == NIL_OK;
+            for (std::int32_t i = 0; i < fn; ++i) {
+                full_ok = full_ok && fm[i].seat_tricks[0] >= 0 && row_ok(fm[i], fs[i]);
+            }
+            check("and every one of its rows adds up", full_ok, true);
+            bool consistent = true;
+            bool any_stopped = false;
+            bool mixed = false;
+            const std::uint64_t budgets[] = {1, full.nodes * 12 / 16, full.nodes * 13 / 16,
+                                             full.nodes * 14 / 16, full.nodes * 15 / 16};
+            for (std::uint64_t budget : budgets) {
+                lim.max_nodes = budget;
+                nil_result r;
+                nil_move m[NIL_MAX_MOVES];
+                nil_move_suits s[NIL_MAX_MOVES];
+                std::int32_t n = 0;
+                const std::int32_t rc = nil_solve_moves_suits(big, NIL_SEAT_SOUTH, "", twins, 0,
+                                                              &lim, &r, m, s, NIL_MAX_MOVES, &n,
+                                                              err, sizeof err);
+                if (rc != NIL_INCOMPLETE) continue;
+                any_stopped = true;
+                int walked = 0;
+                for (std::int32_t i = 0; i < n; ++i) {
+                    consistent = consistent && row_ok(m[i], s[i]);
+                    if (m[i].seat_tricks[0] != NIL_TRICKS_UNKNOWN) ++walked;
+                }
+                mixed = mixed || (walked > 0 && walked < n);
+            }
+            check("stopped calls return NIL_INCOMPLETE", any_stopped, true);
+            check("an unwalked row is -1 in every cell, a walked one adds up", consistent, true);
+            check("a stop in the line walk leaves walked and unwalked rows", mixed, true);
+        }
     }
 
     // ---- PHASE 3 (Oct 2026): bounded fast mode and the fallback questions ----

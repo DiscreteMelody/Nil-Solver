@@ -1219,6 +1219,12 @@ struct Tally {
     // Sums to the tricks played.  Within a pair this is ONE optimal line's
     // split, not something the objective pins; see MoveScore::seat_tricks.
     int seat_tricks[4] = {0, 0, 0, 0};
+    // `seat_tricks` split by the suit LED, indexed [seat][suit]: `won` counts
+    // tricks the seat took with a card of the led suit, `ruffed` those it took
+    // with a spade on a non-spade lead, so ruffed[*][SUIT_SPADES] stays 0.  For
+    // every seat the two arrays sum to seat_tricks.
+    int won[4][4] = {};
+    int ruffed[4][4] = {};
 };
 
 struct Solution {
@@ -1469,6 +1475,20 @@ struct MoveScore {
     // differently-ordered search may move a trick between partners.
     int seat_tricks[4] = {TRICKS_NOT_COMPUTED, TRICKS_NOT_COMPUTED, TRICKS_NOT_COMPUTED,
                           TRICKS_NOT_COMPUTED};
+
+    // `seat_tricks` split by the suit led, off the same replayed line; see
+    // Tally::won and Tally::ruffed.  Every cell is TRICKS_NOT_COMPUTED exactly
+    // when seat_tricks is.
+    int won[4][4] = {
+        {TRICKS_NOT_COMPUTED, TRICKS_NOT_COMPUTED, TRICKS_NOT_COMPUTED, TRICKS_NOT_COMPUTED},
+        {TRICKS_NOT_COMPUTED, TRICKS_NOT_COMPUTED, TRICKS_NOT_COMPUTED, TRICKS_NOT_COMPUTED},
+        {TRICKS_NOT_COMPUTED, TRICKS_NOT_COMPUTED, TRICKS_NOT_COMPUTED, TRICKS_NOT_COMPUTED},
+        {TRICKS_NOT_COMPUTED, TRICKS_NOT_COMPUTED, TRICKS_NOT_COMPUTED, TRICKS_NOT_COMPUTED}};
+    int ruffed[4][4] = {
+        {TRICKS_NOT_COMPUTED, TRICKS_NOT_COMPUTED, TRICKS_NOT_COMPUTED, TRICKS_NOT_COMPUTED},
+        {TRICKS_NOT_COMPUTED, TRICKS_NOT_COMPUTED, TRICKS_NOT_COMPUTED, TRICKS_NOT_COMPUTED},
+        {TRICKS_NOT_COMPUTED, TRICKS_NOT_COMPUTED, TRICKS_NOT_COMPUTED, TRICKS_NOT_COMPUTED},
+        {TRICKS_NOT_COMPUTED, TRICKS_NOT_COMPUTED, TRICKS_NOT_COMPUTED, TRICKS_NOT_COMPUTED}};
 
     // How much of this row is proven.  ROW_ALL unless the call stopped on a
     // per-call limit; see RowKnown.

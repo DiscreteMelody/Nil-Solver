@@ -306,13 +306,29 @@ NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve_moves(
                                    moves_cap, moves_len, err_buf, err_len);
 }
 
-NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve_moves_limited(
-    const char* pbn, std::int32_t leader, const char* current_trick, const std::int32_t* seats,
-    std::uint32_t flags, const nil_limits* limits, nil_result* out, nil_move* moves,
-    std::int32_t moves_cap, std::int32_t* moves_len, char* err_buf, std::int32_t err_len) {
+}  // extern "C"
+
+namespace {
+
+// The body of nil_solve_moves_limited and nil_solve_moves_suits, so the two
+// can never drift apart.  `suits` is optional: NULL is nil_solve_moves_limited.
+std::int32_t solve_moves_impl(const char* pbn, std::int32_t leader, const char* current_trick,
+                              const std::int32_t* seats, std::uint32_t flags,
+                              const nil_limits* limits, nil_result* out, nil_move* moves,
+                              nil_move_suits* suits, std::int32_t moves_cap,
+                              std::int32_t* moves_len, char* err_buf, std::int32_t err_len) {
     if (!pbn || !out || !moves || !moves_len) {
         copy_err(err_buf, err_len, "null argument");
         return NIL_ERR_NULL_ARG;
+    }
+    // Refused before anything is written: both flags skip the line the split
+    // is counted on, so honouring them would hand back a table of -1s.
+    if (suits && (flags & (NIL_FLAG_FAST_LINE | NIL_FLAG_FAST_MODE))) {
+        copy_err(err_buf, err_len,
+                 "tricks by suit are counted on each card's walked line, and "
+                 "NIL_FLAG_FAST_LINE and NIL_FLAG_FAST_MODE walk none. Drop them, or call "
+                 "nil_solve_moves_limited if the rows are all you need.");
+        return NIL_ERR_UNSUPPORTED;
     }
     *moves_len = 0;
 
@@ -384,8 +400,41 @@ NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve_moves_limited(
             dst.seat_status[seat] = src.seat_status[seat];
             dst.seat_tricks[seat] = src.seat_tricks[seat];
         }
+        if (suits) {
+            nil_move_suits& split = suits[i];
+            for (int seat = 0; seat < 4; ++seat) {
+                // Unknown exactly where seat_tricks is, cell for cell.
+                const bool known = src.seat_tricks[seat] != nil::TRICKS_NOT_COMPUTED;
+                for (int suit = 0; suit < 4; ++suit) {
+                    split.won[seat][suit] = known ? src.won[seat][suit] : NIL_TRICKS_UNKNOWN;
+                    split.ruffed[seat][suit] =
+                        known ? src.ruffed[seat][suit] : NIL_TRICKS_UNKNOWN;
+                }
+            }
+        }
     }
     return sol.complete ? NIL_OK : NIL_INCOMPLETE;
+}
+
+}  // namespace
+
+extern "C" {
+
+NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve_moves_limited(
+    const char* pbn, std::int32_t leader, const char* current_trick, const std::int32_t* seats,
+    std::uint32_t flags, const nil_limits* limits, nil_result* out, nil_move* moves,
+    std::int32_t moves_cap, std::int32_t* moves_len, char* err_buf, std::int32_t err_len) {
+    return solve_moves_impl(pbn, leader, current_trick, seats, flags, limits, out, moves, nullptr,
+                            moves_cap, moves_len, err_buf, err_len);
+}
+
+NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve_moves_suits(
+    const char* pbn, std::int32_t leader, const char* current_trick, const std::int32_t* seats,
+    std::uint32_t flags, const nil_limits* limits, nil_result* out, nil_move* moves,
+    nil_move_suits* suits, std::int32_t moves_cap, std::int32_t* moves_len, char* err_buf,
+    std::int32_t err_len) {
+    return solve_moves_impl(pbn, leader, current_trick, seats, flags, limits, out, moves, suits,
+                            moves_cap, moves_len, err_buf, err_len);
 }
 
 // ---- phase 3 (Oct 2026): the bounded fallback questions --------------------
@@ -518,6 +567,6 @@ NIL_SOLVER_API void NIL_SOLVER_CALL nil_release_table(void) {
     nil::release_transposition_table();
 }
 
-NIL_SOLVER_API const char* NIL_SOLVER_CALL nil_solver_version(void) { return "0.2.0"; }
+NIL_SOLVER_API const char* NIL_SOLVER_CALL nil_solver_version(void) { return "0.3.0"; }
 
 }  // extern "C"

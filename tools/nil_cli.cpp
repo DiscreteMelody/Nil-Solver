@@ -6,6 +6,7 @@
 //   nil_cli --pbn 'N:A...2 K...3 Q...4 J...5' --leader N --seats 0 3 2 3
 //   nil_cli --pbn '...' --leader W --seats 3 3 0 2 --trick 'H4 HK' --spades-broken
 //   nil_cli --pbn '...' --seats 3 3 0 2 --compact
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cctype>
@@ -878,6 +879,24 @@ int main(int argc, char** argv) {
             }
             std::cout << "\n";
         }
+        // One `move_suits=` line per card, same order again: every seat as
+        // SEAT=WON/RUFFED in N, E, S, W order, each a comma list over the suit
+        // LED in S, H, D, C order (nil_move_suits' numbering).  WON is tricks
+        // taken with a card of the suit led, RUFFED tricks taken with a spade
+        // on that lead; the eight sum to the seat's tricks on `move_seats=`.
+        // -1 where no line was walked, as there.
+        for (const nil::MoveScore& m : scored) {
+            std::cout << "move_suits=" << nil::card_to_string(m.card);
+            for (int seat = 0; seat < 4; ++seat) {
+                std::cout << ':' << nil::SEAT_CHARS[seat] << '=';
+                for (int suit = 0; suit < 4; ++suit)
+                    std::cout << (suit ? "," : "") << m.won[seat][suit];
+                std::cout << '/';
+                for (int suit = 0; suit < 4; ++suit)
+                    std::cout << (suit ? "," : "") << m.ruffed[seat][suit];
+            }
+            std::cout << "\n";
+        }
         // C0, and only when a limit was asked for: whether the call finished,
         // and per card how much of its row is proven (0 all, 1 value,
         // 2 outcome, 3 nothing; see nil::RowKnown).
@@ -945,6 +964,31 @@ int main(int argc, char** argv) {
                          "   2 = no nil; tricks include the trick the card completes, ? where\n"
                          "   no line was walked.  * marks a card that achieves the position's\n"
                          "   value; cards after '=' are the same move under another name)\n";
+            // The same seats' tricks again, split by the suit led: per seat the
+            // count in S, H, D, C order, with "+R" where R of them were ruffs.
+            std::cout << "\nTricks by suit led (per seat S H D C; +R = R of them ruffed):\n"
+                      << "        N              E              S              W\n";
+            for (const nil::MoveScore& m : scored) {
+                std::cout << "  " << (m.is_best ? '*' : ' ') << ' '
+                          << nil::card_to_string(m.card) << "  ";
+                for (int seat = 0; seat < 4; ++seat) {
+                    std::string cell;
+                    for (int suit = 0; suit < 4; ++suit) {
+                        const int won = m.won[seat][suit];
+                        const int ruffed = m.ruffed[seat][suit];
+                        if (suit) cell += ' ';
+                        if (won < 0 || ruffed < 0) {
+                            cell += '?';
+                        } else {
+                            cell += std::to_string(won + ruffed);
+                            if (ruffed) cell += "+" + std::to_string(ruffed);
+                        }
+                    }
+                    if (seat < 3) cell.resize(std::max<std::size_t>(cell.size() + 1, 15), ' ');
+                    std::cout << cell;
+                }
+                std::cout << "\n";
+            }
         }
         if (tt_stats) {
             // `partial` is the one to read.  It counts probes that found the

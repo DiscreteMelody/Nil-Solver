@@ -309,6 +309,27 @@ leaving the mask on would let the same class be expanded twice.
 `EqualRanks` always empty, so `Moves` and `AllMoves` agree. It is a diagnostic:
 same answers, more work.
 
+### Tricks by suit (0.3.0)
+
+`Nil.SolveMovesWithSuits` is `ScoreMovesFull` plus, on every row, each seat's
+tricks down the card's line split by the suit LED: `SuitsWon[seat][suit]` for
+tricks won with a card of that suit, `SuitsRuffed[seat][suit]` for tricks won by
+ruffing a lead of it (seats N, E, S, W; suits spades, hearts, diamonds, clubs;
+the spade column of `SuitsRuffed` is always 0). For each seat the eight numbers
+add up to its `SeatTricks`, and like `SeatTricks` they are one optimal line's
+witness within a pair. No extra search is done — the split is counted on the
+line each row already walks — but that line is what `NilFlags.FastLine` skips,
+so this call returns `Unsupported` under `FastLine` or `FastMode`. The suits are
+copied to every card in `AllMoves`. Pass `NilLimits` to bound it: a stopped call
+is `Incomplete` with its rows, and rows it never walked read `TricksUnknown`
+throughout. Other calls leave `SuitsWon` and `SuitsRuffed` null.
+
+```csharp
+var r = Nil.SolveMovesWithSuits(pbn, leader, trick, roles, NilFlags.SpadesBroken);
+foreach (var m in r.AllMoves)
+    Console.WriteLine($"{m}: West ruffs {m.SuitsRuffed![(int)NilSeat.West][1]} heart(s)");
+```
+
 ## The other flags
 
 | flag | when |

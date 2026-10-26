@@ -599,7 +599,10 @@ extern "C" {
  * every reported field stays exact.  Measured on 155 thirteen-card deals: the
  * per-card call 17.8% faster in total (145 deals faster, 2 slower by more than
  * 2%), nodes -16.7%; the old canonical-skip reading of this flag was 15.4%
- * faster in total but visited MORE nodes on 67 of the deals. */
+ * faster in total but visited MORE nodes on 67 of the deals.
+ *
+ * nil_solve_moves_suits refuses this flag (NIL_ERR_UNSUPPORTED): its per-suit
+ * split is read off the very line this flag skips. */
 #define NIL_FLAG_FAST_LINE 0x1000u
 
 /* What the trick counts read under NIL_FLAG_FAST_MODE.  Deliberately not zero:
@@ -997,6 +1000,42 @@ NIL_SOLVER_API int32_t NIL_SOLVER_CALL nil_solve_moves_limited(
     uint32_t flags, const nil_limits* limits, nil_result* out, nil_move* moves,
     int32_t moves_cap, int32_t* moves_len, char* err_buf, int32_t err_len);
 
+/* ---- 0.3.0 (Oct 2026): TRICKS BY SUIT ---------------------------------------
+ *
+ * Per-suit split of a row's seat_tricks, read off the same replayed line.
+ * Suits are DDS-numbered: 0 = spades, 1 = hearts, 2 = diamonds, 3 = clubs.
+ * Seats are NIL_SEAT_* (absolute).  Both arrays are indexed [seat][suit LED]:
+ * a heart lead ruffed by East counts in ruffed[NIL_SEAT_EAST][1].
+ *
+ * A separate parallel array rather than more fields on nil_move, so that a
+ * newer library can never write past the rows of a caller built against the
+ * old nil_move. */
+typedef struct nil_move_suits {
+    int32_t won[4][4];    /* tricks the seat won with a card of the suit led */
+    int32_t ruffed[4][4]; /* tricks the seat won with a spade on a non-spade
+                           * lead; [*][0] is always 0 */
+} nil_move_suits;
+
+/* nil_solve_moves_limited plus one nil_move_suits per row, suits[i] describing
+ * moves[i].  No extra search: the split is counted on the line each row
+ * already walks and replays to fill seat_tricks.
+ *
+ * Includes the trick the card completes, exactly like seat_tricks.  For every
+ * seat s, the sum over suits of won[s][*] + ruffed[s][*] equals
+ * moves[i].seat_tricks[s].  NIL_FLAG_FAST_LINE and NIL_FLAG_FAST_MODE walk no
+ * line, so they are refused with NIL_ERR_UNSUPPORTED (as nil_solve_pv refuses
+ * FAST_MODE) before anything is written.  On NIL_INCOMPLETE, rows whose line
+ * was not walked read NIL_TRICKS_UNKNOWN (-1) in every cell, as their
+ * seat_tricks do.
+ *
+ * suits may be NULL, in which case the call is nil_solve_moves_limited, flags
+ * and all.  Otherwise it holds moves_cap entries, like `moves`. */
+NIL_SOLVER_API int32_t NIL_SOLVER_CALL nil_solve_moves_suits(
+    const char* pbn, int32_t leader, const char* current_trick, const int32_t* seats,
+    uint32_t flags, const nil_limits* limits, nil_result* out, nil_move* moves,
+    nil_move_suits* suits, int32_t moves_cap, int32_t* moves_len, char* err_buf,
+    int32_t err_len);
+
 /* ---- PHASE 3 (Oct 2026, 0.2.0): BOUNDED FALLBACK QUESTIONS ----------------
  *
  * Two entry points for a caller whose per-card call came back NIL_INCOMPLETE
@@ -1194,11 +1233,13 @@ NIL_SOLVER_API void NIL_SOLVER_CALL nil_set_table_size(uint32_t megabytes);
  * from a thread that is done solving, or before unloading the library. */
 NIL_SOLVER_API void NIL_SOLVER_CALL nil_release_table(void);
 
-/* Static version string, e.g. "0.2.0".
+/* Static version string, e.g. "0.3.0".
  *
  *   0.1.0   through the C0 limits (Oct 2026).
  *   0.2.0   phase 3: fast mode honours nil_limits; nil_count_set_limited and
- *           nil_solve_outcome_limited.  No existing export changed shape. */
+ *           nil_solve_outcome_limited.  No existing export changed shape.
+ *   0.3.0   nil_solve_moves_suits and nil_move_suits (tricks by suit led).
+ *           No existing export changed shape. */
 NIL_SOLVER_API const char* NIL_SOLVER_CALL nil_solver_version(void);
 
 #ifdef __cplusplus

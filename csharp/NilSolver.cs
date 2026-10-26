@@ -162,6 +162,24 @@ namespace NilSolver
             NilSolverNative.TricksUnknown, NilSolverNative.TricksUnknown
         };
 
+        /// <summary>
+        /// <see cref="SeatTricks"/> split by the suit LED (0.3.0): tricks each seat
+        /// won with a card of the suit led, as <c>SuitsWon[seat][suit]</c> (seats
+        /// N, E, S, W; suits 0 spades, 1 hearts, 2 diamonds, 3 clubs). Null unless
+        /// the row came from <see cref="Nil.SolveMovesWithSuits"/>; every cell
+        /// <see cref="NilSolverNative.TricksUnknown"/> where the seat's
+        /// <see cref="SeatTricks"/> is.
+        /// </summary>
+        public IReadOnlyList<IReadOnlyList<int>>? SuitsWon { get; init; }
+
+        /// <summary>
+        /// Tricks each seat won by ruffing a lead of the suit, as
+        /// <c>SuitsRuffed[seat][suit]</c>; the spade column is always 0. For every
+        /// seat, the sum over suits of <see cref="SuitsWon"/> and this is that
+        /// seat's <see cref="SeatTricks"/>. Null as <see cref="SuitsWon"/> is.
+        /// </summary>
+        public IReadOnlyList<IReadOnlyList<int>>? SuitsRuffed { get; init; }
+
         /// <summary>Every rank this row stands for, this card's own included, ascending.</summary>
         public IEnumerable<int> Expand() => new[] { Rank }.Concat(EqualRanks).OrderBy(r => r);
 
@@ -186,7 +204,9 @@ namespace NilSolver
             IsBest = IsBest,
             NilsSetMask = NilsSetMask,
             SeatStatus = SeatStatus,
-            SeatTricks = SeatTricks
+            SeatTricks = SeatTricks,
+            SuitsWon = SuitsWon,
+            SuitsRuffed = SuitsRuffed
         };
 
         /// <summary>"K♠", "T♥", "2♣" — for display. <see cref="ToString"/> is the
@@ -235,6 +255,35 @@ namespace NilSolver
                     m.SeatTricksNorth, m.SeatTricksEast, m.SeatTricksSouth, m.SeatTricksWest
                 }
             };
+        }
+
+        internal static NilMoveScore FromNative(in NilMove m, in NilMoveSuits s)
+        {
+            NilMoveScore row = FromNative(m);
+            return new NilMoveScore
+            {
+                Suit = row.Suit,
+                Rank = row.Rank,
+                EqualRanks = row.EqualRanks,
+                NilsSet = row.NilsSet,
+                NilTricks = row.NilTricks,
+                NilSideTricks = row.NilSideTricks,
+                OpponentTricks = row.OpponentTricks,
+                IsBest = row.IsBest,
+                NilsSetMask = row.NilsSetMask,
+                SeatStatus = row.SeatStatus,
+                SeatTricks = row.SeatTricks,
+                SuitsWon = BySeat(s.Won),
+                SuitsRuffed = BySeat(s.Ruffed)
+            };
+        }
+
+        // The native [4][4], flattened seat-major, back into [seat][suit].
+        private static IReadOnlyList<IReadOnlyList<int>> BySeat(int[] flat)
+        {
+            var seats = new IReadOnlyList<int>[4];
+            for (int seat = 0; seat < 4; seat++) seats[seat] = flat.Skip(seat * 4).Take(4).ToArray();
+            return seats;
         }
 
         private Suit GetCGASuit(int suitIndex) => suitIndex switch
@@ -414,11 +463,12 @@ namespace NilSolver
         }
 
         internal static NilSolution FromNative(in NilResult r, string pv,
-                                               IReadOnlyList<NilMoveScore> moves)
+                                               IReadOnlyList<NilMoveScore> moves,
+                                               NilStatus status = NilStatus.Ok)
         {
             return new NilSolution
             {
-                Status = NilStatus.Ok,
+                Status = status,
                 NilsSet = r.NilsSet != 0,
                 NilsSetMask = r.NilsSetMask,
                 NilsSetMaskDetermined = r.NilsSetMaskDetermined != 0,
@@ -576,6 +626,49 @@ namespace NilSolver
             for (int i = 0; i < count; i++) moves.Add(NilMoveScore.FromNative(rows[i]));
 
             return NilSolution.FromNative(native, string.Empty, moves);
+        }
+
+        /// <summary>
+        /// <see cref="ScoreMovesFull"/> with each row's
+        /// <see cref="NilMoveScore.SuitsWon"/> and
+        /// <see cref="NilMoveScore.SuitsRuffed"/> filled in (0.3.0): per seat, the
+        /// tricks down the card's line by the suit led. No extra search; the
+        /// split is counted on the line each row already walks. The suits carry
+        /// over to every card in <see cref="NilSolution.AllMoves"/>.
+        /// <para>
+        /// Returns <see cref="NilStatus.Unsupported"/> under
+        /// <see cref="NilFlags.FastLine"/> or <see cref="NilFlags.FastMode"/>,
+        /// which walk no line. With <paramref name="limits"/> a stopped call comes
+        /// back as <see cref="NilStatus.Incomplete"/> with its rows, unwalked rows
+        /// reading <see cref="NilSolverNative.TricksUnknown"/>; null is no limit.
+        /// </para>
+        /// </summary>
+        public static NilSolution SolveMovesWithSuits(string pbn, NilSeat leader, string? currentTrick,
+                                                      NilSeatRoles roles, NilFlags flags = NilFlags.None,
+                                                      NilLimits? limits = null)
+        {
+            if (pbn == null) throw new ArgumentNullException(nameof(pbn));
+
+            var err = new StringBuilder(ErrBufferBytes);
+            var rows = new NilMove[NilSolverNative.MaxMoves];
+            var suits = new NilMoveSuits[NilSolverNative.MaxMoves];
+            // All zero is no limit; the import takes the struct by reference.
+            NilLimits budget = limits ?? default;
+            budget.StructSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<NilLimits>();
+
+            int rc = NilSolverNative.nil_solve_moves_suits(pbn, (int)leader, currentTrick ?? string.Empty,
+                                                           roles.ToPbnOrder(pbn), (uint)flags,
+                                                           ref budget, out NilResult native,
+                                                           rows, suits, rows.Length, out int count,
+                                                           err, err.Capacity);
+
+            if (rc != (int)NilStatus.Ok && rc != (int)NilStatus.Incomplete)
+                return NilSolution.Failure((NilStatus)rc, err.ToString());
+
+            var moves = new List<NilMoveScore>(count);
+            for (int i = 0; i < count; i++) moves.Add(NilMoveScore.FromNative(rows[i], suits[i]));
+
+            return NilSolution.FromNative(native, string.Empty, moves, (NilStatus)rc);
         }
 
         /// <summary>

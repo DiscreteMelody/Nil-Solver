@@ -349,6 +349,26 @@ line; the status is filled in either way. `--compact` adds one
 `nil_cli --moves` is the fastest way to check a position by hand before wiring
 it into anything.
 
+`nil_solve_moves_suits` (0.3.0) is `nil_solve_moves_limited` plus a parallel
+`nil_move_suits` per row: each seat's `seat_tricks` split by the suit LED, as
+`won[seat][suit]` (taken with a card of that suit) and `ruffed[seat][suit]`
+(taken by ruffing a lead of it). No extra search — the split is counted on the
+same replayed line — but that is the line `NIL_FLAG_FAST_LINE` skips, so the call
+refuses it and `NIL_FLAG_FAST_MODE` with `NIL_ERR_UNSUPPORTED`. `nil_cli --moves`
+prints the split under the table, per seat in S H D C order, `+R` marking ruffs:
+
+```
+Tricks by suit led (per seat S H D C; +R = R of them ruffed):
+        N              E              S              W
+  * HA  0 1 0 0        0 0 1+1 1      0 0 0 0        1 0 0 0
+    DA  0 1 2+1 0      0 0 0 0        0 0 0 0        0 0 0 1+1
+  * CK  1 0 0 0        0 0 1+1 1      0 0 0 0        0 1+1 0 0
+```
+
+After HA, East takes a club and ruffs a diamond. `--compact` adds
+`move_suits=HA:N=0,1,0,0/0,0,0,0:E=0,0,0,1/0,0,1,0:...`, WON then RUFFED for each
+seat, `-1` where no line was walked.
+
 Rows come one per equivalence class rather than one per card. Holding SK and SQ
 with the jack gone, the two are one move under two names, and the `equal_ranks`
 bitmask on the queen's row names the king. The encoding is DDS's, including the
