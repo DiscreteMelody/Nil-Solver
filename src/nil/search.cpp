@@ -5869,6 +5869,7 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
                         ms.ruffed[s][suit] = TRICKS_NOT_COMPUTED;
                     }
                 }
+                ms.line.clear();
             }
             rows = moves_out;
         } else {
@@ -6316,6 +6317,9 @@ bool solve_moves(const Position& pos, const SeatRoles& roles, const SearchOption
         // only on a strict improvement -- so keeping its line gives this entry
         // point the same principal variation, already replay-checked above.
         if (out.pv.empty() && ms.value == best_value && opts.row_lines) out.pv = line;
+        // And the row keeps the line too (0.4.0), so a caller can show the
+        // plays its counts were read off; the replay above has checked it.
+        ms.line = std::move(line);
     }
     if (stopped) return finish_stopped(true);
 

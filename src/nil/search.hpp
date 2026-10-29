@@ -1490,6 +1490,14 @@ struct MoveScore {
         {TRICKS_NOT_COMPUTED, TRICKS_NOT_COMPUTED, TRICKS_NOT_COMPUTED, TRICKS_NOT_COMPUTED},
         {TRICKS_NOT_COMPUTED, TRICKS_NOT_COMPUTED, TRICKS_NOT_COMPUTED, TRICKS_NOT_COMPUTED}};
 
+    // The line itself (0.4.0): the very plays replay_pv counted seat_tricks,
+    // won and ruffed on, `card` first, then to the end of the hand.  The cards
+    // already on the trick in progress are not in it, so its length is the
+    // cards left in the four hands.  Empty exactly when seat_tricks is
+    // TRICKS_NOT_COMPUTED: MODE_FAST, values-only rows, and rows a stopped
+    // call left unwalked.
+    std::vector<Play> line;
+
     // How much of this row is proven.  ROW_ALL unless the call stopped on a
     // per-call limit; see RowKnown.
     RowKnown known = ROW_ALL;

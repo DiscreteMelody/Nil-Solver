@@ -369,6 +369,28 @@ After HA, East takes a club and ruffs a diamond. `--compact` adds
 `move_suits=HA:N=0,1,0,0/0,0,0,0:E=0,0,0,1/0,0,1,0:...`, WON then RUFFED for each
 seat, `-1` where no line was walked.
 
+`nil_solve_moves_lines` (0.4.0) is `nil_solve_moves_suits` plus a parallel
+`nil_move_line` per row: the line the row's counts were read off, as `cards` plays
+in `suit[]`/`rank[]` arrays, the row's card first and then every card to the end
+of the hand (the cards already on the trick in progress are not in it, so
+`cards` is the cards left in the four hands). Seats aren't stored: play goes
+clockwise from the seat to move and each trick's winner leads. Rows and the split
+are `nil_solve_moves_suits`'s byte for byte; `suits` may be NULL, `lines` NULL is
+`nil_solve_moves_suits`. Again no extra search, and again `NIL_FLAG_FAST_LINE`
+and `NIL_FLAG_FAST_MODE` are refused. A stopped call's unwalked rows read
+`cards = 0`. A row stands for its `equal_ranks` too: for an equal card, swap the
+two cards wherever either appears in the line. `nil_cli --moves --lines` prints
+each line under the suits block, a wider gap after each trick:
+
+```
+Lines (each card's, to the end of the hand; - where no line was walked):
+  * C2  C2 CQ  H6 H3 H2 C4  D8 SJ HK S9  SK CA CK D9
+    CK  CK CQ  C2 H6 SJ CA  H3 H2 S9 D8  C4 D9 SK HK
+```
+
+Here C5 C8 were already on the trick. With `--compact`, `--lines` adds
+`move_line=CK:CK,CQ,C2,H6,...`, empty after the colon where no line was walked.
+
 Rows come one per equivalence class rather than one per card. Holding SK and SQ
 with the jack gone, the two are one move under two names, and the `equal_ranks`
 bitmask on the queen's row names the king. The encoding is DDS's, including the

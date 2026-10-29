@@ -3334,7 +3334,7 @@ int main(int argc, char** argv) {
                                                &pair_res, err, sizeof(err))),
               static_cast<long long>(NIL_ERR_UNSUPPORTED));
 
-        check("version string", std::string(nil_solver_version()), std::string("0.3.0"));
+        check("version string", std::string(nil_solver_version()), std::string("0.4.0"));
     }
 
     // ---- the move list -----------------------------------------------------
@@ -3948,6 +3948,465 @@ int main(int argc, char** argv) {
             }
             check("stopped calls return NIL_INCOMPLETE", any_stopped, true);
             check("an unwalked row is -1 in every cell, a walked one adds up", consistent, true);
+            check("a stop in the line walk leaves walked and unwalked rows", mixed, true);
+        }
+    }
+
+    // ---- 0.4.0 (Oct 2026): each row's line (nil_solve_moves_lines) ----------
+    //
+    // The line is the one each row's counts were read off, so what matters is
+    // that it plays out legally from the position, the row's card first and to
+    // the end of the hand, and that replaying it under the rules -- written out
+    // afresh below, not the solver's -- gives back the row's seat_tricks and
+    // split.  The rest pins the ABI: rows and split byte for byte
+    // nil_solve_moves_suits's, NULL lines is that call, refusals write nothing,
+    // and a stopped call's unwalked rows read cards = 0.
+    {
+        std::cout << "\nC ABI: nil_solve_moves_lines\n";
+        check("version string is 0.4.0", std::string(nil_solver_version()),
+              std::string("0.4.0"));
+        char err[256] = {0};
+
+        // The position a line starts from: the hands, who led the trick in
+        // progress, its cards, and whether spades are broken.
+        struct Start {
+            Hand hands[4] = {0, 0, 0, 0};
+            int leader = 0;
+            bool broken = false;
+            CardId trick[4] = {nil::NO_CARD, nil::NO_CARD, nil::NO_CARD, nil::NO_CARD};
+            int trick_len = 0;
+        };
+        auto start_of = [](const char* pbn, std::int32_t leader, bool broken,
+                           const char* trick) {
+            Start st;
+            std::string e;
+            if (!nil::parse_pbn(pbn, st.hands, e) ||
+                (trick && *trick && !nil::parse_cards(trick, st.trick, 3, st.trick_len, e))) {
+                std::cerr << "test bug: " << e << "\n";
+                std::exit(70);
+            }
+            st.leader = leader;
+            st.broken = broken;
+            return st;
+        };
+        auto cards_left = [](const Start& st) {
+            int n = 0;
+            for (int seat = 0; seat < 4; ++seat) n += nil::count_cards(st.hands[seat]);
+            return n;
+        };
+        auto holds_suit = [](Hand hand, int suit) {
+            for (int rank = 2; rank <= 14; ++rank) {
+                if (hand & nil::card_bit(nil::make_card(suit, rank))) return true;
+            }
+            return false;
+        };
+        // What a line comes to: each seat's tricks, and split by the suit led.
+        struct Replayed {
+            int seat_tricks[4] = {0, 0, 0, 0};
+            int won[4][4] = {};
+            int ruffed[4][4] = {};
+        };
+        // Plays `line` from `st`: the seat to move plays first and play goes
+        // clockwise; a player follows suit when it can; spades are not led
+        // until broken (a spade played anywhere breaks them) unless that is
+        // all the hand holds; the highest spade, else the highest card of the
+        // suit led, takes the trick, and its winner leads the next.  False,
+        // with the reason, on an illegal play or a line short of the hand.
+        auto replay = [&](Start st, const nil_move_line& line, Replayed& out,
+                          std::string& why) {
+            out = Replayed{};
+            if (line.cards < 1 || line.cards > 52) {
+                why = "cards = " + std::to_string(line.cards);
+                return false;
+            }
+            for (int k = 0; k < line.cards; ++k) {
+                const int suit = line.suit[k];
+                const int rank = line.rank[k];
+                if (suit < 0 || suit > 3 || rank < 2 || rank > 14) {
+                    why = "play " + std::to_string(k) + " is not a card";
+                    return false;
+                }
+                const CardId card = nil::make_card(suit, rank);
+                const int seat = (st.leader + st.trick_len) & 3;
+                const Hand hand = st.hands[seat];
+                const std::string at = "play " + std::to_string(k) + " (" +
+                                       nil::card_to_string(card) + " by " + SEAT_NAMES[seat] +
+                                       ")";
+                if (!(hand & nil::card_bit(card))) {
+                    why = at + ": not in the hand";
+                    return false;
+                }
+                if (st.trick_len == 0) {
+                    const bool other = holds_suit(hand, 1) || holds_suit(hand, 2) ||
+                                       holds_suit(hand, 3);
+                    if (suit == 0 && !st.broken && other) {
+                        why = at + ": a spade led before spades are broken";
+                        return false;
+                    }
+                } else {
+                    const int led = nil::card_suit(st.trick[0]);
+                    if (suit != led && holds_suit(hand, led)) {
+                        why = at + ": does not follow suit";
+                        return false;
+                    }
+                }
+                st.hands[seat] &= ~nil::card_bit(card);
+                if (suit == 0) st.broken = true;
+                st.trick[st.trick_len++] = card;
+                if (st.trick_len == 4) {
+                    int best = 0;
+                    for (int j = 1; j < 4; ++j) {
+                        const int bs = nil::card_suit(st.trick[best]);
+                        const int js = nil::card_suit(st.trick[j]);
+                        if ((js == bs && nil::card_rank(st.trick[j]) >
+                                             nil::card_rank(st.trick[best])) ||
+                            (js == 0 && bs != 0)) {
+                            best = j;
+                        }
+                    }
+                    const int winner = (st.leader + best) & 3;
+                    const int led = nil::card_suit(st.trick[0]);
+                    ++out.seat_tricks[winner];
+                    if (nil::card_suit(st.trick[best]) == led) {
+                        ++out.won[winner][led];
+                    } else {
+                        ++out.ruffed[winner][led];
+                    }
+                    st.leader = winner;
+                    st.trick_len = 0;
+                }
+            }
+            if (st.trick_len != 0 || cards_left(st) != 0) {
+                why = "the line stops before the end of the hand";
+                return false;
+            }
+            return true;
+        };
+        // A walked row's line: the cards left, the row's card first, and a
+        // legal replay that gives back the row's seat_tricks and its split.
+        auto line_ok = [&](const Start& st, const nil_move& m, const nil_move_suits* s,
+                           const nil_move_line& line, std::string& why) {
+            if (line.cards != cards_left(st)) {
+                why = "cards " + std::to_string(line.cards) + ", " +
+                      std::to_string(cards_left(st)) + " left";
+                return false;
+            }
+            if (line.suit[0] != m.suit || line.rank[0] != m.rank) {
+                why = "the line does not start with the row's card";
+                return false;
+            }
+            Replayed rep;
+            if (!replay(st, line, rep, why)) return false;
+            for (int seat = 0; seat < 4; ++seat) {
+                if (rep.seat_tricks[seat] != m.seat_tricks[seat]) {
+                    why = std::string("replayed tricks differ at ") + SEAT_NAMES[seat];
+                    return false;
+                }
+                for (int suit = 0; s && suit < 4; ++suit) {
+                    if (rep.won[seat][suit] != s->won[seat][suit] ||
+                        rep.ruffed[seat][suit] != s->ruffed[seat][suit]) {
+                        why = std::string("replayed split differs at ") + SEAT_NAMES[seat];
+                        return false;
+                    }
+                }
+            }
+            return true;
+        };
+
+        // 1. The 0.3.0 section's positions (c4-0000/0120/0160/0240, c5-0040, a
+        // 7-card partner-nil deal at every leader, a 13-card single nil): the
+        // rows, the split and the nil_result are nil_solve_moves_suits's byte
+        // for byte, and every row's line holds the cards left, starts with the
+        // row's card and replays to the row's seat_tricks and split.
+        struct Case {
+            const char* pbn;
+            std::int32_t leader;
+            std::int32_t seats[4];
+            bool broken;
+            const char* trick;
+        };
+        const char* partner = "N:KJ.7.A3.Q6 .A.Q8.AKJ3 .T9863.74. AT764..T2.";
+        const Case cases[] = {
+            {"N:A.AK.5. .8.A.T T.4..8 .JT..9", NIL_SEAT_EAST, {0, 3, 2, 3}, true, "DJ S5 H7"},
+            {"N:.6.98.Q KJ.3.. .K2..A 9...K42", NIL_SEAT_EAST, {3, 2, 3, 0}, true, "C5 C8"},
+            {"N:5.95..3 ...T85 ..KT.A 3.4.Q.", NIL_SEAT_EAST, {2, 3, 0, 3}, false, "H6 HK HJ"},
+            {"N:Q.3.K.A K2.J.5. 6..4.6 3..T.T", NIL_SEAT_SOUTH, {3, 2, 3, 0}, true, "SJ SA"},
+            {"N:J.3.975. 65..63.6 8.A72.2. Q7.T.T.7", NIL_SEAT_WEST, {3, 0, 3, 2}, true, ""},
+            {partner, NIL_SEAT_NORTH, {0, 3, 2, 3}, false, ""},
+            {partner, NIL_SEAT_EAST, {0, 3, 0, 3}, false, ""},
+            {partner, NIL_SEAT_EAST, {0, 3, 2, 3}, false, ""},
+            {partner, NIL_SEAT_SOUTH, {0, 3, 2, 3}, false, ""},
+            {partner, NIL_SEAT_WEST, {0, 3, 2, 3}, false, ""},
+            {"N:AKJT8.2.AKQJT.KJ 72.AQ63.98765.A4 63.KT874.42.T976 Q954.J95.3.Q8532",
+             NIL_SEAT_SOUTH, {3, 0, 3, 2}, false, ""},
+        };
+        bool same = true;
+        bool lines_ok = true;
+        int rows = 0;
+        for (const Case& c : cases) {
+            const Start st = start_of(c.pbn, c.leader, c.broken, c.trick);
+            const std::uint32_t flags = c.broken ? NIL_FLAG_SPADES_BROKEN : 0u;
+            nil_result ra, rb;
+            nil_move ma[NIL_MAX_MOVES], mb[NIL_MAX_MOVES];
+            nil_move_suits sa[NIL_MAX_MOVES], sb[NIL_MAX_MOVES];
+            nil_move_line lb[NIL_MAX_MOVES];
+            std::int32_t na = 0, nb = 0;
+            // Warm-up first: the first solve of a position on a thread spends a
+            // few more nodes than the ones after it.  Then zeroed, for the
+            // padding in nil_result before `nodes`.
+            nil_solve_moves_suits(c.pbn, c.leader, c.trick, c.seats, flags, nullptr, &ra, ma, sa,
+                                  NIL_MAX_MOVES, &na, err, sizeof err);
+            std::memset(&ra, 0, sizeof ra);
+            std::memset(&rb, 0, sizeof rb);
+            const std::int32_t ea = nil_solve_moves_suits(c.pbn, c.leader, c.trick, c.seats,
+                                                          flags, nullptr, &ra, ma, sa,
+                                                          NIL_MAX_MOVES, &na, err, sizeof err);
+            const std::int32_t eb = nil_solve_moves_lines(c.pbn, c.leader, c.trick, c.seats,
+                                                          flags, nullptr, &rb, mb, sb, lb,
+                                                          NIL_MAX_MOVES, &nb, err, sizeof err);
+            const bool here = ea == NIL_OK && eb == NIL_OK && na == nb && na >= 1 &&
+                              std::memcmp(&ra, &rb, sizeof ra) == 0 &&
+                              std::memcmp(ma, mb, na * sizeof(nil_move)) == 0 &&
+                              std::memcmp(sa, sb, na * sizeof(nil_move_suits)) == 0;
+            if (!here) {
+                std::cout << "    " << c.pbn << " (leader " << SEAT_NAMES[c.leader] << "): rc "
+                          << ea << "/" << eb << " " << err << "\n";
+            }
+            same = same && here;
+            for (std::int32_t i = 0; eb == NIL_OK && i < nb; ++i, ++rows) {
+                std::string why;
+                if (!line_ok(st, mb[i], &sb[i], lb[i], why)) {
+                    std::cout << "    " << c.pbn << " row " << i << ": " << why << "\n";
+                    lines_ok = false;
+                }
+            }
+        }
+        check("rows, split and nil_result are nil_solve_moves_suits's, byte for byte", same,
+              true);
+        check("every line holds the cards left, the row's card first, and replays to its "
+              "seat_tricks and split",
+              lines_ok, true);
+        check("rows checked", rows >= 40, true);
+
+        // 1b. The replay is not a rubber stamp: on c4-0000 (North's one legal
+        // card completes the trick in progress), two seats' plays swapped, a
+        // line cut short, or a trick count off by one each fail it.
+        {
+            const Case& c = cases[0];
+            const Start st = start_of(c.pbn, c.leader, c.broken, c.trick);
+            nil_result r;
+            nil_move m[NIL_MAX_MOVES];
+            nil_move_line l[NIL_MAX_MOVES];
+            std::int32_t n = 0;
+            const std::int32_t rc = nil_solve_moves_lines(c.pbn, c.leader, c.trick, c.seats,
+                                                          NIL_FLAG_SPADES_BROKEN, nullptr, &r, m,
+                                                          nullptr, l, NIL_MAX_MOVES, &n, err,
+                                                          sizeof err);
+            std::string why;
+            const bool good = rc == NIL_OK && n == 1 && line_ok(st, m[0], nullptr, l[0], why);
+            nil_move_line swapped = l[0];
+            std::swap(swapped.suit[1], swapped.suit[2]);
+            std::swap(swapped.rank[1], swapped.rank[2]);
+            nil_move_line cut = l[0];
+            --cut.cards;
+            nil_move off = m[0];
+            ++off.seat_tricks[NIL_SEAT_NORTH];
+            const bool caught = !line_ok(st, m[0], nullptr, swapped, why) &&
+                                !line_ok(st, m[0], nullptr, cut, why) &&
+                                !line_ok(st, off, nullptr, l[0], why);
+            check("the replay passes the real line and fails a doctored one", good && caught,
+                  true);
+        }
+
+        // 2. NULL lines is nil_solve_moves_suits (and with NULL suits too,
+        // nil_solve_moves_limited, FAST_LINE and all); NULL suits still fills
+        // the lines, the same lines.
+        {
+            nil_result ra, rb, rc, rd, re;
+            nil_move ma[NIL_MAX_MOVES], mb[NIL_MAX_MOVES], mc[NIL_MAX_MOVES],
+                md[NIL_MAX_MOVES], me[NIL_MAX_MOVES];
+            nil_move_suits sa[NIL_MAX_MOVES], sb[NIL_MAX_MOVES];
+            nil_move_line la[NIL_MAX_MOVES], le[NIL_MAX_MOVES];
+            std::memset(la, 0, sizeof la);
+            std::memset(le, 0, sizeof le);
+            std::int32_t na = 0, nb = 0, nc = 0, nd = 0, ne = 0;
+            nil_solve_moves_suits(partner, NIL_SEAT_EAST, "", SEATS_NIL_N, 0, nullptr, &ra, ma,
+                                  sa, NIL_MAX_MOVES, &na, err, sizeof err);
+            for (nil_result* r : {&ra, &rb, &rc, &rd, &re}) std::memset(r, 0, sizeof *r);
+            const std::int32_t ea = nil_solve_moves_suits(partner, NIL_SEAT_EAST, "", SEATS_NIL_N,
+                                                          0, nullptr, &ra, ma, sa, NIL_MAX_MOVES,
+                                                          &na, err, sizeof err);
+            const std::int32_t eb = nil_solve_moves_lines(partner, NIL_SEAT_EAST, "", SEATS_NIL_N,
+                                                          0, nullptr, &rb, mb, sb, nullptr,
+                                                          NIL_MAX_MOVES, &nb, err, sizeof err);
+            const std::int32_t ec = nil_solve_moves_lines(
+                partner, NIL_SEAT_EAST, "", SEATS_NIL_N, NIL_FLAG_FAST_LINE, nullptr, &rc, mc,
+                nullptr, nullptr, NIL_MAX_MOVES, &nc, err, sizeof err);
+            const std::int32_t ed = nil_solve_moves_limited(partner, NIL_SEAT_EAST, "",
+                                                            SEATS_NIL_N, NIL_FLAG_FAST_LINE,
+                                                            nullptr, &rd, md, NIL_MAX_MOVES, &nd,
+                                                            err, sizeof err);
+            // Lines with the split, then without it.
+            nil_result rf;
+            std::memset(&rf, 0, sizeof rf);
+            nil_move mf[NIL_MAX_MOVES];
+            nil_move_suits sf[NIL_MAX_MOVES];
+            std::int32_t nf = 0;
+            nil_solve_moves_lines(partner, NIL_SEAT_EAST, "", SEATS_NIL_N, 0, nullptr, &rf, mf, sf,
+                                  la, NIL_MAX_MOVES, &nf, err, sizeof err);
+            const std::int32_t ee = nil_solve_moves_lines(partner, NIL_SEAT_EAST, "", SEATS_NIL_N,
+                                                          0, nullptr, &re, me, nullptr, le,
+                                                          NIL_MAX_MOVES, &ne, err, sizeof err);
+            const bool suits_same = ea == NIL_OK && eb == NIL_OK && na == nb &&
+                                    std::memcmp(&ra, &rb, sizeof ra) == 0 &&
+                                    std::memcmp(ma, mb, na * sizeof(nil_move)) == 0 &&
+                                    std::memcmp(sa, sb, na * sizeof(nil_move_suits)) == 0;
+            const bool limited_same = ec == ed && nc == nd &&
+                                      std::memcmp(&rc, &rd, sizeof rc) == 0 &&
+                                      std::memcmp(mc, md, nc * sizeof(nil_move)) == 0;
+            const bool no_split_same = ee == NIL_OK && ne == nf && ne >= 1 &&
+                                       std::memcmp(me, mf, ne * sizeof(nil_move)) == 0 &&
+                                       std::memcmp(la, le, sizeof la) == 0 && le[0].cards > 0;
+            check("NULL lines is nil_solve_moves_suits, byte for byte", suits_same, true);
+            check("NULL lines and suits is nil_solve_moves_limited, FAST_LINE and all",
+                  limited_same, true);
+            check("NULL suits fills the same lines", no_split_same, true);
+        }
+
+        // 3. FAST_LINE and FAST_MODE are refused before anything is written,
+        // with the split asked for or not; and a NULL argument writes nothing
+        // to the lines either.
+        {
+            const std::uint32_t refused[] = {NIL_FLAG_FAST_LINE, NIL_FLAG_FAST_MODE,
+                                             NIL_FLAG_FAST_LINE | NIL_FLAG_FAST_MODE};
+            for (int with_suits = 1; with_suits >= 0; --with_suits) {
+                for (std::uint32_t f : refused) {
+                    nil_result r;
+                    nil_move m[NIL_MAX_MOVES];
+                    nil_move_suits s[NIL_MAX_MOVES];
+                    nil_move_line l[NIL_MAX_MOVES];
+                    std::memset(&r, 0xAB, sizeof r);
+                    std::memset(m, 0xAB, sizeof m);
+                    std::memset(s, 0xAB, sizeof s);
+                    std::memset(l, 0xAB, sizeof l);
+                    std::int32_t n = -7;
+                    char e[256] = {0};
+                    const std::int32_t rc = nil_solve_moves_lines(
+                        partner, NIL_SEAT_EAST, "", SEATS_NIL_N, f, nullptr, &r, m,
+                        with_suits ? s : nullptr, l, NIL_MAX_MOVES, &n, e, sizeof e);
+                    bool untouched = n == -7;
+                    const unsigned char* bytes[] = {reinterpret_cast<const unsigned char*>(&r),
+                                                    reinterpret_cast<const unsigned char*>(m),
+                                                    reinterpret_cast<const unsigned char*>(s),
+                                                    reinterpret_cast<const unsigned char*>(l)};
+                    const std::size_t sizes[] = {sizeof r, sizeof m, sizeof s, sizeof l};
+                    for (int k = 0; k < 4; ++k) {
+                        for (std::size_t b = 0; untouched && b < sizes[k]; ++b) {
+                            untouched = bytes[k][b] == 0xAB;
+                        }
+                    }
+                    const std::string name =
+                        std::string(f == NIL_FLAG_FAST_LINE   ? "FAST_LINE"
+                                    : f == NIL_FLAG_FAST_MODE ? "FAST_MODE"
+                                                              : "both fast flags") +
+                        (with_suits ? "" : " (NULL suits)");
+                    check(name + " is NIL_ERR_UNSUPPORTED", static_cast<long long>(rc),
+                          static_cast<long long>(NIL_ERR_UNSUPPORTED));
+                    check(name + " leaves every output untouched", untouched, true);
+                    check(name + " says why", e[0] != '\0', true);
+                }
+            }
+            nil_result r;
+            nil_move_line l[NIL_MAX_MOVES];
+            std::memset(l, 0xAB, sizeof l);
+            std::int32_t n = -7;
+            const std::int32_t rc = nil_solve_moves_lines(partner, NIL_SEAT_EAST, "", SEATS_NIL_N,
+                                                          0, nullptr, &r, nullptr, nullptr, l,
+                                                          NIL_MAX_MOVES, &n, err, sizeof err);
+            bool untouched = n == -7;
+            const unsigned char* bytes = reinterpret_cast<const unsigned char*>(l);
+            for (std::size_t b = 0; untouched && b < sizeof l; ++b) untouched = bytes[b] == 0xAB;
+            check("NULL moves is NIL_ERR_NULL_ARG", static_cast<long long>(rc),
+                  static_cast<long long>(NIL_ERR_NULL_ARG));
+            check("and writes nothing to the lines", untouched, true);
+        }
+
+        // 4. Stopped calls on the 0.3.0 section's 13-card twins deal (seed-1
+        // #30): every walked row carries its whole line, which replays to its
+        // row; every row the stop left unwalked reads cards = 0 with its suit
+        // and rank arrays as the caller left them; and one of the late stops
+        // lands in the line walk, so both kinds of row appear in one answer.
+        {
+            const char* big =
+                "N:AKJT8.2.AKQJT.KJ 72.AQ63.98765.A4 63.KT874.42.T976 Q954.J95.3.Q8532";
+            const std::int32_t twins[4] = {NIL_ROLE_OPPONENT, NIL_ROLE_NIL, NIL_ROLE_OPPONENT,
+                                           NIL_ROLE_NIL};
+            const Start st = start_of(big, NIL_SEAT_SOUTH, false, "");
+            nil_limits lim;
+            std::memset(&lim, 0, sizeof lim);
+            lim.struct_size = sizeof(nil_limits);
+            nil_result full;
+            nil_move fm[NIL_MAX_MOVES];
+            nil_move_suits fs[NIL_MAX_MOVES];
+            nil_move_line fl[NIL_MAX_MOVES];
+            std::int32_t fn = 0;
+            const std::int32_t frc = nil_solve_moves_lines(big, NIL_SEAT_SOUTH, "", twins, 0,
+                                                           nullptr, &full, fm, fs, fl,
+                                                           NIL_MAX_MOVES, &fn, err, sizeof err);
+            check("the 13-card deal finishes unlimited", static_cast<long long>(frc), 0LL);
+            bool full_ok = frc == NIL_OK && fn >= 1;
+            for (std::int32_t i = 0; full_ok && i < fn; ++i) {
+                std::string why;
+                full_ok = line_ok(st, fm[i], &fs[i], fl[i], why);
+                if (!full_ok) std::cout << "    row " << i << ": " << why << "\n";
+            }
+            check("and every one of its rows carries a 52-card line that replays", full_ok,
+                  true);
+            bool walked_ok = true;
+            bool unwalked_ok = true;
+            bool any_stopped = false;
+            bool mixed = false;
+            const std::uint64_t budgets[] = {1, full.nodes * 12 / 16, full.nodes * 13 / 16,
+                                             full.nodes * 14 / 16, full.nodes * 15 / 16};
+            for (std::uint64_t budget : budgets) {
+                lim.max_nodes = budget;
+                nil_result r;
+                nil_move m[NIL_MAX_MOVES];
+                nil_move_suits s[NIL_MAX_MOVES];
+                nil_move_line l[NIL_MAX_MOVES];
+                std::memset(l, 0xAB, sizeof l);
+                std::int32_t n = 0;
+                const std::int32_t rc = nil_solve_moves_lines(big, NIL_SEAT_SOUTH, "", twins, 0,
+                                                              &lim, &r, m, s, l, NIL_MAX_MOVES,
+                                                              &n, err, sizeof err);
+                if (rc != NIL_INCOMPLETE) continue;
+                any_stopped = true;
+                int walked = 0;
+                for (std::int32_t i = 0; i < n; ++i) {
+                    if (m[i].seat_tricks[0] != NIL_TRICKS_UNKNOWN) {
+                        ++walked;
+                        std::string why;
+                        if (!line_ok(st, m[i], &s[i], l[i], why)) {
+                            std::cout << "    budget " << budget << " row " << i << ": " << why
+                                      << "\n";
+                            walked_ok = false;
+                        }
+                        continue;
+                    }
+                    bool kept = l[i].cards == 0;
+                    const unsigned char* arrays =
+                        reinterpret_cast<const unsigned char*>(l[i].suit);
+                    const std::size_t arrays_size = sizeof l[i].suit + sizeof l[i].rank;
+                    for (std::size_t b = 0; kept && b < arrays_size; ++b) {
+                        kept = arrays[b] == 0xAB;
+                    }
+                    unwalked_ok = unwalked_ok && kept;
+                }
+                mixed = mixed || (walked > 0 && walked < n);
+            }
+            check("stopped calls return NIL_INCOMPLETE", any_stopped, true);
+            check("a walked row's line is whole and replays to its row", walked_ok, true);
+            check("an unwalked row reads cards = 0, its arrays untouched", unwalked_ok, true);
             check("a stop in the line walk leaves walked and unwalked rows", mixed, true);
         }
     }

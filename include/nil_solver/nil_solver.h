@@ -602,7 +602,8 @@ extern "C" {
  * faster in total but visited MORE nodes on 67 of the deals.
  *
  * nil_solve_moves_suits refuses this flag (NIL_ERR_UNSUPPORTED): its per-suit
- * split is read off the very line this flag skips. */
+ * split is read off the very line this flag skips.  So does
+ * nil_solve_moves_lines (0.4.0), which returns that line. */
 #define NIL_FLAG_FAST_LINE 0x1000u
 
 /* What the trick counts read under NIL_FLAG_FAST_MODE.  Deliberately not zero:
@@ -1036,6 +1037,55 @@ NIL_SOLVER_API int32_t NIL_SOLVER_CALL nil_solve_moves_suits(
     nil_move_suits* suits, int32_t moves_cap, int32_t* moves_len, char* err_buf,
     int32_t err_len);
 
+/* ---- 0.4.0 (Oct 2026): EACH ROW'S LINE --------------------------------------
+ *
+ * The line a row's counts were read off: the plays the call walks and replays
+ * for that card to fill seat_tricks (and the split above), the row's own card
+ * first, then every card to the end of the hand.  The cards already on the
+ * trick in progress are NOT in it, so `cards` is the number of cards left in
+ * the four hands.  The same layout as spades-dds's per-card line (suit and
+ * rank arrays in play order), so one reader serves both.
+ *
+ * No seats are stored: the row's card is played by the seat to move, each
+ * next card by the next seat clockwise, and the winner of each completed trick
+ * (highest spade, else highest card of the suit led) leads the next.
+ *
+ * The line is ONE optimal continuation, the one whose seat_tricks sit beside
+ * it; like seat_tricks it pins the pairs' totals and not every play.  A row
+ * also stands for its equal_ranks: for an equal card, swap the row's card and
+ * that card wherever either appears in the line.  Both are in one hand and
+ * every card still out is above both or below both, so the swapped line is
+ * legal and its tricks fall to the same seats.
+ *
+ * Also a separate parallel array rather than more fields on nil_move, for the
+ * reason given above nil_move_suits. */
+typedef struct nil_move_line {
+    int32_t cards;    /* cards in the line: the cards left in the four hands,
+                       * or 0 when the row's line wasn't walked */
+    int32_t suit[52]; /* 0 = spades .. 3 = clubs, in play order, the row's card
+                       * first */
+    int32_t rank[52]; /* 2..14 */
+} nil_move_line;
+
+/* nil_solve_moves_suits plus one nil_move_line per row, lines[i] for moves[i].
+ * No extra search: the line is the one each row already walks and replays.
+ * Rows, the nil_result and the split are byte for byte nil_solve_moves_suits's.
+ *
+ * NIL_FLAG_FAST_LINE and NIL_FLAG_FAST_MODE walk no line, so with `lines`
+ * non-NULL they are refused with NIL_ERR_UNSUPPORTED before anything is
+ * written.  On NIL_INCOMPLETE, a row whose line was not walked reads cards = 0
+ * (its seat_tricks are NIL_TRICKS_UNKNOWN) and its suit and rank arrays are
+ * left as the caller had them; a walked row's line is complete.
+ *
+ * suits may be NULL (the call without the split).  lines may be NULL, in which
+ * case the call is nil_solve_moves_suits, flags and all.  Each non-NULL array
+ * holds moves_cap entries, like `moves`. */
+NIL_SOLVER_API int32_t NIL_SOLVER_CALL nil_solve_moves_lines(
+    const char* pbn, int32_t leader, const char* current_trick, const int32_t* seats,
+    uint32_t flags, const nil_limits* limits, nil_result* out, nil_move* moves,
+    nil_move_suits* suits, nil_move_line* lines, int32_t moves_cap, int32_t* moves_len,
+    char* err_buf, int32_t err_len);
+
 /* ---- PHASE 3 (Oct 2026, 0.2.0): BOUNDED FALLBACK QUESTIONS ----------------
  *
  * Two entry points for a caller whose per-card call came back NIL_INCOMPLETE
@@ -1233,13 +1283,15 @@ NIL_SOLVER_API void NIL_SOLVER_CALL nil_set_table_size(uint32_t megabytes);
  * from a thread that is done solving, or before unloading the library. */
 NIL_SOLVER_API void NIL_SOLVER_CALL nil_release_table(void);
 
-/* Static version string, e.g. "0.3.0".
+/* Static version string, e.g. "0.4.0".
  *
  *   0.1.0   through the C0 limits (Oct 2026).
  *   0.2.0   phase 3: fast mode honours nil_limits; nil_count_set_limited and
  *           nil_solve_outcome_limited.  No existing export changed shape.
  *   0.3.0   nil_solve_moves_suits and nil_move_suits (tricks by suit led).
- *           No existing export changed shape. */
+ *           No existing export changed shape.
+ *   0.4.0   nil_solve_moves_lines and nil_move_line (each row's walked line).
+ *           No existing export or struct changed shape. */
 NIL_SOLVER_API const char* NIL_SOLVER_CALL nil_solver_version(void);
 
 #ifdef __cplusplus

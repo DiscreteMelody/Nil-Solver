@@ -32,6 +32,9 @@
 //
 //   * NilMoveSuits (0.3.0): two int32[16], the C [4][4] arrays flattened
 //     seat-major (seat * 4 + suit) -- 128 bytes, no padding.
+//
+//   * NilMoveLine (0.4.0): one int32 then two int32[52], in that order --
+//     420 bytes, no padding.
 
 using System;
 using System.Runtime.InteropServices;
@@ -732,6 +735,37 @@ namespace NilSolver
     }
 
     /// <summary>
+    /// Mirrors the C <c>nil_move_line</c> struct (0.4.0): the line one row's
+    /// counts were read off, for <see cref="NilSolverNative.nil_solve_moves_lines"/>.
+    /// <see cref="Suit"/>[k] and <see cref="Rank"/>[k] are the k-th play, the
+    /// row's card first, to the end of the hand; the cards already on the trick
+    /// in progress are not in it. Suits 0 = spades, 1 = hearts, 2 = diamonds,
+    /// 3 = clubs; ranks 2..14. 420 bytes.
+    /// <para>
+    /// ByValArray, like <see cref="NilMoveSuits"/>: copied by the marshaller, an
+    /// analysis call rather than the hot path.
+    /// </para>
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct NilMoveLine
+    {
+        /// <summary>
+        /// Plays in the line: the cards left in the four hands, or 0 when the
+        /// row's line was not walked (a stopped call), in which case
+        /// <see cref="Suit"/> and <see cref="Rank"/> say nothing.
+        /// </summary>
+        public int Cards;
+
+        /// <summary>The suit of each play, in play order.</summary>
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 52)]
+        public int[] Suit;
+
+        /// <summary>The rank of each play, 2..14.</summary>
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 52)]
+        public int[] Rank;
+    }
+
+    /// <summary>
     /// The exported functions, exactly as declared. Prefer the wrapper in
     /// NilSolver.cs unless you have a reason not to.
     /// </summary>
@@ -843,6 +877,32 @@ namespace NilSolver
             out NilResult result,
             [Out] NilMove[] moves,
             [Out] NilMoveSuits[] suits,
+            int movesCap,
+            out int movesLen,
+            StringBuilder errBuf,
+            int errLen);
+
+        /// <summary>
+        /// <see cref="nil_solve_moves_suits"/> plus one
+        /// <see cref="NilMoveLine"/> per row, lines[i] for moves[i] (0.4.0): the
+        /// line each row's counts were read off. <paramref name="suits"/> may be
+        /// null; null <paramref name="lines"/> is <see cref="nil_solve_moves_suits"/>.
+        /// With lines, <see cref="NilFlags.FastLine"/> and
+        /// <see cref="NilFlags.FastMode"/> are refused with
+        /// <see cref="NilStatus.Unsupported"/>: they walk no line.
+        /// </summary>
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Ansi)]
+        public static extern int nil_solve_moves_lines(
+            [MarshalAs(UnmanagedType.LPStr)] string pbn,
+            int leader,
+            [MarshalAs(UnmanagedType.LPStr)] string currentTrick,
+            [In] int[] seats,
+            uint flags,
+            ref NilLimits limits,
+            out NilResult result,
+            [Out] NilMove[] moves,
+            [Out] NilMoveSuits[]? suits,
+            [Out] NilMoveLine[]? lines,
             int movesCap,
             out int movesLen,
             StringBuilder errBuf,

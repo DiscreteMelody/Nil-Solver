@@ -310,19 +310,30 @@ NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve_moves(
 
 namespace {
 
-// The body of nil_solve_moves_limited and nil_solve_moves_suits, so the two
-// can never drift apart.  `suits` is optional: NULL is nil_solve_moves_limited.
+// The body of nil_solve_moves_limited, nil_solve_moves_suits and
+// nil_solve_moves_lines, so the three can never drift apart.  `suits` and
+// `lines` are optional: both NULL is nil_solve_moves_limited, `lines` NULL is
+// nil_solve_moves_suits.
 std::int32_t solve_moves_impl(const char* pbn, std::int32_t leader, const char* current_trick,
                               const std::int32_t* seats, std::uint32_t flags,
                               const nil_limits* limits, nil_result* out, nil_move* moves,
-                              nil_move_suits* suits, std::int32_t moves_cap,
-                              std::int32_t* moves_len, char* err_buf, std::int32_t err_len) {
+                              nil_move_suits* suits, nil_move_line* lines,
+                              std::int32_t moves_cap, std::int32_t* moves_len, char* err_buf,
+                              std::int32_t err_len) {
     if (!pbn || !out || !moves || !moves_len) {
         copy_err(err_buf, err_len, "null argument");
         return NIL_ERR_NULL_ARG;
     }
     // Refused before anything is written: both flags skip the line the split
-    // is counted on, so honouring them would hand back a table of -1s.
+    // is counted on, so honouring them would hand back a table of -1s -- and,
+    // for `lines`, rows with no line at all.
+    if (lines && (flags & (NIL_FLAG_FAST_LINE | NIL_FLAG_FAST_MODE))) {
+        copy_err(err_buf, err_len,
+                 "each card's line is the line the call walks for it, and "
+                 "NIL_FLAG_FAST_LINE and NIL_FLAG_FAST_MODE walk none. Drop them, or call "
+                 "nil_solve_moves_limited if the rows are all you need.");
+        return NIL_ERR_UNSUPPORTED;
+    }
     if (suits && (flags & (NIL_FLAG_FAST_LINE | NIL_FLAG_FAST_MODE))) {
         copy_err(err_buf, err_len,
                  "tricks by suit are counted on each card's walked line, and "
@@ -412,6 +423,19 @@ std::int32_t solve_moves_impl(const char* pbn, std::int32_t leader, const char* 
                 }
             }
         }
+        if (lines) {
+            // The row's walked line, card for card; a row without one (the
+            // stopped call's unwalked rows) says so with 0 and leaves the
+            // arrays alone.  Never longer than 52: replay_pv checked that each
+            // card was in its player's hand.
+            nil_move_line& dst_line = lines[i];
+            const std::size_t n = src.line.size() < 52 ? src.line.size() : 52;
+            dst_line.cards = static_cast<std::int32_t>(n);
+            for (std::size_t k = 0; k < n; ++k) {
+                dst_line.suit[k] = nil::card_suit(src.line[k].card);
+                dst_line.rank[k] = nil::card_rank(src.line[k].card);
+            }
+        }
     }
     return sol.complete ? NIL_OK : NIL_INCOMPLETE;
 }
@@ -425,7 +449,7 @@ NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve_moves_limited(
     std::uint32_t flags, const nil_limits* limits, nil_result* out, nil_move* moves,
     std::int32_t moves_cap, std::int32_t* moves_len, char* err_buf, std::int32_t err_len) {
     return solve_moves_impl(pbn, leader, current_trick, seats, flags, limits, out, moves, nullptr,
-                            moves_cap, moves_len, err_buf, err_len);
+                            nullptr, moves_cap, moves_len, err_buf, err_len);
 }
 
 NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve_moves_suits(
@@ -434,7 +458,16 @@ NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve_moves_suits(
     nil_move_suits* suits, std::int32_t moves_cap, std::int32_t* moves_len, char* err_buf,
     std::int32_t err_len) {
     return solve_moves_impl(pbn, leader, current_trick, seats, flags, limits, out, moves, suits,
-                            moves_cap, moves_len, err_buf, err_len);
+                            nullptr, moves_cap, moves_len, err_buf, err_len);
+}
+
+NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve_moves_lines(
+    const char* pbn, std::int32_t leader, const char* current_trick, const std::int32_t* seats,
+    std::uint32_t flags, const nil_limits* limits, nil_result* out, nil_move* moves,
+    nil_move_suits* suits, nil_move_line* lines, std::int32_t moves_cap, std::int32_t* moves_len,
+    char* err_buf, std::int32_t err_len) {
+    return solve_moves_impl(pbn, leader, current_trick, seats, flags, limits, out, moves, suits,
+                            lines, moves_cap, moves_len, err_buf, err_len);
 }
 
 // ---- phase 3 (Oct 2026): the bounded fallback questions --------------------
@@ -567,6 +600,6 @@ NIL_SOLVER_API void NIL_SOLVER_CALL nil_release_table(void) {
     nil::release_transposition_table();
 }
 
-NIL_SOLVER_API const char* NIL_SOLVER_CALL nil_solver_version(void) { return "0.3.0"; }
+NIL_SOLVER_API const char* NIL_SOLVER_CALL nil_solver_version(void) { return "0.4.0"; }
 
 }  // extern "C"

@@ -49,6 +49,20 @@ namespace NilSolver
     }
 
     /// <summary>
+    /// One play in a <see cref="NilMoveScore.Line"/> (0.4.0): the card, on the
+    /// same scales as <see cref="NilMoveScore"/>. Who played it follows from the
+    /// trick rules, so it is not stored.
+    /// </summary>
+    /// <param name="Suit">0 = spades, 1 = hearts, 2 = diamonds, 3 = clubs.</param>
+    /// <param name="Rank">2..14, ace high.</param>
+    public readonly record struct NilPlay(int Suit, int Rank)
+    {
+        /// <summary>"KS", "TH", "2C", as <see cref="NilMoveScore.ToString"/>.</summary>
+        public override string ToString() =>
+            $"{"0123456789TJQKA"[Rank]}{"SHDC"[Suit]}";
+    }
+
+    /// <summary>
     /// One legal card at the root, and what playing it leads to.
     ///
     /// This is the DDS-shaped answer -- not "what should I play" but "here is
@@ -180,6 +194,17 @@ namespace NilSolver
         /// </summary>
         public IReadOnlyList<IReadOnlyList<int>>? SuitsRuffed { get; init; }
 
+        /// <summary>
+        /// The line this row's counts were read off (0.4.0): this card first,
+        /// then every play to the end of the hand, without the cards already on
+        /// the trick in progress. The first play is by the seat to move, play goes
+        /// clockwise, and each trick's winner leads the next. One optimal line,
+        /// the one <see cref="SeatTricks"/> describes. Null unless the row came
+        /// from <see cref="Nil.SolveMovesWithLines"/>, and on a row a stopped call
+        /// never walked.
+        /// </summary>
+        public IReadOnlyList<NilPlay>? Line { get; init; }
+
         /// <summary>Every rank this row stands for, this card's own included, ascending.</summary>
         public IEnumerable<int> Expand() => new[] { Rank }.Concat(EqualRanks).OrderBy(r => r);
 
@@ -191,6 +216,12 @@ namespace NilSolver
         /// materialised, and leaving the mask on would let a caller expand the
         /// same class a second time. <see cref="NilSolution.Moves"/> is where the
         /// grouping still lives.
+        ///
+        /// <see cref="Line"/> comes along with this card and the row's card
+        /// swapped wherever either appears, so it starts with this card. Both are
+        /// in one hand and every card still out is above both or below both
+        /// (that is what makes them one move), so the swapped line is legal and
+        /// its tricks fall to the same seats.
         /// </summary>
         public NilMoveScore WithRank(int rank) => new NilMoveScore
         {
@@ -206,8 +237,24 @@ namespace NilSolver
             SeatStatus = SeatStatus,
             SeatTricks = SeatTricks,
             SuitsWon = SuitsWon,
-            SuitsRuffed = SuitsRuffed
+            SuitsRuffed = SuitsRuffed,
+            Line = Line == null || rank == Rank ? Line : SwapInLine(Line, Suit, Rank, rank)
         };
+
+        // The row's line for an equal card: the two cards traded places.
+        private static IReadOnlyList<NilPlay> SwapInLine(IReadOnlyList<NilPlay> line, int suit,
+                                                         int rowRank, int rank)
+        {
+            var swapped = new NilPlay[line.Count];
+            for (int k = 0; k < line.Count; k++)
+            {
+                NilPlay p = line[k];
+                if (p.Suit == suit && p.Rank == rowRank) p = new NilPlay(suit, rank);
+                else if (p.Suit == suit && p.Rank == rank) p = new NilPlay(suit, rowRank);
+                swapped[k] = p;
+            }
+            return swapped;
+        }
 
         /// <summary>"K♠", "T♥", "2♣" — for display. <see cref="ToString"/> is the
         /// ASCII form, which is the better one for logs.</summary>
@@ -275,6 +322,34 @@ namespace NilSolver
                 SeatTricks = row.SeatTricks,
                 SuitsWon = BySeat(s.Won),
                 SuitsRuffed = BySeat(s.Ruffed)
+            };
+        }
+
+        internal static NilMoveScore FromNative(in NilMove m, in NilMoveSuits s, in NilMoveLine l)
+        {
+            NilMoveScore row = FromNative(m, s);
+            NilPlay[]? line = null;
+            if (l.Cards > 0)
+            {
+                line = new NilPlay[l.Cards];
+                for (int k = 0; k < l.Cards; k++) line[k] = new NilPlay(l.Suit[k], l.Rank[k]);
+            }
+            return new NilMoveScore
+            {
+                Suit = row.Suit,
+                Rank = row.Rank,
+                EqualRanks = row.EqualRanks,
+                NilsSet = row.NilsSet,
+                NilTricks = row.NilTricks,
+                NilSideTricks = row.NilSideTricks,
+                OpponentTricks = row.OpponentTricks,
+                IsBest = row.IsBest,
+                NilsSetMask = row.NilsSetMask,
+                SeatStatus = row.SeatStatus,
+                SeatTricks = row.SeatTricks,
+                SuitsWon = row.SuitsWon,
+                SuitsRuffed = row.SuitsRuffed,
+                Line = line
             };
         }
 
@@ -667,6 +742,50 @@ namespace NilSolver
 
             var moves = new List<NilMoveScore>(count);
             for (int i = 0; i < count; i++) moves.Add(NilMoveScore.FromNative(rows[i], suits[i]));
+
+            return NilSolution.FromNative(native, string.Empty, moves, (NilStatus)rc);
+        }
+
+        /// <summary>
+        /// <see cref="SolveMovesWithSuits"/> with each row's
+        /// <see cref="NilMoveScore.Line"/> filled in too (0.4.0): the plays its
+        /// counts were read off, the card first, to the end of the hand. No extra
+        /// search; the line is the one each row already walks. Every card in
+        /// <see cref="NilSolution.AllMoves"/> gets a line that starts with it (see
+        /// <see cref="NilMoveScore.WithRank"/>).
+        /// <para>
+        /// <see cref="NilStatus.Unsupported"/> under <see cref="NilFlags.FastLine"/>
+        /// or <see cref="NilFlags.FastMode"/>, which walk no line. With
+        /// <paramref name="limits"/> a stopped call comes back as
+        /// <see cref="NilStatus.Incomplete"/> with its rows; a row it never walked
+        /// has a null <see cref="NilMoveScore.Line"/>.
+        /// </para>
+        /// </summary>
+        public static NilSolution SolveMovesWithLines(string pbn, NilSeat leader, string? currentTrick,
+                                                      NilSeatRoles roles, NilFlags flags = NilFlags.None,
+                                                      NilLimits? limits = null)
+        {
+            if (pbn == null) throw new ArgumentNullException(nameof(pbn));
+
+            var err = new StringBuilder(ErrBufferBytes);
+            var rows = new NilMove[NilSolverNative.MaxMoves];
+            var suits = new NilMoveSuits[NilSolverNative.MaxMoves];
+            var lines = new NilMoveLine[NilSolverNative.MaxMoves];
+            NilLimits budget = limits ?? default;
+            budget.StructSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<NilLimits>();
+
+            int rc = NilSolverNative.nil_solve_moves_lines(pbn, (int)leader, currentTrick ?? string.Empty,
+                                                           roles.ToPbnOrder(pbn), (uint)flags,
+                                                           ref budget, out NilResult native,
+                                                           rows, suits, lines, rows.Length,
+                                                           out int count, err, err.Capacity);
+
+            if (rc != (int)NilStatus.Ok && rc != (int)NilStatus.Incomplete)
+                return NilSolution.Failure((NilStatus)rc, err.ToString());
+
+            var moves = new List<NilMoveScore>(count);
+            for (int i = 0; i < count; i++)
+                moves.Add(NilMoveScore.FromNative(rows[i], suits[i], lines[i]));
 
             return NilSolution.FromNative(native, string.Empty, moves, (NilStatus)rc);
         }

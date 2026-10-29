@@ -330,6 +330,26 @@ foreach (var m in r.AllMoves)
     Console.WriteLine($"{m}: West ruffs {m.SuitsRuffed![(int)NilSeat.West][1]} heart(s)");
 ```
 
+### Each card's line (0.4.0)
+
+`Nil.SolveMovesWithLines` is `SolveMovesWithSuits` plus, on every row, `Line`:
+the plays the row's counts were read off, as `NilPlay(Suit, Rank)` values, the
+row's card first and then every card to the end of the hand. The cards already on
+the trick in progress are not in it, so `Line.Count` is the cards left in the four
+hands. Play goes clockwise from the seat to move and each trick's winner leads, so
+no seats are stored. Like `SeatTricks`, it is one optimal line. No extra search;
+`FastLine` and `FastMode` are `Unsupported`. In `AllMoves`, an equal card's line
+is its row's with the two cards swapped wherever either appears (`WithRank`), so
+every card's line starts with that card. A stopped call (`NilLimits`) is
+`Incomplete`, and rows it never walked have a null `Line`. Other calls leave
+`Line` null. `NilMoveLine` is the raw struct (420 bytes).
+
+```csharp
+var r = Nil.SolveMovesWithLines(pbn, leader, trick, roles, NilFlags.SpadesBroken);
+foreach (var m in r.AllMoves)
+    Console.WriteLine($"{m}: {string.Join(" ", m.Line!)}");
+```
+
 ## The other flags
 
 | flag | when |

@@ -191,6 +191,9 @@ void usage(const char* argv0) {
         << "                          one line per card giving each seat's\n"
         << "                          outcome (0 nil makes, 1 nil set, 2 no nil)\n"
         << "                          and tricks, plus the pair totals\n"
+        << "  --lines                 --moves: also print each card's line, the\n"
+        << "                          plays its tricks were counted on, to the end\n"
+        << "                          of the hand (--compact: move_line= keys)\n"
         << "  --max-nodes <n>         stop after about n nodes and report what had\n"
         << "                          been proven (0 = no limit).  Limits --moves\n"
         << "                          (C0), --mode fast and --outcome (phase 3);\n"
@@ -294,6 +297,7 @@ int main(int argc, char** argv) {
     std::string require_set_text;
     bool pinned_tricks = false;
     bool list_moves = false;
+    bool list_lines = false;  // --lines (0.4.0): each --moves row's line
     bool tt_stats = false;
     bool limited = false;  // --max-nodes / --max-ms (C0)
     bool outcome = false;  // --outcome (phase 3)
@@ -518,6 +522,8 @@ int main(int argc, char** argv) {
             tt_stats = true;
         } else if (arg == "--moves") {
             list_moves = true;
+        } else if (arg == "--lines") {
+            list_lines = true;
         } else if (arg == "--max-nodes" || arg == "--max-ms") {
             std::string n;
             if (!need_value(argc, argv, i, arg.c_str(), n)) return 2;
@@ -552,6 +558,10 @@ int main(int argc, char** argv) {
     if (limited && !list_moves && !outcome && opts.mode != nil::MODE_FAST) {
         std::cerr << "error: --max-nodes and --max-ms limit --moves, --mode fast and "
                      "--outcome; a full solve without --moves takes no limit\n";
+        return 2;
+    }
+    if (list_lines && !list_moves) {
+        std::cerr << "error: --lines prints each --moves row's line; add --moves\n";
         return 2;
     }
     if (outcome && (list_moves || !conjunction_text.empty())) {
@@ -897,6 +907,20 @@ int main(int argc, char** argv) {
             }
             std::cout << "\n";
         }
+        // 0.4.0, and only with --lines: one `move_line=` line per card, same
+        // order again: the card, then its line as a comma list of cards in play
+        // order, the card itself first, to the end of the hand (the cards
+        // already on the trick are not in it).  Empty after the colon where no
+        // line was walked, as `move_seats=` reads -1 there.
+        if (list_lines) {
+            for (const nil::MoveScore& m : scored) {
+                std::cout << "move_line=" << nil::card_to_string(m.card) << ':';
+                for (std::size_t k = 0; k < m.line.size(); ++k) {
+                    std::cout << (k ? "," : "") << nil::card_to_string(m.line[k].card);
+                }
+                std::cout << "\n";
+            }
+        }
         // C0, and only when a limit was asked for: whether the call finished,
         // and per card how much of its row is proven (0 all, 1 value,
         // 2 outcome, 3 nothing; see nil::RowKnown).
@@ -988,6 +1012,24 @@ int main(int argc, char** argv) {
                     std::cout << cell;
                 }
                 std::cout << "\n";
+            }
+            // 0.4.0, with --lines: each card's line, the plays the counts above
+            // were read off, the card first and a wider gap after each trick.
+            if (list_lines) {
+                std::cout << "\nLines (each card's, to the end of the hand; - where no line was "
+                             "walked):\n";
+                for (const nil::MoveScore& m : scored) {
+                    std::cout << "  " << (m.is_best ? '*' : ' ') << ' '
+                              << nil::card_to_string(m.card) << " ";
+                    if (m.line.empty()) std::cout << " -";
+                    int on_trick = pos.trick_len;
+                    for (const nil::Play& p : m.line) {
+                        std::cout << (on_trick == 0 ? "  " : " ")
+                                  << nil::card_to_string(p.card);
+                        on_trick = (on_trick + 1) & 3;
+                    }
+                    std::cout << "\n";
+                }
             }
         }
         if (tt_stats) {
