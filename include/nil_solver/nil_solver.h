@@ -928,12 +928,22 @@ NIL_SOLVER_API int32_t NIL_SOLVER_CALL nil_solve_moves(const char* pbn, int32_t 
  *   max_nodes    node budget, counted as nil_result.nodes counts them.
  *                0 = none.  Deterministic for a given thread history, which
  *                makes it the one to test with; max_ms is the one to deploy.
+ *                With NIL_LIMIT_FRESH_TABLES (0.5.0) deterministic for ANY
+ *                thread history, and so reproducible across calls, threads
+ *                and machines whatever their load.
  *   cancel       optional.  When non-NULL the library reads the word it points
  *                at during the search and stops once it is non-zero, so another
  *                thread can cancel the call (a deadline it tracks itself, a
  *                user leaving the table).  The caller owns the word, sets it
  *                with an ordinary or volatile store, and keeps it alive until
  *                the call returns.
+ *   options      0.5.0.  NIL_LIMIT_* bits, below; 0 for none.  Read only when
+ *                struct_size covers it, so a caller built against an older
+ *                header gets none.  A bit this build does not know is refused
+ *                with NIL_ERR_UNSUPPORTED.  A LIBRARY OLDER THAN 0.5.0 DOES NOT
+ *                READ THIS FIELD AT ALL -- it reads the fields it knows and
+ *                ignores the rest of a larger struct_size -- so a caller that
+ *                relies on an option checks nil_solver_version() first.
  *
  * Limits are tested every 65,536 nodes (about 9 ms on a 13-card hand), so a
  * call can run past its budget by up to one interval per internal search
@@ -952,7 +962,52 @@ typedef struct nil_limits {
     uint32_t max_ms;
     uint64_t max_nodes;
     const volatile int32_t* cancel;
+    uint32_t options; /* 0.5.0: NIL_LIMIT_*; sizeof grows from 24 to 32 on 64-bit */
 } nil_limits;
+
+/* Options for nil_limits::options (0.5.0). */
+#define NIL_LIMIT_NONE 0x0u
+
+/* FRESH TABLES: answer exactly as a brand-new thread would -- every row, the
+ * nil_result and the node count -- whatever this thread solved before.
+ *
+ * Why: max_nodes is deterministic for a given THREAD HISTORY, not across
+ * histories.  The answers of a finished call never depend on what the thread
+ * solved before, but its node count does, because the built-in double-dummy
+ * engine keeps the facts it proves in a per-thread table across calls (they
+ * are true in every deal, so reading them back is sound and usually faster).
+ * A call that a node budget stops therefore stops at a different place after
+ * a different history, and may have proven different rows.  Measured on 0.4.0
+ * (Nov 2026, 58 cut-off rows of 30 nil positions): repeated on a thread that
+ * had solved the same deal before, 13 rows' answers and 43 node counts
+ * differed from a brand-new thread's; after unrelated deals, no answers but 18
+ * node counts.  nil_release_table does not help: it frees the main table,
+ * which is already fresh for every call.  A caller that needs a cut-off call
+ * to be REPRODUCIBLE -- the same position, the same budget, the same answer
+ * on any thread, after anything -- sets this.
+ *
+ * What it does: for the length of the call, the engine treats every fact
+ * stored before the call as absent, both when reading and when choosing where
+ * to store.  The facts stay in the table, and calls without the option go on
+ * reading them (and the ones this call stored) as before.  The main
+ * transposition table needs nothing: every solve already reads only its own
+ * entries.  Nothing else a solve reads outlives it; the table size set by
+ * nil_set_table_size is a setting and is kept.
+ *
+ * What it costs: nothing per call (one more compare per engine table probe),
+ * plus a clear of the engine's 64 MiB table after its one-byte age counter
+ * wraps (about every 190 engine solves on a thread that uses the option, a few
+ * milliseconds each).  A call with the option may search more nodes than the
+ * same call without it would on a warm thread -- exactly the nodes a brand-new
+ * thread searches.  Unlike solving on a new thread, it does not re-fault the
+ * 512 MiB main table.
+ *
+ * Honoured by every entry point that takes a nil_limits: nil_solve_moves_
+ * limited, nil_solve_moves_suits, nil_solve_moves_lines, nil_count_set_limited
+ * and nil_solve_outcome_limited, with or without a budget (every limit zero
+ * and this bit set is an unlimited call that still ignores the thread's
+ * history -- only its node count can tell). */
+#define NIL_LIMIT_FRESH_TABLES 0x1u
 
 /* nil_solve_moves with a budget.  With `limits` NULL, or every limit zero, it is
  * nil_solve_moves: same rows, same line, same node count.
@@ -1283,7 +1338,7 @@ NIL_SOLVER_API void NIL_SOLVER_CALL nil_set_table_size(uint32_t megabytes);
  * from a thread that is done solving, or before unloading the library. */
 NIL_SOLVER_API void NIL_SOLVER_CALL nil_release_table(void);
 
-/* Static version string, e.g. "0.4.0".
+/* Static version string, e.g. "0.5.0".
  *
  *   0.1.0   through the C0 limits (Oct 2026).
  *   0.2.0   phase 3: fast mode honours nil_limits; nil_count_set_limited and
@@ -1291,7 +1346,12 @@ NIL_SOLVER_API void NIL_SOLVER_CALL nil_release_table(void);
  *   0.3.0   nil_solve_moves_suits and nil_move_suits (tricks by suit led).
  *           No existing export changed shape.
  *   0.4.0   nil_solve_moves_lines and nil_move_line (each row's walked line).
- *           No existing export or struct changed shape. */
+ *           No existing export or struct changed shape.
+ *   0.5.0   nil_limits grows an `options` word (struct_size 24 -> 32 on
+ *           64-bit; the old size is still read as before) with
+ *           NIL_LIMIT_FRESH_TABLES: a call that answers as on a brand-new
+ *           thread.  No export changed shape.  An older library ignores the
+ *           field, so check this string before relying on it. */
 NIL_SOLVER_API const char* NIL_SOLVER_CALL nil_solver_version(void);
 
 #ifdef __cplusplus

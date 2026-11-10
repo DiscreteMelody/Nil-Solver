@@ -37,6 +37,15 @@
 // objective or the window, so the table is never invalidated between solves.
 // It is thread_local, like the main table.
 //
+// WHICH IS WHY A CUT-OFF SOLVE DEPENDS ON THE THREAD'S HISTORY.  The answers
+// never do: a fact is true in every deal.  But a fact an earlier solve left
+// behind settles a node this solve would otherwise have searched, so the node
+// count moves, and a call stopped by max_nodes stops at a different place and
+// may have proven different rows.  Measured (0.4.0, Nov 2026): a cut-off solve
+// repeated on a thread that had solved the same deal before gave a different
+// answer on 13 of 58 rows and a different node count on 43.  A call made with
+// NIL_LIMIT_FRESH_TABLES (0.5.0) reads none of it: see begin_isolated().
+//
 // RULES
 // -----
 // The engine uses legal_moves / spades_broken_after / beats from nil/rules.hpp,
@@ -135,11 +144,54 @@ public:
     // but is the first thing replaced.  See the note on Entry::age.
     void new_solve(bool age) {
         age_ = age;
-        if (++epoch_ == 0) epoch_ = 1;
+        // Inside an isolated call the epoch never wraps: begin_isolated() left
+        // ISOLATED_HEADROOM epochs above it, far more than one call's solves,
+        // and a wrap there would bring back what the call must not see.  Should
+        // a call ever run more, its remaining solves share the last epoch --
+        // the aging of their own facts then differs from a new thread's (node
+        // counts), never what they may read (answers).
+        if (isolated_ > 0) {
+            if (epoch_ < 0xFF) ++epoch_;
+        } else if (++epoch_ == 0) {
+            epoch_ = 1;
+            wrapped_ = true;
+        }
         // DDS resets its best moves for every board, and so does this: a lead
         // that cut in another deal is no better a guess than none.
         for (CardId& k : lead_killer_) k = NO_CARD;
     }
+
+    // FRESH TABLES (NIL_LIMIT_FRESH_TABLES, 0.5.0).  Between begin_isolated()
+    // and the matching end_isolated() -- one C ABI call -- the engine behaves
+    // exactly as a brand-new thread's would: nothing stored before it is read,
+    // and where to store is decided as though the table held nothing else, so
+    // the node count and every answer of a node-limited call are the ones a
+    // brand-new thread gives.  The call's own solves still share their facts,
+    // as they do on a brand-new thread.
+    //
+    // HOW, AT NO COST PER CALL.  Every fact and header carries the epoch that
+    // last stored it (Entry::pad[0], Header::pad).  The call's first epoch is
+    // `floor_`; anything older is invisible to a lookup and counts as an empty
+    // slot when choosing where to store.  Outside an isolated call `floor_` is
+    // 0 and every entry is visible, so nothing changes for other calls -- which
+    // also see, afterwards, what the isolated call stored.
+    //
+    // The epoch is one byte and wraps after 255 solves, after which an old fact
+    // could carry the current epoch.  So the table is cleared (a 64 MiB fill)
+    // when an isolated call begins after a wrap, or too close to one to fit the
+    // call's solves: at most once per ~190 solves.  After the clear the table
+    // holds only epochs below `floor_`.
+    //
+    // Nested calls are one scope: the outermost begin sets the floor.
+    void begin_isolated();
+    void end_isolated() {
+        if (isolated_ > 0 && --isolated_ == 0) floor_ = 0;
+    }
+    bool isolated() const { return isolated_ > 0; }
+
+    // Epochs an isolated call may use before it would wrap (see new_solve).
+    // One C ABI call runs a handful of solves (one per search context).
+    static constexpr int ISOLATED_HEADROOM = 64;
     const DDStats& stats() const { return stats_; }
     void reset_stats() { stats_ = DDStats(); }
     DDStats& mutable_stats() { return stats_; }
@@ -253,6 +305,13 @@ private:
     std::uint8_t epoch_ = 1;  // the current solve, for aging; never 0
     bool age_ = true;
     bool stale(std::uint8_t e) const { return age_ && e != epoch_; }
+    // FRESH TABLES (begin_isolated): the first epoch an isolated call may see
+    // (0 outside one: everything visible), how deep the isolated scopes are,
+    // and whether the epoch has wrapped since the table was last cleared.
+    std::uint8_t floor_ = 0;
+    int isolated_ = 0;
+    bool wrapped_ = false;
+    bool visible(std::uint8_t e) const { return e >= floor_; }
     DDStats stats_;
 };
 

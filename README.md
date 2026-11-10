@@ -451,6 +451,28 @@ plain call. The cases that cost anything are the ones the plain call answered by
 proof without looking at a card: there the position is free and the list is not,
 1 node against 79.
 
+### Reproducible cut-offs: `NIL_LIMIT_FRESH_TABLES` (0.5.0)
+
+A finished call's answer never depends on what the thread solved before; a
+call stopped by `max_nodes` can. The built-in double-dummy engine keeps the
+facts it proves in a per-thread table across calls (they hold in every deal),
+so after a different history the same call spends a different number of nodes
+and stops somewhere else. Measured on 0.4.0: a cut-off call repeated on a
+thread that had solved the same deal before proved different rows on 13 of 58
+and a different node count on 43; `nil_release_table` does not help (it frees
+the main table, which is already fresh for every call).
+
+0.5.0 gives `nil_limits` an `options` word (`struct_size` 24 -> 32 bytes on
+64-bit; a 24-byte struct is still read as before). With
+`NIL_LIMIT_FRESH_TABLES` set, the call answers exactly as a brand-new thread
+would -- every row, the `nil_result` and the node count -- on any thread, after
+anything. The engine treats every fact stored before the call as absent (an
+age check, no clearing), so it costs nothing per call beyond an occasional
+clear of the engine's 64 MiB table when its one-byte age counter wraps. Every
+entry point that takes a `nil_limits` honours it. A library older than 0.5.0
+does not read the field, so check `nil_solver_version()` before relying on it;
+an unknown option bit is refused with `NIL_ERR_UNSUPPORTED`.
+
 ## From C#
 
 `csharp/` holds a working wrapper — three files, no NuGet package, no build step

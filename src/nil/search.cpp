@@ -5454,6 +5454,14 @@ bool solve(const Position& pos, const SeatRoles& roles, const SearchOptions& opt
 
 void release_transposition_table() { shared_table().resize(0); }
 
+FreshTablesScope::FreshTablesScope(bool on) : on_(on) {
+    if (on_) dd::engine().begin_isolated();
+}
+
+FreshTablesScope::~FreshTablesScope() {
+    if (on_) dd::engine().end_isolated();
+}
+
 const RankMaskStats& rank_mask_stats() { return rank_mask_stats_storage(); }
 
 void reset_rank_mask_stats() { rank_mask_stats_storage() = RankMaskStats(); }

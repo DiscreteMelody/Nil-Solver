@@ -14,6 +14,7 @@
 #include <cstring>
 #include <iostream>
 #include <string>
+#include <thread>
 #include <type_traits>
 #include <vector>
 
@@ -3334,7 +3335,7 @@ int main(int argc, char** argv) {
                                                &pair_res, err, sizeof(err))),
               static_cast<long long>(NIL_ERR_UNSUPPORTED));
 
-        check("version string", std::string(nil_solver_version()), std::string("0.4.0"));
+        check("version string", std::string(nil_solver_version()), std::string("0.5.0"));
     }
 
     // ---- the move list -----------------------------------------------------
@@ -3963,8 +3964,9 @@ int main(int argc, char** argv) {
     // and a stopped call's unwalked rows read cards = 0.
     {
         std::cout << "\nC ABI: nil_solve_moves_lines\n";
-        check("version string is 0.4.0", std::string(nil_solver_version()),
-              std::string("0.4.0"));
+        // Pinned exactly in the C ABI section; lines arrived in 0.4.0.
+        check("version string is 0.4.0 or later",
+              std::string(nil_solver_version()) >= std::string("0.4.0"), true);
         char err[256] = {0};
 
         // The position a line starts from: the hands, who led the trick in
@@ -5027,6 +5029,301 @@ int main(int argc, char** argv) {
             check("seat rows: DA leaves S without a bid", da->seat_status[nil::SEAT_SOUTH],
                   int(nil::SEAT_NO_NIL));
             check("seat rows: E takes nothing after DA", da->seat_tricks[nil::SEAT_EAST], 0);
+        }
+    }
+
+    // ---- 0.5.0 (Nov 2026): NIL_LIMIT_FRESH_TABLES ----------------------------
+    //
+    // A cut-off call made with the option answers exactly as on a brand-new
+    // thread -- every row, the nil_result, the node count -- after any history:
+    // the same deal solved before (the case that changed answers on 0.4.0),
+    // other deals, a wrapped engine epoch.  Without the option a warm thread's
+    // node count moves, which is what shows the check can tell.  All threads
+    // here use a 64 MiB main table to keep a brand-new thread cheap; the
+    // property does not depend on the size.
+    {
+        std::cout << "\nC ABI: NIL_LIMIT_FRESH_TABLES\n";
+        constexpr std::uint32_t TEST_TABLE_MB = 64;
+
+        struct Answer {
+            std::int32_t rc = 0;
+            nil_result root{};
+            std::vector<nil_move> rows;
+            std::vector<nil_move_line> lines;
+        };
+        struct Deal {
+            const char* name;
+            const char* pbn;
+            std::int32_t leader;
+            std::int32_t seats[4];
+        };
+        // Nil-Solver's own corpus: nil13_verdict.txt (South nil, North covers)
+        // and opposed13.txt (North and East nil, South covering for North).
+        const Deal deals[] = {
+            {"nil13 #3", "N:KQT86.AQT2.T8.A7 9.3.KQ9643.QJT52 743.K9654.A72.K6 AJ52.J87.J5.9843",
+             NIL_SEAT_NORTH, {NIL_ROLE_COVER, NIL_ROLE_OPPONENT, NIL_ROLE_NIL, NIL_ROLE_OPPONENT}},
+            {"opposed13 #2", "N:7652.T2..J986542 J3.98543.6542.T7 K4.AKJ.KT983.KQ3 AQT98.Q76.AQJ7.A",
+             NIL_SEAT_NORTH, {NIL_ROLE_NIL, NIL_ROLE_NIL, NIL_ROLE_COVER, NIL_ROLE_OPPONENT}},
+        };
+
+        // One call, as the bot makes it (FAST_LINE) unless `with_lines`, which
+        // asks nil_solve_moves_lines without it.
+        auto ask = [](const Deal& d, std::uint64_t max_nodes, std::uint32_t options,
+                      bool with_lines = false) {
+            nil_limits lim;
+            std::memset(&lim, 0, sizeof lim);
+            lim.struct_size = sizeof(nil_limits);
+            lim.max_nodes = max_nodes;
+            lim.options = options;
+            Answer a;
+            a.rows.assign(NIL_MAX_MOVES, nil_move{});
+            std::int32_t n = 0;
+            char err[256] = {0};
+            if (with_lines) {
+                std::vector<nil_move_suits> suits(NIL_MAX_MOVES);
+                a.lines.assign(NIL_MAX_MOVES, nil_move_line{});
+                a.rc = nil_solve_moves_lines(d.pbn, d.leader, "", d.seats, 0, &lim, &a.root,
+                                             a.rows.data(), suits.data(), a.lines.data(),
+                                             NIL_MAX_MOVES, &n, err, sizeof err);
+                a.lines.resize(n > 0 ? static_cast<std::size_t>(n) : 0);
+            } else {
+                a.rc = nil_solve_moves_limited(d.pbn, d.leader, "", d.seats, NIL_FLAG_FAST_LINE, &lim,
+                                               &a.root, a.rows.data(), NIL_MAX_MOVES, &n, err,
+                                               sizeof err);
+            }
+            a.rows.resize(n > 0 ? static_cast<std::size_t>(n) : 0);
+            return a;
+        };
+        auto same_nodes = [](const Answer& a, const Answer& b) { return a.root.nodes == b.root.nodes; };
+        // Everything but the node count.
+        auto same_answer = [](const Answer& a, const Answer& b) {
+            if (a.rc != b.rc || a.rows.size() != b.rows.size() || a.lines.size() != b.lines.size())
+                return false;
+            const nil_result& x = a.root;
+            const nil_result& y = b.root;
+            if (x.nils_set != y.nils_set || x.nil_tricks != y.nil_tricks ||
+                x.nil_side_tricks != y.nil_side_tricks || x.opponent_tricks != y.opponent_tricks ||
+                x.tricks_remaining != y.tricks_remaining || x.nils_set_mask != y.nils_set_mask ||
+                x.nils_set_mask_determined != y.nils_set_mask_determined)
+                return false;
+            // nil_move and nil_move_line are int32 throughout: no padding.
+            for (std::size_t i = 0; i < a.rows.size(); ++i) {
+                if (std::memcmp(&a.rows[i], &b.rows[i], sizeof(nil_move)) != 0) return false;
+            }
+            for (std::size_t i = 0; i < a.lines.size(); ++i) {
+                const int k = a.lines[i].cards;
+                if (k != b.lines[i].cards) return false;
+                for (int c = 0; c < k; ++c) {
+                    if (a.lines[i].suit[c] != b.lines[i].suit[c] ||
+                        a.lines[i].rank[c] != b.lines[i].rank[c])
+                        return false;
+                }
+            }
+            return true;
+        };
+        auto same = [&](const Answer& a, const Answer& b) {
+            return same_answer(a, b) && same_nodes(a, b);
+        };
+        // Runs `work` on a thread of its own: a brand-new thread's tables.
+        auto on_new_thread = [](auto work) {
+            decltype(work()) out{};
+            std::thread t([&] {
+                nil_set_table_size(TEST_TABLE_MB);
+                out = work();
+            });
+            t.join();
+            return out;
+        };
+
+        // 1. Per deal: the reference is a brand-new thread at half the nodes the
+        //    finished call takes.  The warm thread solves the deal unlimited,
+        //    then at the limit without the option (its history shows), then
+        //    twice with it; another thread first solves the other deals.
+        bool fresh_new_ok = true, warm_ok = true, warm_again_ok = true, other_ok = true;
+        bool any_cut = true, warm_moved = false;
+        for (const Deal& d : deals) {
+            const Answer full = on_new_thread([&] { return ask(d, 0, 0); });
+            const std::uint64_t limit = full.root.nodes / 2 > 0 ? full.root.nodes / 2 : 1;
+            const Answer reference = on_new_thread([&] { return ask(d, limit, 0); });
+            const Answer fresh_new =
+                on_new_thread([&] { return ask(d, limit, NIL_LIMIT_FRESH_TABLES); });
+            struct Warm {
+                Answer plain, fresh, again;
+            };
+            const Warm w = on_new_thread([&] {
+                Warm out;
+                ask(d, 0, 0);
+                out.plain = ask(d, limit, 0);
+                out.fresh = ask(d, limit, NIL_LIMIT_FRESH_TABLES);
+                out.again = ask(d, limit, NIL_LIMIT_FRESH_TABLES);
+                return out;
+            });
+            const Answer other = on_new_thread([&] {
+                for (const Deal& o : deals) {
+                    if (&o != &d) ask(o, 0, 0);
+                }
+                return ask(d, limit, NIL_LIMIT_FRESH_TABLES);
+            });
+            any_cut = any_cut && reference.rc == NIL_INCOMPLETE && full.rc == NIL_OK;
+            fresh_new_ok = fresh_new_ok && same(fresh_new, reference);
+            warm_ok = warm_ok && same(w.fresh, reference);
+            warm_again_ok = warm_again_ok && same(w.again, reference);
+            other_ok = other_ok && same(other, reference);
+            if (!same(w.plain, reference)) warm_moved = true;
+            if (g_verbose) {
+                std::cout << "    " << d.name << ": full " << full.root.nodes << " nodes, limit "
+                          << limit << ": new thread " << reference.root.nodes
+                          << ", warm without the option " << w.plain.root.nodes
+                          << (same_answer(w.plain, reference) ? "" : " (answer differs)")
+                          << ", warm with it " << w.fresh.root.nodes << "\n";
+            }
+        }
+        check("each deal finishes unlimited and stops at half its nodes", any_cut, true);
+        check("on a brand-new thread the option changes nothing", fresh_new_ok, true);
+        check("a warm thread that solved the deal before answers as a new thread", warm_ok, true);
+        check("and again on a second call", warm_again_ok, true);
+        check("a thread that solved the other deals first answers as a new thread", other_ok, true);
+        check("without the option the warm thread's call moves (the check can tell)", warm_moved,
+              true);
+
+        // 2. The engine's one-byte epoch: past a wrap made by calls without the
+        //    option, and across the headroom by calls with it, an isolated call
+        //    still sees nothing older.  The small deal is cheap, and each call
+        //    runs at least one engine solve.
+        {
+            const Deal& d = deals[0];
+            const Deal small = {"small", "N:.A2.5. .K3.6. .Q4.7. .J5.8.", NIL_SEAT_NORTH,
+                                {NIL_ROLE_NIL, NIL_ROLE_OPPONENT, NIL_ROLE_COVER,
+                                 NIL_ROLE_OPPONENT}};
+            const Answer full = on_new_thread([&] { return ask(d, 0, 0); });
+            const std::uint64_t limit = full.root.nodes / 2;
+            const Answer reference = on_new_thread([&] { return ask(d, limit, 0); });
+            struct Wrapped {
+                Answer after_plain, after_fresh, after_direct;
+            };
+            const Wrapped w = on_new_thread([&] {
+                Wrapped out;
+                ask(d, 0, 0);
+                for (int i = 0; i < 300; ++i) ask(small, 0, 0);
+                out.after_plain = ask(d, limit, NIL_LIMIT_FRESH_TABLES);
+                ask(d, 0, 0);
+                for (int i = 0; i < 300; ++i) ask(small, 0, NIL_LIMIT_FRESH_TABLES);
+                out.after_fresh = ask(d, limit, NIL_LIMIT_FRESH_TABLES);
+                // The same through the engine directly, one solve at a time, so
+                // the wrap is certain whatever a call costs in solves.
+                ask(d, 0, 0);
+                for (int i = 0; i < 1000; ++i) nil::dd::engine().new_solve(true);
+                out.after_direct = ask(d, limit, NIL_LIMIT_FRESH_TABLES);
+                return out;
+            });
+            check("past an epoch wrap by plain calls, as a new thread", same(w.after_plain, reference),
+                  true);
+            check("past the headroom by isolated calls, as a new thread",
+                  same(w.after_fresh, reference), true);
+            check("past many engine solves, as a new thread", same(w.after_direct, reference), true);
+            const Answer small_plain = on_new_thread([&] { return ask(small, 0, 0); });
+            const Answer small_fresh =
+                on_new_thread([&] { return ask(small, 0, NIL_LIMIT_FRESH_TABLES); });
+            check("the small deal finishes either way, same answer",
+                  small_plain.rc == NIL_OK && same(small_plain, small_fresh), true);
+        }
+
+        // 3. The lines entry point (no FAST_LINE): rows, lines and nodes.
+        {
+            const Deal& d = deals[1];
+            const Answer full = on_new_thread([&] { return ask(d, 0, 0, true); });
+            const std::uint64_t limit = full.root.nodes / 2;
+            const Answer reference = on_new_thread([&] { return ask(d, limit, 0, true); });
+            const Answer warm = on_new_thread([&] {
+                ask(d, 0, 0, true);
+                return ask(d, limit, NIL_LIMIT_FRESH_TABLES, true);
+            });
+            check("nil_solve_moves_lines: the call stops", reference.rc,
+                  static_cast<std::int32_t>(NIL_INCOMPLETE));
+            check("nil_solve_moves_lines: warm with the option, as a new thread",
+                  same(warm, reference), true);
+        }
+
+        // 4. The fast-mode entry points take the option and answer as without it.
+        {
+            const Deal& d = deals[0];
+            nil_limits lim;
+            std::memset(&lim, 0, sizeof lim);
+            lim.struct_size = sizeof(nil_limits);
+            std::int32_t plain_set = -2, fresh_set = -2;
+            const std::int32_t plain_rc =
+                nil_count_set_limited(d.pbn, d.leader, "", d.seats, 0, &lim, &plain_set);
+            lim.options = NIL_LIMIT_FRESH_TABLES;
+            const std::int32_t fresh_rc =
+                nil_count_set_limited(d.pbn, d.leader, "", d.seats, 0, &lim, &fresh_set);
+            check("nil_count_set_limited takes the option",
+                  plain_rc == NIL_OK && fresh_rc == NIL_OK && plain_set == fresh_set, true);
+
+            const std::int32_t pair[4] = {NIL_ROLE_OPPONENT, NIL_ROLE_NIL, NIL_ROLE_OPPONENT,
+                                          NIL_ROLE_NIL};
+            const char* twins_deal =
+                "N:AKJT8.2.AKQJT.KJ 72.AQ63.98765.A4 63.KT874.42.T976 Q954.J95.3.Q8532";
+            nil_outcome plain_out;
+            nil_outcome fresh_out;
+            std::memset(&plain_out, 0, sizeof plain_out);
+            std::memset(&fresh_out, 0, sizeof fresh_out);
+            plain_out.struct_size = fresh_out.struct_size = sizeof(nil_outcome);
+            char err[256] = {0};
+            lim.options = 0;
+            const std::int32_t po = nil_solve_outcome_limited(twins_deal, NIL_SEAT_SOUTH, "", pair, 0,
+                                                              &lim, &plain_out, err, sizeof err);
+            lim.options = NIL_LIMIT_FRESH_TABLES;
+            const std::int32_t fo = nil_solve_outcome_limited(twins_deal, NIL_SEAT_SOUTH, "", pair, 0,
+                                                              &lim, &fresh_out, err, sizeof err);
+            check("nil_solve_outcome_limited takes the option",
+                  po == NIL_OK && fo == NIL_OK && plain_out.nils_set == fresh_out.nils_set &&
+                      plain_out.set_mask == fresh_out.set_mask,
+                  true);
+        }
+
+        // 5. struct_size: the 0.4.0 struct (no options) still has its cancel
+        //    word read, and whatever lies past it is not read; a bit this build
+        //    does not know is refused on every entry point.
+        {
+            const Deal& d = deals[0];
+            volatile std::int32_t stop = 1;
+            nil_limits old;
+            std::memset(&old, 0, sizeof old);
+            old.struct_size = static_cast<std::uint32_t>(offsetof(nil_limits, options));
+            old.cancel = &stop;
+            old.options = 0xFFFFFFFFu;  // beyond the caller's size: never read
+            nil_result r;
+            std::vector<nil_move> m(NIL_MAX_MOVES);
+            std::int32_t n = 0;
+            char err[256] = {0};
+            check("sizeof(nil_limits) is 32 on 64-bit", sizeof(void*) != 8 || sizeof(nil_limits) == 32,
+                  true);
+            check("a 0.4.0-sized struct still has its cancel word read",
+                  nil_solve_moves_limited(d.pbn, d.leader, "", d.seats, NIL_FLAG_FAST_LINE, &old, &r,
+                                          m.data(), NIL_MAX_MOVES, &n, err, sizeof err),
+                  static_cast<std::int32_t>(NIL_INCOMPLETE));
+
+            nil_limits unknown;
+            std::memset(&unknown, 0, sizeof unknown);
+            unknown.struct_size = sizeof(nil_limits);
+            unknown.options = 0x2u;
+            check("an unknown option bit is refused",
+                  nil_solve_moves_limited(d.pbn, d.leader, "", d.seats, NIL_FLAG_FAST_LINE, &unknown,
+                                          &r, m.data(), NIL_MAX_MOVES, &n, err, sizeof err),
+                  static_cast<std::int32_t>(NIL_ERR_UNSUPPORTED));
+            check("and says why", std::string(err).find("options") != std::string::npos, true);
+            std::int32_t can_set = 7;
+            check("an unknown option bit is refused by nil_count_set_limited",
+                  nil_count_set_limited(d.pbn, d.leader, "", d.seats, 0, &unknown, &can_set),
+                  static_cast<std::int32_t>(NIL_ERR_UNSUPPORTED));
+            check("which leaves can_set -1", can_set, -1);
+            nil_outcome o;
+            std::memset(&o, 0, sizeof o);
+            o.struct_size = sizeof(nil_outcome);
+            check("an unknown option bit is refused by nil_solve_outcome_limited",
+                  nil_solve_outcome_limited(d.pbn, d.leader, "", d.seats, 0, &unknown, &o, err,
+                                            sizeof err),
+                  static_cast<std::int32_t>(NIL_ERR_UNSUPPORTED));
         }
     }
 

@@ -1128,6 +1128,21 @@ void Engine::clear() {
     for (CardId& k : lead_killer_) k = NO_CARD;
 }
 
+void Engine::begin_isolated() {
+    if (isolated_++ > 0) return;  // nested: the outer call's floor stands
+    // Every entry's epoch must be below the floor, and stay below it while the
+    // call runs.  Since the last clear they are -- epochs only rise until they
+    // wrap -- unless a wrap happened since (an entry from the cycle before can
+    // carry any epoch) or the call might run past 0xFF and wrap itself.  Either
+    // way, start again from an empty table.
+    if (wrapped_ || epoch_ > 0xFF - ISOLATED_HEADROOM) {
+        clear();
+        epoch_ = 1;
+        wrapped_ = false;
+    }
+    floor_ = static_cast<std::uint8_t>(epoch_ + 1);  // the call's first new_solve
+}
+
 namespace {
 
 inline std::uint64_t fact_hash(std::uint64_t lengths, std::uint8_t meta, const std::uint32_t pat[4]) {
@@ -1153,6 +1168,13 @@ Engine::Header* Engine::header(const Key& key, bool create) {
     Header* b = &headers_[(mix(key.lengths, key.meta ^ 0x5A) & hmask_) * HEADER_WAYS];
     for (int i = 0; i < HEADER_WAYS; ++i) {
         if (b[i].meta == meta && b[i].lengths == key.lengths) {
+            // Older than an isolated call (begin_isolated): to it, an empty
+            // slot.  Emptied for real before storing, so that the bucket never
+            // holds one key twice -- the same thing, to the isolated call.
+            if (!visible(b[i].pad)) {
+                if (create) b[i].meta = 0;
+                continue;
+            }
             if (create) b[i].pad = epoch_;
             return &b[i];
         }
@@ -1160,7 +1182,7 @@ Engine::Header* Engine::header(const Key& key, bool create) {
     if (!create) return nullptr;
     Header* victim = &b[0];
     for (int i = 0; i < HEADER_WAYS; ++i) {
-        if (!(b[i].meta & 0x80) || stale(b[i].pad)) {
+        if (!(b[i].meta & 0x80) || !visible(b[i].pad) || stale(b[i].pad)) {
             victim = &b[i];
             break;
         }
@@ -1181,6 +1203,11 @@ Engine::Entry* Engine::fact(std::uint64_t lengths, std::uint8_t meta, const std:
         Entry& e = b[i];
         if (e.meta == meta && e.lengths == lengths && e.pat[0] == pat[0] && e.pat[1] == pat[1] &&
             e.pat[2] == pat[2] && e.pat[3] == pat[3]) {
+            // As in header(): older than an isolated call is an empty slot.
+            if (!visible(e.pad[0])) {
+                if (create) e.meta = 0;
+                continue;
+            }
             if (create) e.pad[0] = epoch_;
             return &e;
         }
@@ -1188,7 +1215,7 @@ Engine::Entry* Engine::fact(std::uint64_t lengths, std::uint8_t meta, const std:
     if (!create) return nullptr;
     Entry* victim = &b[0];
     for (int i = 0; i < WAYS; ++i) {
-        if (!(b[i].meta & 0x80) || stale(b[i].pad[0])) {
+        if (!(b[i].meta & 0x80) || !visible(b[i].pad[0]) || stale(b[i].pad[0])) {
             victim = &b[i];
             break;
         }
@@ -1255,7 +1282,8 @@ bool Engine::probe(const Key& key, int target, bool& result, CardId& move, const
         for (int w = 0; w < WAYS; ++w) {
             const Entry& c = buckets[i][w];
             if (c.meta == fmeta && c.lengths == key.lengths && c.pat[0] == pats[i][0] &&
-                c.pat[1] == pats[i][1] && c.pat[2] == pats[i][2] && c.pat[3] == pats[i][3]) {
+                c.pat[1] == pats[i][1] && c.pat[2] == pats[i][2] && c.pat[3] == pats[i][3] &&
+                visible(c.pad[0])) {
                 e = &c;
                 break;
             }

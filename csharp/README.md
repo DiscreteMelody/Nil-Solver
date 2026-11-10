@@ -203,6 +203,11 @@ wrap them, because what replaces a stopped call is the application's policy.
 | `nil_count_set_limited` | one seat: can it be forced to take a trick? | `canSet = -1` |
 | `nil_solve_outcome_limited` | how many bids go down: one nil, a pair, three bids | the proven range `NilsSetMin..NilsSetMax` |
 
+Since 0.5.0, `NilLimits.Options = NilLimitOptions.FreshTables` makes a
+node-limited call reproducible: it answers exactly as on a brand-new thread
+(rows and node count), whatever the thread solved before. An older library
+ignores the field, so check `NilSolverNative.Version()` first.
+
 `nil_count_set_limited` is `nil_count_set` with a budget. Its answer comes back
 through `out int canSet`, never the return value, because `nil_count_set`'s `1`
 ("can be set") and `Incomplete` are the same number.

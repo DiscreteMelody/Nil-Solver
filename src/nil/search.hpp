@@ -1170,6 +1170,13 @@ struct SearchOptions {
     std::uint32_t max_ms = 0;
     const volatile std::int32_t* cancel = nullptr;
 
+    // FRESH TABLES (0.5.0; NIL_LIMIT_FRESH_TABLES).  Answer as a brand-new
+    // thread would: same rows, same node count, whatever this thread solved
+    // before.  Read by the C ABI, which opens a FreshTablesScope for the call;
+    // the core functions do not read it, so a caller of solve()/solve_moves()
+    // opens the scope itself.  See FreshTablesScope.
+    bool fresh_tables = false;
+
     // THE PAIR'S PROBES (phase 3, Oct 2026; solve_outcome only).  Before the
     // pair search runs, ask each twin's single-nil question -- that twin as
     // the nil, its partner as the cover -- and spend the two answers as bounds
@@ -1585,6 +1592,37 @@ bool replay_pv(const Position& pos, const std::vector<Play>& pv, const SeatRoles
 // more than the search does.  Call this to hand the memory back; the next
 // solve() will simply allocate again.
 void release_transposition_table();
+
+// FRESH TABLES (0.5.0): while one of these is open with `on`, the solves on
+// this thread answer exactly as on a brand-new thread -- every row and the
+// node count -- whatever the thread solved before.
+//
+// WHAT CARRIES ACROSS SOLVES, AND WHAT THIS DOES TO EACH (audited Nov 2026):
+//   * the main transposition table: nothing to do.  Every solve bumps its
+//     generation and reads only its own, and an old entry ranks as an empty
+//     slot when storing (tt.cpp), so it is already fresh per solve.
+//   * the double-dummy engine's fact table (dd::Engine, 64 MiB): THE ONE
+//     THAT MATTERS.  Facts outlive the solve by design; inside the scope the
+//     engine treats everything stored before it as empty (begin_isolated).
+//   * the engine's DDS lead killers: reset by every solve already.
+//   * the table size (nil_set_table_size) and the engine's switches: settings,
+//     not history; set per solve from the options, and left as they are.
+//   * the rank-mask, nil-set, opposed and quick-trick statistics: measurement
+//     only, written only under SearchOptions::track_*, never read by a search.
+//   * the TT and engine node statistics: counters; the search reads only
+//     differences across a call.
+// Costs nothing per solve beyond the engine's epoch test; see
+// dd::Engine::begin_isolated for the occasional table clear.  Scopes nest.
+class FreshTablesScope {
+public:
+    explicit FreshTablesScope(bool on);
+    ~FreshTablesScope();
+    FreshTablesScope(const FreshTablesScope&) = delete;
+    FreshTablesScope& operator=(const FreshTablesScope&) = delete;
+
+private:
+    bool on_;
+};
 
 // The winning-rank histogram accumulated since the last reset, across every
 // solve on this thread that ran with SearchOptions::track_rank_masks.  Empty

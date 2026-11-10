@@ -22,9 +22,11 @@
 //     before Nodes on both x86 and x64.  Reordering the fields to look tidier
 //     silently reads the wrong numbers.
 //
-//   * NilLimits likewise: two uint32, one uint64 and a pointer, 24 bytes on
-//     both x86 (four bytes of tail padding) and x64, and StructSize must say
-//     so -- set it from Marshal.SizeOf<NilLimits>(), never a literal.
+//   * NilLimits likewise: two uint32, one uint64, a pointer and (0.5.0) one
+//     more uint32 -- 32 bytes on x64 (four bytes of tail padding), 24 on x86
+//     -- and StructSize must say so: set it from Marshal.SizeOf<NilLimits>(),
+//     never a literal.  The library reads only the fields StructSize covers,
+//     so the 0.4.0 layout (24 bytes on x64, without Options) still works.
 //
 //   * NilOutcome (0.2.0) too: two uint32, ten int32, one uint64 -- 56 bytes,
 //     the uint64 already 8-aligned at offset 48, so no padding anywhere on
@@ -512,6 +514,26 @@ namespace NilSolver
         /// the call returns. <see cref="IntPtr.Zero"/> for none.
         /// </summary>
         public IntPtr Cancel;
+
+        /// <summary>
+        /// 0.5.0: <see cref="NilLimitOptions"/> bits. A library older than
+        /// 0.5.0 never reads this field, so check <see cref="NilSolverNative.Version"/>
+        /// before relying on an option.
+        /// </summary>
+        public NilLimitOptions Options;
+    }
+
+    /// <summary>NIL_LIMIT_* values for <see cref="NilLimits.Options"/> (0.5.0).</summary>
+    [Flags]
+    public enum NilLimitOptions : uint
+    {
+        None = 0x0u,
+        /// <summary>
+        /// Answer exactly as a brand-new thread would (every row and the node
+        /// count), whatever this thread solved before: makes a node-limited
+        /// call reproducible. See NIL_LIMIT_FRESH_TABLES in nil_solver.h.
+        /// </summary>
+        FreshTables = 0x1u,
     }
 
     /// <summary>NIL_OUTCOME_* values for <see cref="NilOutcome.Options"/>.</summary>

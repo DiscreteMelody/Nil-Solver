@@ -162,11 +162,29 @@ std::int32_t read_limits(const nil_limits* limits, nil::SearchOptions& opts, cha
                  "nil_limits.struct_size is not set; it must be sizeof(nil_limits)");
         return NIL_ERR_NULL_ARG;
     }
+    // Each field is read when the caller's size covers it -- by its own end,
+    // not by sizeof(nil_limits), which grows: a 0.4.0 caller's 24-byte struct
+    // still has its cancel word read.
+    const auto covers = [limits](std::size_t offset, std::size_t bytes) {
+        return limits->struct_size >= offset + bytes;
+    };
     opts.max_ms = limits->max_ms;
-    if (limits->struct_size >= offsetof(nil_limits, cancel)) {
+    if (covers(offsetof(nil_limits, max_nodes), sizeof(limits->max_nodes))) {
         opts.max_nodes = limits->max_nodes;
     }
-    if (limits->struct_size >= sizeof(nil_limits)) opts.cancel = limits->cancel;
+    if (covers(offsetof(nil_limits, cancel), sizeof(limits->cancel))) opts.cancel = limits->cancel;
+    // 0.5.0.  A bit this build does not know is refused rather than ignored, so
+    // a caller asking for something newer is told; a library older than 0.5.0
+    // reads no options at all (see the header).
+    if (covers(offsetof(nil_limits, options), sizeof(limits->options))) {
+        if (limits->options & ~static_cast<std::uint32_t>(NIL_LIMIT_FRESH_TABLES)) {
+            copy_err(err_buf, err_len,
+                     "nil_limits.options has a bit this build does not know (0.5.0 knows "
+                     "NIL_LIMIT_FRESH_TABLES)");
+            return NIL_ERR_UNSUPPORTED;
+        }
+        opts.fresh_tables = (limits->options & NIL_LIMIT_FRESH_TABLES) != 0;
+    }
     return NIL_OK;
 }
 
@@ -364,6 +382,8 @@ std::int32_t solve_moves_impl(const char* pbn, std::int32_t leader, const char* 
     std::string err;
     nil::Solution sol;
     std::vector<nil::MoveScore> scored;
+    // 0.5.0: NIL_LIMIT_FRESH_TABLES, for this call only.
+    const nil::FreshTablesScope fresh(opts.fresh_tables);
     if (!nil::solve_moves(pos, roles, opts, sol, scored, err)) {
         copy_err(err_buf, err_len, err);
         // Same reasoning as nil_solve's mapping above.
@@ -494,6 +514,7 @@ NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_count_set_limited(
 
     std::string err;
     nil::Solution sol;
+    const nil::FreshTablesScope fresh(opts.fresh_tables);
     if (!nil::solve(pos, roles, opts, sol, err)) return NIL_ERR_INTERNAL;
     if (!sol.complete) return NIL_INCOMPLETE;
     *can_set = sol.nils_set;
@@ -562,6 +583,7 @@ NIL_SOLVER_API std::int32_t NIL_SOLVER_CALL nil_solve_outcome_limited(
 
     std::string err;
     nil::OutcomeSolution oc;
+    const nil::FreshTablesScope fresh(opts.fresh_tables);
     if (!nil::solve_outcome(pos, roles, opts, oc, err)) {
         copy_err(err_buf, err_len, err);
         return NIL_ERR_INTERNAL;
@@ -600,6 +622,6 @@ NIL_SOLVER_API void NIL_SOLVER_CALL nil_release_table(void) {
     nil::release_transposition_table();
 }
 
-NIL_SOLVER_API const char* NIL_SOLVER_CALL nil_solver_version(void) { return "0.4.0"; }
+NIL_SOLVER_API const char* NIL_SOLVER_CALL nil_solver_version(void) { return "0.5.0"; }
 
 }  // extern "C"
