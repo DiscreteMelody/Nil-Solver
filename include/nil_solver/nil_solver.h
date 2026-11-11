@@ -89,6 +89,31 @@
  *   "show me the line"                     full mode; nil_solve_pv refuses the
  *                                          fast flag rather than hand back an
  *                                          empty string
+ *
+ * THREADS
+ * -------
+ * Every entry point may be called from any number of threads at once, with no
+ * lock and no thread-id argument: everything a solve writes is per thread (the
+ * main transposition table, the double-dummy engine and its table, the size
+ * set by nil_set_table_size).  A thread makes one call at a time.  A call's
+ * values do not depend on the thread or on what other threads are doing.  Its
+ * node count follows the thread's own history unless NIL_LIMIT_FRESH_TABLES is
+ * set, and with that option a call stopped by max_nodes proves the same rows
+ * on every thread.  nil_tests pins both ("C ABI: concurrent solves").
+ *
+ * The tables belong to the thread that solved.  At the default size that is
+ * 424 MiB a thread: a 384 MiB main table (the 512 MiB setting rounded down to
+ * a power-of-two bucket count) and 40 MiB for the engine.  nil_release_table
+ * frees the calling thread's main table only; both go when the thread exits.
+ * So solve on a fixed set of long-lived worker threads, not on an elastic
+ * thread pool, where every thread that has ever solved keeps its tables.
+ *
+ * Two solves at once cost each other time.  Measured Nov 2026 on a Windows VM
+ * with 2 virtual cores (MSVC, 4 KiB pages, the per-card call with
+ * NIL_FLAG_FAST_LINE on four tough 13-card deals): a call took 6.3 s on
+ * average while a second thread was solving, against 4.2-4.5 s alone (+45%),
+ * and two threads got through 1.37x the calls of one.  README.md ("Threads")
+ * has the rest.
  */
 #ifndef NIL_SOLVER_H
 #define NIL_SOLVER_H

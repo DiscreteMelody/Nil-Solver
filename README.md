@@ -473,6 +473,76 @@ entry point that takes a `nil_limits` honours it. A library older than 0.5.0
 does not read the field, so check `nil_solver_version()` before relying on it;
 an unknown option bit is refused with `NIL_ERR_UNSUPPORTED`.
 
+### Threads
+
+The library keeps no state that threads share. Everything a solve writes is
+`thread_local`: the main transposition table, the double-dummy engine and its
+table, the statistics blocks, and the size set by `nil_set_table_size`. There
+is no lock and no thread-id argument. A thread makes one call at a time, and
+any number of threads may be inside a call at once.
+
+A call's values (every row, the `nil_result`, the verdicts) do not depend on
+which thread makes it, on what that thread solved before, or on what other
+threads are doing. Node counts, and so what a call stopped by `max_nodes` had
+proven, follow the thread's own history unless the call sets
+`NIL_LIMIT_FRESH_TABLES`; with it they are the same on every thread as well.
+
+`nil_tests` pins this under "C ABI: concurrent solves". Two threads, then
+four, are released together and each solves the same three 13-card deals (one
+nil with its cover, a bid on each side, a pair that both bid) through
+`nil_solve_moves_limited` with and without `NIL_FLAG_FAST_LINE`,
+`nil_solve_moves_lines`, `nil_count_set_limited` and
+`nil_solve_outcome_limited`. With fresh tables every thread must match a thread
+that solved alone byte for byte and node for node, a call stopped by a node
+budget included; without the option, in everything but the node counts. A
+thread that sets a 4 MiB table must not move a default-size thread solving at
+the same time, and the other way round.
+
+**Memory is per solving thread.** At the default setting of 512 MiB the main
+table as allocated is 384 MiB: 4,194,304 buckets of 96 bytes, the bucket count
+being rounded down to a power of two. The engine's table is another 40 MiB
+(32 MiB of facts and 8 MiB of headers, each rounded down the same way out of a
+64 MiB budget). That is 424 MiB allocated by a thread's first call, and backed
+by physical memory only as its searches touch it. `nil_set_table_size` changes
+the main table only, and only for the calling thread: 64 gives 48 + 40 MiB, 16
+gives 12 + 40. `nil_release_table` frees the calling thread's main table and
+leaves the engine's 40 MiB. Both are freed when the thread exits (checked on
+Windows through the DLL, for a `std::thread` and for a `CreateThread` thread:
+the process's commit charge rose by 424 MiB at the first call, fell to 40 after
+`nil_release_table`, and went back to where it started at thread exit).
+
+Because the tables belong to the thread, run solves on a fixed set of
+long-lived worker threads, one for each solve you want to allow at once, and
+not on an elastic thread pool: every pool thread that has ever solved keeps
+its 424 MiB for as long as the pool keeps the thread.
+`csharp/NilSolverPool.cs` is that arrangement for .NET.
+
+One thing a solve touches is process-wide, on Windows only. A thread's first
+table allocation asks for large pages, and to do that it enables the "Lock
+pages in memory" privilege in the process token for the length of one
+`VirtualAlloc` and then puts it back (`src/nil/bigalloc.cpp`). Two threads
+allocating at the same moment can leave one of them on ordinary pages. Large
+pages are best-effort already and change no answer and no node count, and an
+account without the privilege never gets them. This is read from the code, not
+measured.
+
+**What two at once cost**, measured on one machine (2026-11-11: a Windows VM
+with 2 virtual cores on a Ryzen 9 9950X3D host, MSVC 19.51 Release, 4 KiB
+pages; the per-card call with `NIL_FLAG_FAST_LINE` and fresh tables on four
+tough 13-card deals):
+
+| | mean per call | eight calls |
+| --- | --- | --- |
+| one thread | 4.2-4.5 s | about 35 s, one after the other |
+| two threads at once | 6.3 s (+45%) | 25.5 s (1.37x the throughput) |
+
+Every thread's values and node counts were identical to the lone thread's.
+Binding each thread to its own core made no difference (6.5 s mean per call).
+On the same machine a register-only loop that touches no memory slows 20% when
+a second thread runs, so part of the cost is the machine and the rest is the
+two tables competing for cache and memory. Not measured: real (non-virtual)
+cores, 2 MiB pages, more than two threads.
+
 ## From C#
 
 `csharp/` holds a working wrapper — three files, no NuGet package, no build step
@@ -497,10 +567,11 @@ name-mangle around.
 One thing worth knowing before wiring this into a request path, because it is
 the opposite of the usual native-library caveat: **the solver needs no locking
 and no thread-id argument**, so concurrent calls are safe as they stand. What it
-does need is a bound on *how many threads ever call it*, since the transposition
-table is `thread_local` and a thread that has solved once holds 512 MiB until it
-exits. `csharp/README.md` covers that, along with deployment, the flags, and the
-three P/Invoke declarations that are easy to write wrongly.
+does need is a bound on *how many threads ever call it*, since the tables are
+`thread_local` and a thread that has solved once holds its own (424 MiB at the
+default setting; see [Threads](#threads)) until it exits. `csharp/README.md`
+covers that, along with deployment, the flags, and the three P/Invoke
+declarations that are easy to write wrongly.
 
 ### Building the DLL in Visual Studio
 
@@ -524,7 +595,7 @@ ctest --test-dir build --output-on-failure
 
 | test | what it covers | needs |
 | --- | --- | --- |
-| `nil_tests` | the four rules in isolation, small hand-verifiable searches, PBN parsing, position validation, the PV replay verifier, the C ABI | nothing |
+| `nil_tests` | the four rules in isolation, small hand-verifiable searches, PBN parsing, position validation, the PV replay verifier, the C ABI, solves on several threads at once | nothing |
 | `corpus` | ~560 positions whose answers came from `nil_oracle.py` | nothing |
 | `corpus_quick` | the 4-card subset of the same, for the inner loop | nothing |
 | `corpus_modes` | every corpus position solved in both modes, required to agree on `nil_fails` | nothing |

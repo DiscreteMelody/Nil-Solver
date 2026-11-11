@@ -6,6 +6,7 @@
 //
 // The end-to-end agreement testing lives in tools/crosscheck.py, which runs the
 // real oracle.
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -5324,6 +5325,349 @@ int main(int argc, char** argv) {
                   nil_solve_outcome_limited(d.pbn, d.leader, "", d.seats, 0, &unknown, &o, err,
                                             sizeof err),
                   static_cast<std::int32_t>(NIL_ERR_UNSUPPORTED));
+        }
+    }
+
+    // ---- Concurrent solves (Nov 2026) ----------------------------------------
+    //
+    // Everything a solve writes is thread_local -- the main table, the
+    // double-dummy engine and its table, the stats blocks, the table-size
+    // setting -- so calls on different threads share nothing and need no lock.
+    // A caller that runs one solve per worker thread relies on that, and until
+    // here nothing pinned it.  Threads released together each solve the same
+    // list of 13-card positions through the C ABI, and every one must answer as
+    // a thread solving alone: with NIL_LIMIT_FRESH_TABLES every row, the
+    // nil_result and the node count, a call stopped by a node budget included;
+    // without the option everything but the node counts, which follow each
+    // thread's own history.  As above, the new threads use a 64 MiB main table.
+    //
+    // NO TIMING IS ASSERTED.  The start gate and the length of the list (a
+    // second or two a thread) are what make the calls overlap, and the one
+    // check on it is that two calls were in flight at once.
+    {
+        std::cout << "\nC ABI: concurrent solves\n";
+        constexpr std::uint32_t TEST_TABLE_MB = 64;
+
+        // The entry points a deal is asked through.  Every deal takes the
+        // first three; the bounded question depends on the shape.
+        enum Call {
+            MOVES,            // nil_solve_moves_limited, every row's line walked
+            MOVES_FAST_LINE,  // the same with NIL_FLAG_FAST_LINE, as the bot calls it
+            MOVES_LINES,      // nil_solve_moves_lines, with the split and the lines
+            COUNT_SET,        // nil_count_set_limited
+            OUTCOME,          // nil_solve_outcome_limited
+            CALLS,
+            NO_VERDICT = CALLS
+        };
+        struct Deal {
+            const char* name;
+            const char* pbn;
+            std::int32_t leader;
+            std::int32_t seats[4];
+            Call verdict;
+        };
+        // One deal of each shape from the repo's own corpus, each per-card call
+        // a million nodes or so (tens of milliseconds): nil13_verdict.txt as it
+        // stands (South nil, North covers), opposed13.txt with its own roles
+        // (North and East nil, West covering for East), and another
+        // nil13_verdict.txt deal with East and West both bidding.
+        // nil_solve_outcome_limited refuses a bid on each side, so that deal
+        // has no bounded question.
+        const Deal deals[] = {
+            {"nil13 #60", "N:Q8.KJ7.AT43.T987 A9765.A2.KJ62.64 T2.QT653.98.K532 KJ43.984.Q75.AQJ",
+             NIL_SEAT_NORTH, {NIL_ROLE_COVER, NIL_ROLE_OPPONENT, NIL_ROLE_NIL, NIL_ROLE_OPPONENT},
+             COUNT_SET},
+            {"opposed13 #6", "N:9732.98732.752.2 J54..T643.T96543 K8.AJT5.AK98.AJ8 AQT6.KQ64.QJ.KQ7",
+             NIL_SEAT_NORTH, {NIL_ROLE_NIL, NIL_ROLE_NIL, NIL_ROLE_OPPONENT, NIL_ROLE_COVER},
+             NO_VERDICT},
+            {"nil13 #56 as a pair",
+             "N:AKJ85.QJ8.96.KQJ 7643.K96.Q5.A842 T9.2.JT8742.T975 Q2.AT7543.AK3.63", NIL_SEAT_NORTH,
+             {NIL_ROLE_OPPONENT, NIL_ROLE_NIL, NIL_ROLE_OPPONENT, NIL_ROLE_NIL}, OUTCOME},
+        };
+        const std::size_t deal_count = sizeof deals / sizeof deals[0];
+
+        // What one call gave back: root and rows from the per-card calls (suits
+        // and lines too from nil_solve_moves_lines), can_set from
+        // nil_count_set_limited, outcome from nil_solve_outcome_limited.
+        struct Answer {
+            std::int32_t rc = 0;
+            nil_result root{};
+            std::vector<nil_move> rows;
+            std::vector<nil_move_suits> suits;
+            std::vector<nil_move_line> lines;
+            std::int32_t can_set = 0;
+            nil_outcome outcome{};
+        };
+        // One thread's answers to a list of calls.
+        using Answers = std::vector<Answer>;
+
+        // Calls in flight across every thread, and the most there were at once.
+        std::atomic<int> in_flight{0};
+        std::atomic<int> most_in_flight{0};
+        struct InFlight {
+            std::atomic<int>& count;
+            InFlight(std::atomic<int>& n, std::atomic<int>& most) : count(n) {
+                const int now = ++count;
+                int seen = most.load();
+                while (seen < now && !most.compare_exchange_weak(seen, now)) {
+                }
+            }
+            ~InFlight() { --count; }
+        };
+
+        auto ask = [&](const Deal& d, Call call, std::uint32_t options,
+                       std::uint64_t max_nodes = 0) {
+            nil_limits lim;
+            std::memset(&lim, 0, sizeof lim);
+            lim.struct_size = sizeof(nil_limits);
+            lim.max_nodes = max_nodes;
+            lim.options = options;
+            Answer a;
+            std::int32_t n = 0;
+            char err[256] = {0};
+            const InFlight flight(in_flight, most_in_flight);
+            switch (call) {
+                case MOVES:
+                case MOVES_FAST_LINE:
+                    a.rows.assign(NIL_MAX_MOVES, nil_move{});
+                    a.rc = nil_solve_moves_limited(d.pbn, d.leader, "", d.seats,
+                                                   call == MOVES ? 0 : NIL_FLAG_FAST_LINE, &lim,
+                                                   &a.root, a.rows.data(), NIL_MAX_MOVES, &n, err,
+                                                   sizeof err);
+                    break;
+                case MOVES_LINES:
+                    a.rows.assign(NIL_MAX_MOVES, nil_move{});
+                    a.suits.assign(NIL_MAX_MOVES, nil_move_suits{});
+                    a.lines.assign(NIL_MAX_MOVES, nil_move_line{});
+                    a.rc = nil_solve_moves_lines(d.pbn, d.leader, "", d.seats, 0, &lim, &a.root,
+                                                 a.rows.data(), a.suits.data(), a.lines.data(),
+                                                 NIL_MAX_MOVES, &n, err, sizeof err);
+                    break;
+                case COUNT_SET:
+                    a.rc = nil_count_set_limited(d.pbn, d.leader, "", d.seats, 0, &lim, &a.can_set);
+                    break;
+                case OUTCOME:
+                    a.outcome.struct_size = sizeof(nil_outcome);
+                    a.rc = nil_solve_outcome_limited(d.pbn, d.leader, "", d.seats, 0, &lim,
+                                                     &a.outcome, err, sizeof err);
+                    break;
+                default:
+                    break;
+            }
+            const std::size_t listed = n > 0 ? static_cast<std::size_t>(n) : 0;
+            a.rows.resize(listed);
+            if (call == MOVES_LINES) {
+                a.suits.resize(listed);
+                a.lines.resize(listed);
+            }
+            return a;
+        };
+        // CALLS slots a deal, in deal order; a slot the deal's shape does not
+        // take is left empty.
+        auto solve_list = [&](std::uint32_t options) {
+            Answers out(deal_count * CALLS);
+            for (std::size_t i = 0; i < deal_count; ++i) {
+                for (Call call : {MOVES, MOVES_FAST_LINE, MOVES_LINES, deals[i].verdict}) {
+                    if (call != NO_VERDICT) out[i * CALLS + call] = ask(deals[i], call, options);
+                }
+            }
+            return out;
+        };
+        // The bot's call again, stopped by a node budget: half of what the lone
+        // thread's finished call took.
+        std::vector<std::uint64_t> budget(deal_count, 0);
+        auto solve_cut = [&] {
+            Answers out;
+            for (std::size_t i = 0; i < deal_count; ++i) {
+                out.push_back(ask(deals[i], MOVES_FAST_LINE, NIL_LIMIT_FRESH_TABLES, budget[i]));
+            }
+            return out;
+        };
+
+        auto same_nodes = [](const Answer& a, const Answer& b) {
+            return a.root.nodes == b.root.nodes && a.outcome.nodes == b.outcome.nodes;
+        };
+        // Everything but the node counts.
+        auto same_answer = [](const Answer& a, const Answer& b) {
+            if (a.rc != b.rc || a.can_set != b.can_set || a.rows.size() != b.rows.size() ||
+                a.suits.size() != b.suits.size() || a.lines.size() != b.lines.size())
+                return false;
+            const nil_result& x = a.root;
+            const nil_result& y = b.root;
+            if (x.nils_set != y.nils_set || x.nil_tricks != y.nil_tricks ||
+                x.nil_side_tricks != y.nil_side_tricks || x.opponent_tricks != y.opponent_tricks ||
+                x.tricks_remaining != y.tricks_remaining || x.nils_set_mask != y.nils_set_mask ||
+                x.nils_set_mask_determined != y.nils_set_mask_determined)
+                return false;
+            // nil_move, nil_move_suits and nil_move_line are int32 throughout:
+            // no padding.
+            for (std::size_t i = 0; i < a.rows.size(); ++i) {
+                if (std::memcmp(&a.rows[i], &b.rows[i], sizeof(nil_move)) != 0) return false;
+            }
+            for (std::size_t i = 0; i < a.suits.size(); ++i) {
+                if (std::memcmp(&a.suits[i], &b.suits[i], sizeof(nil_move_suits)) != 0) return false;
+            }
+            for (std::size_t i = 0; i < a.lines.size(); ++i) {
+                const int k = a.lines[i].cards;
+                if (k != b.lines[i].cards) return false;
+                for (int c = 0; c < k; ++c) {
+                    if (a.lines[i].suit[c] != b.lines[i].suit[c] ||
+                        a.lines[i].rank[c] != b.lines[i].rank[c])
+                        return false;
+                }
+            }
+            const nil_outcome& p = a.outcome;
+            const nil_outcome& q = b.outcome;
+            if (p.nils_set != q.nils_set || p.nils_set_min != q.nils_set_min ||
+                p.nils_set_max != q.nils_set_max || p.set_mask != q.set_mask ||
+                p.made_mask != q.made_mask || p.questions != q.questions)
+                return false;
+            for (int s = 0; s < 4; ++s) {
+                if (p.seat_status[s] != q.seat_status[s]) return false;
+            }
+            return true;
+        };
+        auto same = [&](const Answer& a, const Answer& b) {
+            return same_answer(a, b) && same_nodes(a, b);
+        };
+        auto same_list = [&](const Answers& a, const Answers& b, bool nodes) {
+            if (a.size() != b.size()) return false;
+            for (std::size_t i = 0; i < a.size(); ++i) {
+                if (!same_answer(a[i], b[i]) || (nodes && !same_nodes(a[i], b[i]))) return false;
+            }
+            return true;
+        };
+        auto all_return = [](const Answers& list, std::int32_t rc) {
+            for (const Answer& a : list) {
+                if (a.rc != rc) return false;
+            }
+            return true;
+        };
+
+        // Runs `work` on `count` new threads, released together once every one
+        // of them is waiting at the gate, and returns what each got.
+        auto together = [](int count, auto work) {
+            std::vector<decltype(work())> out(static_cast<std::size_t>(count));
+            std::atomic<int> waiting{0};
+            std::atomic<bool> go{false};
+            std::vector<std::thread> threads;
+            for (int i = 0; i < count; ++i) {
+                threads.emplace_back([&, i] {
+                    nil_set_table_size(TEST_TABLE_MB);
+                    ++waiting;
+                    while (!go.load()) std::this_thread::yield();
+                    out[static_cast<std::size_t>(i)] = work();
+                });
+            }
+            while (waiting.load() < count) std::this_thread::yield();
+            go.store(true);
+            for (std::thread& t : threads) t.join();
+            return out;
+        };
+
+        // 1. The lone thread: nothing else solves while it works.  Its finished
+        //    FAST_LINE calls set the budgets, and a second lone thread is
+        //    stopped by them.
+        const Answers lone = together(1, [&] { return solve_list(NIL_LIMIT_FRESH_TABLES); })[0];
+        check("a lone thread finishes every call", all_return(lone, NIL_OK), true);
+        for (std::size_t i = 0; i < deal_count; ++i) {
+            budget[i] = lone[i * CALLS + MOVES_FAST_LINE].root.nodes / 2;
+        }
+        const Answers lone_cut = together(1, solve_cut)[0];
+        check("and stops at half the nodes of each per-card call",
+              all_return(lone_cut, NIL_INCOMPLETE), true);
+        if (g_verbose) {
+            for (std::size_t i = 0; i < deal_count; ++i) {
+                std::cout << "    " << deals[i].name << ": " << lone[i * CALLS + MOVES].root.nodes
+                          << " nodes with the lines, "
+                          << lone[i * CALLS + MOVES_FAST_LINE].root.nodes << " without, "
+                          << lone_cut[i].root.nodes << " when stopped at " << budget[i] << "\n";
+            }
+        }
+
+        // 2. Two threads at once, then four.  Each solves the list without the
+        //    option, then with it (so on a thread with a history), then the
+        //    budgeted calls.
+        struct Work {
+            Answers plain, fresh, cut;
+        };
+        bool plain_moved = false;
+        for (int count : {2, 4}) {
+            most_in_flight.store(0);
+            const std::vector<Work> got = together(count, [&] {
+                Work w;
+                w.plain = solve_list(0);
+                w.fresh = solve_list(NIL_LIMIT_FRESH_TABLES);
+                w.cut = solve_cut();
+                return w;
+            });
+            bool plain_ok = true, fresh_ok = true, cut_ok = true;
+            for (const Work& w : got) {
+                plain_ok = plain_ok && same_list(w.plain, lone, false);
+                fresh_ok = fresh_ok && same_list(w.fresh, lone, true);
+                cut_ok = cut_ok && same_list(w.cut, lone_cut, true);
+                if (!same_list(w.plain, lone, true)) plain_moved = true;
+            }
+            const std::string tag = std::to_string(count) + " threads at once";
+            check(tag + ", fresh tables: every row, nil_result and node count as alone", fresh_ok,
+                  true);
+            check(tag + ", without the option: every answer as alone", plain_ok, true);
+            check(tag + ", a node budget: the same proven rows and node count as alone", cut_ok,
+                  true);
+            check(tag + ": calls were in flight together", most_in_flight.load() > 1, true);
+            if (g_verbose) {
+                std::cout << "    " << count << " threads: at most " << most_in_flight.load()
+                          << " calls in flight at once\n";
+            }
+        }
+        check("without the option a thread's node counts move (the check can tell)", plain_moved,
+              true);
+
+        // 3. nil_set_table_size is per thread as well.  This thread has never
+        //    called it, so it solves at the default size; a new thread sets
+        //    4 MiB first, and then both solve at once.  The size moves a deep
+        //    search's node count and never its answer, so with fresh tables
+        //    each thread's node count says which table it searched in.
+        {
+            constexpr std::uint32_t SMALL_TABLE_MB = 4;
+            const Deal& d = deals[1];
+            auto solve = [&] { return ask(d, MOVES_FAST_LINE, NIL_LIMIT_FRESH_TABLES); };
+            const Answer wide_alone = solve();
+            Answer small_alone, small_beside;
+            std::thread alone([&] {
+                nil_set_table_size(SMALL_TABLE_MB);
+                small_alone = solve();
+            });
+            alone.join();
+            std::atomic<bool> waiting{false};
+            std::atomic<bool> go{false};
+            std::thread beside([&] {
+                nil_set_table_size(SMALL_TABLE_MB);
+                waiting.store(true);
+                while (!go.load()) std::this_thread::yield();
+                small_beside = solve();
+            });
+            while (!waiting.load()) std::this_thread::yield();
+            go.store(true);
+            const Answer wide_beside = solve();
+            beside.join();
+            check("4 MiB and the default both finish, alone and side by side",
+                  wide_alone.rc == NIL_OK && small_alone.rc == NIL_OK && wide_beside.rc == NIL_OK &&
+                      small_beside.rc == NIL_OK,
+                  true);
+            check("the table size does not change the answer", same_answer(small_alone, wide_alone),
+                  true);
+            check("it does change the node count (the check can tell)",
+                  same_nodes(small_alone, wide_alone), false);
+            check("another thread's 4 MiB leaves the default-size thread as it was alone",
+                  same(wide_beside, wide_alone), true);
+            check("and the default leaves the 4 MiB thread as it was alone",
+                  same(small_beside, small_alone), true);
+            if (g_verbose) {
+                std::cout << "    " << d.name << ": " << wide_alone.root.nodes
+                          << " nodes at the default size, " << small_alone.root.nodes << " at "
+                          << SMALL_TABLE_MB << " MiB\n";
+            }
         }
     }
 

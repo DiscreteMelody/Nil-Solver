@@ -154,7 +154,8 @@ endif()
 if(NIL_SOLVER_BUILD_TESTS)
   enable_testing()
   add_executable(nil_tests tests/test_nil_solver.cpp src/api.cpp)
-  # std::thread, for the 0.5.0 fresh-tables checks (a brand-new thread each).
+  # std::thread, for the 0.5.0 fresh-tables checks (a brand-new thread each)
+  # and the concurrent-solve checks (several at once).
   find_package(Threads REQUIRED)
   target_link_libraries(nil_tests PRIVATE nil_solver_core Threads::Threads)
   target_compile_definitions(nil_tests PRIVATE NIL_SOLVER_STATIC)

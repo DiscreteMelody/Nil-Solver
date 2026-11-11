@@ -398,6 +398,19 @@ Exactly `workers` tables exist, for as long as the pool does, and the number is
 one you chose. Note that a semaphore of the kind the DDS wrapper uses does *not*
 substitute: it bounds how many solves run at once, not which threads they run on.
 
+When choosing `workers`: each one holds 424 MiB at the default setting, a
+384 MiB main table (the 512 MiB setting rounded down to a power-of-two bucket
+count) plus 40 MiB for the double-dummy engine's own table, which
+`nil_release_table` does not free. Which worker runs a call does not change its
+answer, and with `NilLimitOptions.FreshTables` it does not change the node
+count or what a node-limited call had proven either; the solver's `nil_tests`
+runs two and then four threads at once against a lone one to pin that. Two
+solves at once do slow each other down. Measured on a Windows VM with 2 virtual
+cores, on four tough 13-card deals, a call took 6.3 s on average while a second
+worker was solving against 4.2-4.5 s alone (+45%), so two workers got through
+1.37x the calls of one. The "Threads" section of the top-level README has the
+rest.
+
 A search in progress cannot be interrupted. `CancellationToken` is honoured up to
 the moment a worker picks the job up and not after — which is worth knowing given
 the tail above.

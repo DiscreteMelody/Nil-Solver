@@ -5999,6 +5999,51 @@ cancelled at once; the opposed shape under the outcome question (refused).
 and no cheap fact certifies it. That is the next target if the fallback's tail
 matters.
 
+### 105. Several solver threads at once: pinned by test, and what two cost — ⭐⭐ — **done, Nov 2026 (a test and notes; the library is unchanged)**
+
+**Why.** A server wants more than one solve in flight, so that a slow deal
+holds up one worker and not every call behind it. The library has allowed that
+since its state became per thread: everything a solve writes is `thread_local`
+(the main table, the double-dummy engine and its table, the stats blocks, the
+size set by `nil_set_table_size`). No test said so, and "several solver threads
+sharing the machine" has stood under *Not measured* since item 99.
+
+**Checks.** `nil_tests`, under "C ABI: concurrent solves". Two threads, then
+four, are released from a start gate and each solves the same three 13-card
+deals (one nil with its cover, a bid on each side, a pair that both bid)
+through `nil_solve_moves_limited` with and without `NIL_FLAG_FAST_LINE`,
+`nil_solve_moves_lines`, `nil_count_set_limited` and
+`nil_solve_outcome_limited`: once without `NIL_LIMIT_FRESH_TABLES`, once with
+it, then the per-card call stopped at half its nodes. Each thread is held
+against a thread that solved alone. With fresh tables every row, `nil_result`,
+verdict and node count must be equal, the stopped calls included; without the
+option everything but the node counts, which do move, so the comparison can
+tell. `nil_set_table_size` is checked the same way: a thread at 4 MiB and one
+at the default size solve at once, and each must search the node count of its
+own size. No timing is asserted; the one check on overlap is that two calls
+were in flight at once. Making `shared_table()`, `dd::engine()` or
+`g_table_megabytes` process-wide, one at a time, fails these checks (tried
+outside the tree).
+
+**Measured** (2026-11-11; a Windows VM with 2 virtual cores on a Ryzen 9
+9950X3D host, MSVC 19.51 Release, 4 KiB pages; the C ABI per-card call with
+`NIL_FLAG_FAST_LINE` and fresh tables on four tough 13-card deals):
+
+* One thread: 4.2-4.5 s mean per call. Two threads at once: 6.3 s mean per
+  call (+45%), every thread's values and node counts identical to the lone
+  thread's.
+* Eight calls took 25.5 s on two threads against about 35 s one after the
+  other: 1.37x the throughput.
+* Binding each thread to its own core made no difference (6.5 s mean).
+* A register-only loop that touches no memory slows 20% on the same machine
+  when a second thread runs, so part of the cost is the machine and the rest
+  is the two tables competing for cache and memory.
+* Memory: a solving thread commits 424 MiB at the default setting (a 384 MiB
+  main table and 40 MiB for the engine). `nil_release_table` gives back the
+  384; the thread's exit gives back all of it.
+
+**Not measured:** real (non-virtual) cores; 2 MiB pages; more than two threads.
+
 ## Suggested sequence
 
 ```
